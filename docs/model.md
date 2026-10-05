@@ -94,27 +94,21 @@ waiting and does not forget paths already allowed for the session.
 
 ## Project closeout fallback
 
-Define checks in `[projects.<id>.closeout]` to use them when the workspace has
+Set a project's `closeout` to a YAML file path to use it when the workspace has
 neither `.kyotoagent/closeout.yaml` nor `.agents/closeout.yaml`. A repository
 closeout file takes precedence, including a file with an empty items list.
+Relative configuration paths start at the configured project directory. For a
+fallback outside the project, imports and skills start beside its YAML file.
 
 ```toml
-[projects.kyotoagent.closeout]
-specVersion = "0.1"
-
-[[projects.kyotoagent.closeout.setup]]
-id = "fetch-dependencies"
-exec = ["cargo", "fetch", "--locked"]
-timeoutSeconds = 300
-
-[[projects.kyotoagent.closeout.items]]
-id = "cargo-test"
-kind = "command"
-gate = "beforePR"
-exec = ["cargo", "test", "--offline"]
-timeoutSeconds = 600
-paths = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock"]
+[projects.kyotoagent]
+path = "/work/kyotoagent"
+closeout = "/shared/closeout.yaml"
 ```
+
+Closeout 0.1 imports resolve depth-first and prefix check IDs with their `as`
+namespace, such as `quality/tests`. Nested import paths start at the policy
+root.
 
 The app and TUI label each check as required or not required for the current
 turn. A check becomes required when the turn touches a workspace path matching

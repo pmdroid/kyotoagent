@@ -539,6 +539,7 @@ mod tests {
     #[test]
     fn the_prompt_lists_each_pinned_closeout_id_and_hint() {
         let file = crate::closeout::CloseoutFile {
+            imports: Vec::new(),
             setup: Vec::new(),
             executions: Default::default(),
             items: vec![
@@ -715,6 +716,7 @@ mod tests {
     #[test]
     fn the_subagent_prompt_is_the_short_identity() {
         let file = crate::closeout::CloseoutFile {
+            imports: Vec::new(),
             setup: Vec::new(),
             executions: Default::default(),
             items: vec![crate::closeout::CloseoutItem {

@@ -183,7 +183,10 @@ async fn execute_closeout(
     let session = tools.session();
     let transcript = format!("Check {id} · attempt {attempt}\n{}\nexit: {:?}\ntimed out: {}\ntruncated: {}\n\nstdout:\n{}\n\nstderr:\n{}",
         output.argv.join(" "), output.exit, output.timed_out, output.truncated, output.stdout, output.stderr);
-    let name = format!("{id}-attempt-{attempt}.txt");
+    let name = format!(
+        "{}-attempt-{attempt}.txt",
+        id.replace('/', "_").chars().take(200).collect::<String>()
+    );
     let file =
         crate::proof::store_bytes(session, &name, transcript.as_bytes()).map_err(|source| {
             ToolError::Io {

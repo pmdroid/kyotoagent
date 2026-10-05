@@ -54,6 +54,7 @@ impl CloseoutKind {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "RawFile")]
 pub struct CloseoutFile {
+    pub imports: Vec<CloseoutImport>,
     pub setup: Vec<CloseoutItem>,
     pub executions: HashMap<String, CloseoutExecution>,
     pub items: Vec<CloseoutItem>,
@@ -136,7 +137,7 @@ pub fn located(workspace: &Path) -> Option<PathBuf> {
 
 pub fn read(workspace: &Path) -> Result<Option<CloseoutFile>, CloseoutError> {
     match located(workspace) {
-        Some(path) => load_file(&path),
+        Some(path) => load_file(&path, workspace),
         None => Ok(None),
     }
 }
@@ -331,7 +332,20 @@ fn snapshot_paths(root: &Path, dir: &Path, paths: &mut Vec<String>) {
     }
 }
 pub fn parse(path: &Path) -> Result<CloseoutFile, CloseoutError> {
-    match load_file(path)? {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let root = if matches!(
+        parent.file_name().and_then(|name| name.to_str()),
+        Some(".agents" | ".kyotoagent")
+    ) {
+        parent.parent().unwrap_or(Path::new("."))
+    } else {
+        parent
+    };
+    parse_from_root(path, root)
+}
+
+pub fn parse_from_root(path: &Path, root: &Path) -> Result<CloseoutFile, CloseoutError> {
+    match load_file(path, root)? {
         Some(file) => Ok(file),
         None => Err(CloseoutError::Parse {
             path: path.to_path_buf(),
@@ -340,7 +354,18 @@ pub fn parse(path: &Path) -> Result<CloseoutFile, CloseoutError> {
     }
 }
 
-fn load_file(path: &Path) -> Result<Option<CloseoutFile>, CloseoutError> {
+fn load_file(path: &Path, root: &Path) -> Result<Option<CloseoutFile>, CloseoutError> {
+    let Some(file) = load_document(path, false)? else {
+        return Ok(None);
+    };
+    let mut stack = vec![path.canonicalize().map_err(|source| CloseoutError::Parse {
+        path: path.to_path_buf(),
+        source: source.to_string(),
+    })?];
+    Ok(Some(file.resolve_imports(root, &mut stack)?))
+}
+
+fn load_document(path: &Path, imported: bool) -> Result<Option<CloseoutFile>, CloseoutError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -356,6 +381,11 @@ fn load_file(path: &Path) -> Result<Option<CloseoutFile>, CloseoutError> {
             path: path.to_path_buf(),
             source: source.to_string(),
         })?;
+    if imported && value.get("version").is_some() {
+        return Err(CloseoutError::BadDefinition {
+            message: "imported policies need specVersion 0.1".into(),
+        });
+    }
     let raw = if value.get("version").is_some() {
         serde_yaml::from_str::<LegacyFile>(&text).map(RawFile::Legacy)
     } else {
@@ -405,7 +435,17 @@ struct PublicFile {
     description: Option<String>,
     #[serde(default)]
     items: Vec<PublicCommand>,
+    #[serde(default)]
+    imports: Vec<CloseoutImport>,
     setup: Option<Vec<SetupStep>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloseoutImport {
+    pub path: String,
+    #[serde(rename = "as")]
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -472,6 +512,70 @@ fn validate_execution(
 }
 
 impl CloseoutFile {
+    fn resolve_imports(
+        mut self,
+        root: &Path,
+        stack: &mut Vec<PathBuf>,
+    ) -> Result<Self, CloseoutError> {
+        let mut imported_items = Vec::new();
+        for entry in std::mem::take(&mut self.imports) {
+            let path = root.join(&entry.path);
+            let canonical = path.canonicalize().map_err(|source| CloseoutError::Parse {
+                path: path.clone(),
+                source: source.to_string(),
+            })?;
+            let canonical_root = root.canonicalize().map_err(|source| CloseoutError::Parse {
+                path: root.to_path_buf(),
+                source: source.to_string(),
+            })?;
+            if !canonical.starts_with(&canonical_root) {
+                return Err(CloseoutError::BadPath { path: entry.path });
+            }
+            if stack.contains(&canonical) {
+                let chain = stack
+                    .iter()
+                    .chain(std::iter::once(&canonical))
+                    .map(|path| {
+                        path.strip_prefix(&canonical_root)
+                            .unwrap_or(path)
+                            .display()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                return Err(CloseoutError::BadDefinition {
+                    message: format!("import cycle: {chain}"),
+                });
+            }
+            let child = load_document(&path, true)?.ok_or_else(|| CloseoutError::Parse {
+                path: path.clone(),
+                source: "import is missing".into(),
+            })?;
+            if !child.setup.is_empty() {
+                return Err(CloseoutError::BadDefinition {
+                    message: "setup is only allowed on the entry policy".into(),
+                });
+            }
+            stack.push(canonical);
+            let mut child = child.resolve_imports(root, stack)?;
+            stack.pop();
+            for mut item in child.items {
+                let id = format!("{}/{}", entry.name, item.id);
+                if let Some(execution) = child.executions.remove(&item.id) {
+                    self.executions.insert(id.clone(), execution);
+                }
+                item.id = id;
+                if item.kind == CloseoutKind::Command {
+                    item.hint = format!("Run {}", item.id);
+                }
+                imported_items.push(item);
+            }
+        }
+        imported_items.append(&mut self.items);
+        self.items = imported_items;
+        Ok(self)
+    }
+
     pub fn execution(&self, item: &CloseoutItem) -> (Vec<String>, Option<u64>) {
         match self.executions.get(&item.id) {
             Some(exec) => (exec.argv.clone(), Some(exec.timeout)),
@@ -480,6 +584,7 @@ impl CloseoutFile {
     }
 
     fn from_raw(raw: RawFile) -> Result<CloseoutFile, CloseoutError> {
+        let mut imports = Vec::new();
         let mut executions = HashMap::new();
         let (items, setup, max_failures) = match raw {
             RawFile::Legacy(raw) => {
@@ -499,6 +604,7 @@ impl CloseoutFile {
             RawFile::Public(raw) => {
                 if raw.spec_version != "0.1"
                     || raw.items.len() > 128
+                    || raw.imports.len() > 64
                     || raw.description.as_ref().is_some_and(|description| {
                         description.is_empty() || description.len() > 500
                     })
@@ -507,6 +613,28 @@ impl CloseoutFile {
                         message: "Invalid Closeout 0.1 policy".into(),
                     });
                 }
+                let mut names = std::collections::HashSet::new();
+                for entry in &raw.imports {
+                    if !is_valid_id(&entry.name)
+                        || entry.name.ends_with('-')
+                        || entry.name.contains("--")
+                    {
+                        return Err(CloseoutError::BadId {
+                            id: entry.name.clone(),
+                        });
+                    }
+                    if !names.insert(entry.name.clone()) {
+                        return Err(CloseoutError::BadDefinition {
+                            message: format!("duplicate import name {}", entry.name),
+                        });
+                    }
+                    if !is_valid_import_path(&entry.path) {
+                        return Err(CloseoutError::BadPath {
+                            path: entry.path.clone(),
+                        });
+                    }
+                }
+                imports = raw.imports;
                 let mut items = Vec::new();
                 for item in raw.items {
                     validate_execution(&item.id, &item.exec, item.timeout, &item.paths)?;
@@ -586,6 +714,7 @@ impl CloseoutFile {
             }
         }
         Ok(CloseoutFile {
+            imports,
             items,
             setup: steps,
             executions,
@@ -602,6 +731,10 @@ fn is_valid_id(id: &str) -> bool {
         }
         _ => false,
     }
+}
+
+fn is_valid_import_path(path: &str) -> bool {
+    is_valid_path_pattern(path) && !path.ends_with('/') && !path.contains(['*', '?', '[', ']'])
 }
 
 fn is_valid_path_pattern(path: &str) -> bool {
@@ -744,6 +877,110 @@ pub fn proof_item(id: &str, passed: bool, argv: Vec<String>, exit: i32, tail: St
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn nested_imports_resolve_from_the_root_in_depth_first_order() {
+        let dir = temp_dir("imports");
+        std::fs::create_dir_all(dir.join("policies")).unwrap();
+        write_file(&dir, "specVersion: '0.1'\nimports:\n  - path: policies/outer.yaml\n    as: quality\nitems:\n  - id: entry\n    kind: command\n    gate: beforePR\n    exec: [echo, entry]\n    timeoutSeconds: 30\n");
+        std::fs::write(dir.join("policies/outer.yaml"), "specVersion: '0.1'\nimports:\n  - path: policies/inner.yaml\n    as: nested\nitems:\n  - id: outer\n    kind: command\n    gate: beforePR\n    exec: [echo, outer]\n    timeoutSeconds: 40\n").unwrap();
+        std::fs::write(dir.join("policies/inner.yaml"), "specVersion: '0.1'\nitems:\n  - id: inner\n    kind: command\n    gate: beforePR\n    exec: [echo, inner]\n    timeoutSeconds: 50\n    paths: ['src/**']\n").unwrap();
+        let file = read(&dir).unwrap().unwrap();
+        assert_eq!(
+            file.items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["quality/nested/inner", "quality/outer", "entry"]
+        );
+        assert_eq!(
+            file.execution(&file.items[0]),
+            (vec!["echo".into(), "inner".into()], Some(50))
+        );
+        let mut state = CloseoutState::with_file(&dir, Some(file));
+        state.record_write("src/lib.rs");
+        assert!(state
+            .cannot_finish()
+            .unwrap()
+            .contains("quality/nested/inner"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn imports_reject_missing_files_cycles_duplicate_names_and_imported_setup() {
+        for (name, child, imports, expected) in [
+            ("missing", None, "  - path: child.yaml\n    as: child\n", "child.yaml"),
+            ("cycle", Some("specVersion: '0.1'\nimports:\n  - path: .kyotoagent/closeout.yaml\n    as: entry\n"), "  - path: child.yaml\n    as: child\n", "import cycle:"),
+            ("duplicate", Some("specVersion: '0.1'\n"), "  - path: child.yaml\n    as: child\n  - path: child.yaml\n    as: child\n", "duplicate import name"),
+            ("setup", Some("specVersion: '0.1'\nsetup:\n  - id: prepare\n    exec: [echo, ready]\n    timeoutSeconds: 5\n"), "  - path: child.yaml\n    as: child\n", "setup is only allowed"),
+            ("legacy", Some("version: 1\nitems: []\n"), "  - path: child.yaml\n    as: child\n", "imported policies need specVersion"),
+        ] {
+            let dir = temp_dir(name);
+            write_file(&dir, &format!("specVersion: '0.1'\nimports:\n{imports}"));
+            if let Some(child) = child { std::fs::write(dir.join("child.yaml"), child).unwrap(); }
+            assert!(read(&dir).unwrap_err().to_string().contains(expected));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn import_paths_and_names_must_stay_inside_the_repository() {
+        for path in [
+            "../outside.yaml",
+            "/outside.yaml",
+            "~/.agents/closeout.yaml",
+            "a/./b.yaml",
+            "a//b.yaml",
+            "a\\b.yaml",
+            "C:/outside.yaml",
+            "a/",
+        ] {
+            let dir = temp_dir("unsafe-import");
+            write_file(
+                &dir,
+                &format!("specVersion: '0.1'\nimports:\n  - path: '{path}'\n    as: child\n"),
+            );
+            assert!(read(&dir).is_err(), "{path}");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+        for name in ["Bad", "child--name", "child-", "a/b"] {
+            let dir = temp_dir("unsafe-namespace");
+            write_file(
+                &dir,
+                &format!("specVersion: '0.1'\nimports:\n  - path: child.yaml\n    as: '{name}'\n"),
+            );
+            assert!(read(&dir).is_err(), "{name}");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+        let dir = temp_dir("symlink-import");
+        let outside = temp_dir("outside-import");
+        std::fs::write(outside.join("policy.yaml"), "specVersion: '0.1'\n").unwrap();
+        std::os::unix::fs::symlink(outside.join("policy.yaml"), dir.join("child.yaml")).unwrap();
+        write_file(
+            &dir,
+            "specVersion: '0.1'\nimports:\n  - path: child.yaml\n    as: child\n",
+        );
+        assert!(read(&dir).unwrap_err().to_string().contains("child.yaml"));
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn one_file_can_be_imported_under_two_names() {
+        let dir = temp_dir("shared-import");
+        std::fs::write(dir.join("child.yaml"), "specVersion: '0.1'\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: [echo, ok]\n    timeoutSeconds: 5\n").unwrap();
+        write_file(&dir, "specVersion: '0.1'\nimports:\n  - path: child.yaml\n    as: first\n  - path: child.yaml\n    as: second\n");
+        let file = read(&dir).unwrap().unwrap();
+        assert_eq!(
+            file.items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["first/test", "second/test"]
+        );
+        assert_eq!(file.executions.len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn subsequent_writes_mark_recorded_passes_stale() {
