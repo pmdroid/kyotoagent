@@ -1,0 +1,126 @@
+[package]
+name = "kyotoagent"
+version = "0.1.0"
+edition = "2021"
+description = "A small remote-first coding agent that shows asks, questions, permissions, results, and proof."
+license = "MIT"
+autobins = false
+include = [
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE",
+    "/rust-toolchain.toml",
+    "/rustfmt.toml",
+    "/src/**",
+    "/tests/**",
+    "/examples/**",
+    "/assets/*.png",
+    "/scripts/install-serve.sh",
+    "/scripts/kyotoagent.service.in",
+    "/scripts/ai.kyotoagent.serve.plist.in",
+    "/scripts/capture-frames.py",
+    "/docs/*.md",
+    "/ios/Fixtures/*.json",
+    "/.agents/AGENTS.md",
+    "/.agents/skills/verify-kyotoagent/**",
+    "/.agents/skills/verify-kyotoagent-tui/**",
+    "/.kyotoagent/closeout.yaml",
+    "/.acpdash/closeout.yaml",
+    "/.github/workflows/ci.yml",
+]
+
+[[bin]]
+name = "kyoto"
+path = "src/main.rs"
+
+[[bin]]
+name = "kyotoagent"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30"
+unicode-width = "0.2"
+unicode-segmentation = "1"
+httpdate = "1"
+# The session log is JSON on disk: one object per line in events.jsonl, and
+# the meta and view documents built from it.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+serde_yaml = "0.9"
+
+# The chat client speaks the OpenAI-compatible completion API, so the same
+# request reaches OpenRouter and a local Ollama or llama.cpp server. TLS is
+# rustls: the agent runs on a remote machine with no system OpenSSL to depend
+# on, and default-features off keeps the native-tls stack out of the build.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "charset",
+    "http2",
+    "blocking",
+] }
+htmd = "0.5"
+# ~/.kyotoagent/config.toml is the whole configuration.
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+toml_edit = { version = "0.22", default-features = false, features = ["parse", "display"] }
+
+# The turn loop is the runtime: one task per running turn, a child process that
+# is killed when its turn is cancelled, and the model timeout the chat client
+# already carries. The process and sync features are the command execution and
+# the channels the loop selects on. libc sends the SIGTERM a cancelled command
+# gets before its SIGKILL.
+tokio = { version = "1", features = [
+    "rt",
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "process",
+    "sync",
+    "net",
+    "io-util",
+    "fs",
+] }
+libc = "0.2"
+
+# The server speaks HTTP on a unix socket, and optionally HTTPS with HTTP/2
+# on a TCP address from config `listen`.
+axum = { version = "0.8", features = ["http2"] }
+rustls = { version = "0.23", default-features = false, features = [
+    "std",
+    "tls12",
+    "ring",
+] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "tls12",
+] }
+# The subcommands of the `kyotoagent` binary.
+clap = { version = "4", features = ["derive", "env"] }
+crossterm = "0.29"
+png = "0.17"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff", "ico"] }
+infer = "0.19"
+pdf_oxide = { version = "0.3.78", default-features = false, features = ["rendering"] }
+base64 = "0.22"
+jsonwebtoken = { version = "9", default-features = false }
+ring = "0.17"
+qrcode = { version = "0.14", default-features = false }
+pulldown-cmark = { version = "0.13.4", default-features = false }
+syntect = { version = "5.3", default-features = false, features = ["default-themes", "regex-fancy"] }
+two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
+terminal-colorsaurus = "1.0.3"
+
+rcgen = { version = "0.13", default-features = false, features = [
+    "ring",
+    "pem",
+] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "charset",
+    "http2",
+] }

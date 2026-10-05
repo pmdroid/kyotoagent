@@ -1,0 +1,18 @@
+[
+  {
+    "id": "grok-4.7",
+    "aliases": [
+      "grok"
+    ],
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "context_length": 2000000,
+    "provider": "grok"
+  },
+  {
+    "id": "cursor/composer"
+  }
+]

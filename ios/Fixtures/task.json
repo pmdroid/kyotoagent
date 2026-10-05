@@ -1,0 +1,11 @@
+{
+  "id": "task01",
+  "argv": [
+    "cargo",
+    "test",
+    "--offline"
+  ],
+  "state": "exited",
+  "exit": 0,
+  "tail": "test result: ok. 1 passed\n"
+}

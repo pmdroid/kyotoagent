@@ -1,0 +1,62 @@
+[
+  {
+    "id": "c0ffee01",
+    "workspace": "/home/pascal/.kyotoagent/worktrees/kyotoagent-c0ffee01",
+    "status": "waiting",
+    "updatedAt": "2026-10-01T21:40:00.000Z",
+    "createdAt": "2026-10-01T21:40:00.000Z",
+    "waiting": "permission",
+    "pullUrl": "https://github.com/pmdroid/pagent/pull/92",
+    "compacting": true,
+    "yolo": true,
+    "enhance": false,
+    "showCloseout": true,
+    "model": "grok-4.7",
+    "effort": "medium",
+    "title": "Permission cards",
+    "project": "kyotoagent",
+    "parentId": "a11a0001",
+    "isolation": "worktree",
+    "worktree": true,
+    "allow": {
+      "writePaths": [
+        "/home/pascal/work/kyotoagent/src/view.rs"
+      ],
+      "outsideReadPaths": [],
+      "argv": [
+        [
+          "cargo",
+          "test",
+          "--offline"
+        ]
+      ],
+      "fetchOrigins": [
+        "https://github.com"
+      ],
+      "webSearch": false
+    }
+  },
+  {
+    "id": "a11a0001",
+    "workspace": "/home/pascal/work/kyotoagent",
+    "status": "waiting",
+    "updatedAt": "2026-10-01T21:10:00.000Z",
+    "createdAt": "2026-10-01T21:00:00.000Z",
+    "waiting": "question",
+    "compacting": false,
+    "yolo": false,
+    "enhance": true,
+    "showCloseout": true,
+    "model": "grok-4.7",
+    "effort": "high",
+    "title": "Kyoto Agent",
+    "project": "kyotoagent",
+    "allow": {
+      "writePaths": [],
+      "outsideReadPaths": [],
+      "argv": [],
+      "fetchOrigins": [],
+      "webSearch": false
+    }
+  }
+]

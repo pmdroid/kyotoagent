@@ -1,0 +1,24 @@
+ ☰  Kyoto Agent                                     3 sessions · 0 waiting ▦
+╭ sessions ──────────────────╮╭ ~/work/kyotoagent ─────────────────────────╮
+│▾ kyotoagent                ││                                            │
+│▸ ✓ kyotoagent              ││▎ RESULT                                    │
+│  idle                      │││ The readme now names the                  │
+│                            │││ binary under the heading                  │
+│▾ acpbot                    │││ Kyoto Agent.                              │
+│  ✓ acpbot                  ││                                            │
+│  idle                      ││▎ PROOF                                     │
+│                            │││ cargo test passed on the                  │
+│▾ other                     │││ readme heading.                           │
+│  ✓ notes                   ││                                            │
+│  idle                      ││                                            │
+│                            ││                                            │
+│                            ││                                            │
+│                            ││                                            │
+│                            ││                                            │
+│                            ││                                            │
+│                            ││                                            │
+│ctrl-n/p  ctrl-k  commands  ││                                            │
+╰────────────────────────────╯╰────────────────────────────────────────────╯
+╭ Message ─────────────────────────────────────────────────────────────────╮
+│ › >█                                                                     │
+╰──────────────────────────────────────────────────────────────────────────╯

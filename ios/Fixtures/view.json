@@ -1,0 +1,174 @@
+{
+  "status": "waiting",
+  "cards": [
+    {
+      "id": "c1",
+      "kind": "ask",
+      "at": "2026-10-01T21:00:00.000Z",
+      "body": {
+        "text": "Add eventId to the permission card."
+      }
+    },
+    {
+      "id": "c2",
+      "kind": "question",
+      "at": "2026-10-01T21:00:00.000Z",
+      "body": {
+        "answer": null,
+        "choices": [
+          "Kyoto Agent",
+          "Kyoto Agent CLI"
+        ],
+        "eventId": "e-open",
+        "text": "Which title?"
+      }
+    },
+    {
+      "id": "c3",
+      "kind": "question",
+      "at": "2026-10-01T21:00:00.000Z",
+      "body": {
+        "answer": "yes",
+        "choices": [],
+        "eventId": "e-settled",
+        "text": "Keep the socket name?"
+      }
+    },
+    {
+      "id": "c4",
+      "kind": "answer",
+      "at": "2026-10-01T21:00:00.000Z",
+      "body": {
+        "text": "yes"
+      }
+    },
+    {
+      "id": "c5",
+      "kind": "permission",
+      "at": "2026-10-01T21:00:00.000Z",
+      "body": {
+        "action": "Replace src/view.rs",
+        "argv": null,
+        "decision": null,
+        "diff": [
+          "+        \"eventId\": event.id,"
+        ],
+        "eventId": "e-perm",
+        "path": "/home/pascal/work/kyotoagent/src/view.rs",
+        "timeoutSec": null
+      }
+    },
+    {
+      "id": "c6",
+      "kind": "result",
+      "at": "2026-10-01T21:00:00.000Z",
+      "body": {
+        "eventId": "e-result",
+        "text": "Permission cards include eventId.",
+        "turnId": "t1"
+      }
+    },
+    {
+      "id": "c7",
+      "kind": "proof",
+      "at": "2026-10-01T21:00:00.000Z",
+      "body": {
+        "items": [
+          {
+            "id": "cargo-test",
+            "kind": "command",
+            "outcome": "passed"
+          }
+        ],
+        "text": "cargo test passed."
+      }
+    },
+    {
+      "id": "c8",
+      "kind": "enhance",
+      "at": "2026-10-01T21:00:00.000Z",
+      "body": {
+        "eventId": "e-enhance",
+        "model": "grok-4.7",
+        "source": "Add eventId to the permission card.",
+        "text": "Rewrite the permission card."
+      }
+    }
+  ],
+  "revision": 9,
+  "skills": [
+    {
+      "name": "preflight",
+      "description": "Closeout for a change.",
+      "disable_model_invocation": false,
+      "user_invocable": true,
+      "path": "/home/pascal/.agents/skills/preflight/SKILL.md"
+    }
+  ],
+  "todos": [
+    {
+      "id": "todo-1",
+      "title": "Add eventId",
+      "status": "in_progress"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "task01",
+      "argv": [
+        "cargo",
+        "test",
+        "--offline"
+      ],
+      "state": "running"
+    }
+  ],
+  "schedules": [
+    {
+      "id": "sched01",
+      "note": "Check the pull request",
+      "dueAt": "2026-10-01T22:30:00.000Z",
+      "remainingMin": 30
+    }
+  ],
+  "phase": "thinking",
+  "thinking": "Reading permission_body.",
+  "queue": [
+    "Check the fixture diff."
+  ],
+  "allow": {
+    "writePaths": [
+      "/home/pascal/work/kyotoagent/src/view.rs"
+    ],
+    "outsideReadPaths": [],
+    "argv": [],
+    "fetchOrigins": [],
+    "webSearch": false
+  },
+  "closeout": [
+    {
+      "id": "cargo-test",
+      "kind": "command",
+      "hint": "cargo test must pass",
+      "status": "passed",
+      "exit": 0,
+      "attempt": 1,
+      "tail": "ok"
+    }
+  ],
+  "context": {
+    "used": 12000,
+    "window": 128000,
+    "percent": 9,
+    "buckets": [
+      {
+        "id": "system",
+        "tokens": 2000
+      },
+      {
+        "id": "messages",
+        "tokens": 10000
+      }
+    ]
+  }
+}

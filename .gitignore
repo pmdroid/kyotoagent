@@ -1,0 +1,8 @@
+/target
+/build
+
+# The docs site in site/ carries its own .gitignore for dist/ and node_modules/.
+
+# Local TLS cert and key (Tailscale)
+*.crt
+*.key

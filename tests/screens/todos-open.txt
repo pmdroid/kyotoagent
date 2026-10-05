@@ -1,0 +1,24 @@
+ ☰  Kyoto Agent                                     3 sessions · 0 waiting ▦
+╭ sessions ──────────────────╮╭ ~/work/acpbot ───╮╭ todos ─────────────────x
+│  ✓ kyotoagent              ││                  ││████░░░░░░░░ 1/3  2 left│
+│  idle                      ││             ASK ▎││✓ Read the crate        │
+│                            ││         What is ▎││▸ Write the todo tool   │
+│▸ acpbot                    ││             the ▎││in_progress             │
+│  working                   ││         package ▎││Replace content with    │
+│                            ││         name in ▎││title. Keep the plan in │
+│  ✓ notes                   ││      Cargo.toml ▎││description so the next │
+│  idle                      ││               ? ▎││turn can reread it.     │
+│                            ││                  ││src/events.rs           │
+│                            ││                  ││src/turn.rs             │
+│                            ││                  ││https://docs.rs/serde   │
+│                            ││                  ││· Draw the right pane   │
+│                            ││                  ││                        │
+│                            ││                  ││                        │
+│                            ││                  ││                        │
+│                            ││                  ││                        │
+│                            ││                  ││                        │
+│ctrl-n/p  ctrl-k  commands  ││⠋ Reading         ││                        │
+╰────────────────────────────╯╰──────────────────╯╰────────────────────────╯
+╭ Message ─────────────────────────────────────────────────────────────────╮
+│ › █                                                                      │
+╰──────────────────────────────────────────────────────────────────────────╯
