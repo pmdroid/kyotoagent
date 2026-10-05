@@ -147,8 +147,10 @@ final class SessionStateTests: XCTestCase {
                 guard url.pathExtension == "swift" else { continue }
                 saw = true
                 let text = try String(contentsOf: url, encoding: .utf8)
-                XCTAssertFalse(text.contains("UNUserNotificationCenter"), url.path)
-                XCTAssertFalse(text.contains("UserNotifications"), url.path)
+                if url.lastPathComponent != "NotificationCoordinator.swift" {
+                    XCTAssertFalse(text.contains("UNUserNotificationCenter"), url.path)
+                    XCTAssertFalse(text.contains("UserNotifications"), url.path)
+                }
                 XCTAssertFalse(text.contains("BGTaskScheduler"), url.path)
             }
             XCTAssertTrue(saw, root.path)

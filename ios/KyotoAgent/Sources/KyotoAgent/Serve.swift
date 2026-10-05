@@ -51,6 +51,8 @@ nonisolated public protocol HostTransport: Sendable {
 
 nonisolated public enum ServeCall: Equatable, Sendable {
     case pair(PairingClient)
+    case registerDevice(DeviceRegistration)
+    case deleteDevice(String)
     case sessions
     case projects
     case view(String)
@@ -154,6 +156,20 @@ nonisolated public struct ServeClient: Sendable {
         self.baseURL = baseURL
         self.transport = transport
         self.token = token
+    }
+
+    nonisolated public func registerDevice(_ device: DeviceRegistration) async throws {
+        let response = try await send(.registerDevice(device))
+        guard (200...299).contains(response.status) else {
+            throw HostError.status(response.status, responseText(response.body))
+        }
+    }
+
+    nonisolated public func deleteDevice(_ id: String) async throws {
+        let response = try await send(.deleteDevice(id))
+        guard (200...299).contains(response.status) else {
+            throw HostError.status(response.status, responseText(response.body))
+        }
     }
 
     nonisolated public func sessions() async throws -> [Session] {
@@ -375,6 +391,14 @@ nonisolated public func serveRequest(baseURL: URL, call: ServeCall) -> URLReques
         path = "/v1/pair"
         method = "POST"
         body = try? JSONEncoder().encode(identity)
+    case .registerDevice(let device):
+        path = "/v1/devices"
+        method = "PUT"
+        body = try? JSONEncoder().encode(device)
+    case .deleteDevice(let id):
+        path = "/v1/devices"
+        method = "DELETE"
+        body = try? JSONEncoder().encode(DeviceDeletion(id: id))
     case .sessions:
         path = "/v1/sessions"
     case .projects:

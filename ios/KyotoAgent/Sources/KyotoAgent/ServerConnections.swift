@@ -2,6 +2,7 @@ import Foundation
 import Observation
 
 nonisolated public struct SavedServer: Codable, Identifiable, Equatable, Sendable {
+    public static let legacyID = "00000000-0000-4000-8000-000000000001"
     public var id: String
     public var connection: String
     public var name: String?
@@ -35,6 +36,10 @@ public final class ServerConnections {
     public var showingServers = false
     public var address = ""
     public private(set) var models: [String: AppModel]
+    public var visibleSessionID: String?
+    public private(set) var notificationRevision = 0
+    public var notificationsChanged: (@MainActor () async -> Void)?
+    public var serverRemoved: (@MainActor (SavedServer) -> Void)?
     private var selectionRevision = 0
     private var launchConnection: Swift.Task<Void, Never>?
     private var connectionTasks: [ObjectIdentifier: Swift.Task<Void, Never>] = [:]
@@ -51,14 +56,22 @@ public final class ServerConnections {
         let saved = (try? store.load()).flatMap { text in
             try? JSONDecoder().decode(SavedConnections.self, from: Data(text.utf8))
         }
-        let initial: SavedConnections
+        var initial: SavedConnections
         if let saved {
             initial = saved
         } else if let connection = try? legacy.load(), PairingConnection(connection) != nil {
-            let server = SavedServer(id: "legacy", connection: connection)
+            let server = SavedServer(id: SavedServer.legacyID, connection: connection)
             initial = SavedConnections(servers: [server], activeID: server.id)
         } else {
             initial = SavedConnections(servers: [], activeID: nil)
+        }
+        let migratingLegacy = initial.servers.contains { $0.id == "legacy" }
+        for index in initial.servers.indices where initial.servers[index].id == "legacy" {
+            initial.servers[index].id = SavedServer.legacyID
+        }
+        if initial.activeID == "legacy" { initial.activeID = SavedServer.legacyID }
+        if migratingLegacy, let data = try? JSONEncoder().encode(initial) {
+            try? store.save(String(decoding: data, as: UTF8.self))
         }
         servers = initial.servers
         activeID = initial.activeID
@@ -132,6 +145,7 @@ public final class ServerConnections {
         model = candidate
         await candidate.loadProjects(resetCreation: false)
         showingServers = false
+        await notificationsChanged?()
     }
 
     public func rename(_ id: String, name: String) {
@@ -148,6 +162,7 @@ public final class ServerConnections {
         let remaining = servers.filter { $0.id != id }
         let next = remaining.first { models[$0.id]?.connected == true }
         guard save(remaining, activeID: removingActive ? next?.id : activeID) else { return }
+        serverRemoved?(server)
         models.removeValue(forKey: id)
         if removingActive {
             model = next.flatMap { models[$0.id] } ?? makeModel(SavedServer(id: "unconnected", connection: ""))
@@ -175,6 +190,28 @@ public final class ServerConnections {
         selectServer(serverID)
         guard activeID == serverID else { return false }
         model.open(sessionID)
+        return true
+    }
+
+    public func openNotification(_ route: NotificationRoute) async -> Bool {
+        guard servers.contains(where: { $0.id == route.serverID }) else {
+            failure = "This notification's server is no longer saved."
+            return false
+        }
+        await reconnect(route.serverID)
+        guard let candidate = models[route.serverID], candidate.connected else {
+            failure = "The notification's server is offline. Try again when it is reachable."
+            return false
+        }
+        await candidate.refreshSessions()
+        guard candidate.sessions.contains(where: { $0.id == route.sessionID }) else {
+            failure = "This session is unavailable or has been deleted."
+            return false
+        }
+        guard openSession(serverID: route.serverID, sessionID: route.sessionID) else { return false }
+        showingServers = false
+        notificationRevision += 1
+        await candidate.refreshOpenView()
         return true
     }
 
@@ -221,6 +258,7 @@ public final class ServerConnections {
             guard let candidate = models[id] else { return }
             if candidate.connected {
                 await candidate.refreshSessions()
+                await notificationsChanged?()
             } else {
                 await reconnect(id)
             }

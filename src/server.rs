@@ -55,6 +55,7 @@ mod https;
 pub mod local;
 pub mod login;
 mod proof;
+mod push;
 
 use crate::config::Config;
 use crate::events::{now, open_enhance, Decision, EventKind};
@@ -231,6 +232,7 @@ pub struct Server {
     listen: Option<Listen>,
     https: Arc<https::Runtime>,
     config_edit: Arc<std::sync::Mutex<()>>,
+    push: Arc<push::Push>,
     logins: Arc<login::Logins>,
 }
 
@@ -248,6 +250,7 @@ impl Server {
         let server = Server {
             root: root.to_path_buf(),
             runner,
+            push: Arc::new(push::Push::new(root, config.push.as_ref()).map_err(ServerError::Tls)?),
             listen,
             https: Arc::new(https::Runtime::default()),
             config_edit: Arc::new(std::sync::Mutex::new(())),
@@ -321,6 +324,7 @@ impl Server {
             println!("Kyoto Agent listening on https://{addr}");
         }
         let _ = std::io::stdout().flush();
+        let _push = self.push.start();
         let router = self.router();
         let https_router = https::authenticated(router.clone(), &self.root)?;
         let (sender, mut incoming) = tokio::sync::mpsc::channel(1);
@@ -359,12 +363,17 @@ impl Server {
     fn router(&self) -> Router {
         let state = AppState {
             root: self.root.clone(),
+            push: Arc::clone(&self.push),
             runner: Arc::clone(&self.runner),
             config_edit: Arc::clone(&self.config_edit),
             logins: Arc::clone(&self.logins),
             https: Arc::clone(&self.https),
         };
         Router::new()
+            .route(
+                "/v1/devices",
+                axum::routing::put(push::register).delete(push::unregister),
+            )
             .route("/v1/https", get(https::status).post(https::enable))
             .route("/v1/share", post(https::share))
             .route(
@@ -426,11 +435,13 @@ struct AppState {
     root: PathBuf,
     runner: Arc<Runner>,
     config_edit: Arc<std::sync::Mutex<()>>,
+    push: Arc<push::Push>,
     logins: Arc<login::Logins>,
     https: Arc<https::Runtime>,
 }
 
 /// A body the server could not use, with the status the client gets.
+#[derive(Debug)]
 struct ApiError {
     status: StatusCode,
     message: String,
