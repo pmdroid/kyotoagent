@@ -188,7 +188,8 @@ nonisolated public struct SessionSheets: Equatable, Sendable {
 
     public init(_ view: View) {
         todos = view.todos.map(TodoRow.init)
-        closeout = view.closeout.map(CloseoutRow.init)
+        let checks = view.closeout.map(CloseoutRow.init)
+        closeout = checks.contains(where: \.required) ? checks : []
         tasks = view.tasks.map(TaskLine.init)
         schedules = view.schedules.map(ScheduleRow.init)
         phase = view.phase

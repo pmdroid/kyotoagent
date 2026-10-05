@@ -5,6 +5,16 @@ import FoundationNetworking
 @testable import KyotoAgent
 
 final class SessionStateTests: XCTestCase {
+    func testCloseoutSectionAppearsOnlyWhenChecksAreRequired() throws {
+        var view = try JSONDecoder().decode(View.self, from: Data(#"{"revision":0,"status":"idle","cards":[],"todos":[],"tasks":[],"schedules":[],"closeout":[{"id":"tests","kind":"command","hint":"Run tests","status":"not_required","required":false}]}"#.utf8))
+        XCTAssertTrue(SessionSheets(view).closeout.isEmpty)
+        XCTAssertFalse(panesHaveRows(SessionSheets(view)))
+        view.closeout[0].required = true
+        view.closeout[0].status = .missing
+        XCTAssertEqual(SessionSheets(view).closeout.count, 1)
+        XCTAssertTrue(panesHaveRows(SessionSheets(view)))
+    }
+
     func testFixtureRowsMapIntoTheSheets() throws {
         let sheets = SessionSheets(try fixture(View.self, "view.json"))
         let todo = try XCTUnwrap(sheets.todos.first)

@@ -74,19 +74,19 @@ struct PaneColumn: SwiftUI.View {
                 VStack(alignment: .leading, spacing: 6) {
                     if let sheets = model.sheets {
                         if !sheets.todos.isEmpty {
-                            columnHeader("Todos")
+                            columnHeader("Todos", id: "todos")
                             todoLinks
                         }
                         if !sheets.closeout.isEmpty {
-                            columnHeader("Closeout")
+                            columnHeader("Closeout checks are required", id: "closeout")
                             closeoutLinks
                         }
                         if !sheets.tasks.isEmpty {
-                            columnHeader("Tasks")
+                            columnHeader("Tasks", id: "tasks")
                             taskLinks
                         }
                         if !sheets.schedules.isEmpty {
-                            columnHeader("Schedules")
+                            columnHeader("Schedules", id: "schedules")
                             scheduleRows
                         }
                     }
@@ -99,13 +99,13 @@ struct PaneColumn: SwiftUI.View {
         .accessibilityIdentifier("pane-column")
     }
 
-    private func columnHeader(_ title: String) -> some SwiftUI.View {
+    private func columnHeader(_ title: String, id: String) -> some SwiftUI.View {
         Text(title.uppercased())
             .font(.caption.weight(.bold))
             .foregroundStyle(Ink.faint)
             .padding(.top, 14)
             .padding(.horizontal, 4)
-            .accessibilityIdentifier("pane-" + title.lowercased())
+            .accessibilityIdentifier("pane-" + id)
     }
 }
 
@@ -121,6 +121,12 @@ struct DockPaneSheet: SwiftUI.View {
                     case .todos:
                         todoLinks
                     case .closeout:
+                        if !(model.sheets?.closeout.isEmpty ?? true) {
+                            Text("Closeout checks are required")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Ink.text)
+                                .accessibilityIdentifier("closeout-required")
+                        }
                         closeoutLinks
                     case .tasks:
                         taskLinks
