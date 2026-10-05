@@ -1864,7 +1864,9 @@ async fn imported_review_uses_a_fresh_read_only_session_and_retains_its_findings
     let log = fixture.log("91bc");
     assert!(log.contains("requires a different model"));
     assert!(log.contains("Cannot finish yet"));
-    assert!(!log.contains("\"text\":\"Too early\""));
+    assert!(!log
+        .lines()
+        .any(|line| line.contains("\"kind\":\"result\"") && line.contains("Too early")));
     let prompts = fixture.prompts();
     let review_prompt = prompts
         .iter()
