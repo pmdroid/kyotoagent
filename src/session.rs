@@ -114,6 +114,8 @@ pub struct SessionMeta {
     pub requested_workspace: Option<String>,
     #[serde(default, rename = "parentId", skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub closeout_reviewer: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,6 +176,7 @@ impl SessionMeta {
             title: None,
             requested_workspace: None,
             parent_id: None,
+            closeout_reviewer: false,
             description: None,
             isolation: None,
             goal: None,

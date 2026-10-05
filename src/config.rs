@@ -2438,17 +2438,18 @@ closeout = "fallback.yaml"
     }
 
     #[test]
-    fn external_project_policy_imports_resolve_beside_the_yaml() {
+    fn external_project_policy_imports_and_skills_resolve_beside_the_yaml() {
         let root =
             std::env::temp_dir().join(format!("kyotoagent-external-policy-{}", std::process::id()));
         let project = root.join("project");
         let shared = root.join("shared");
         fs::create_dir_all(&project).unwrap();
-        fs::create_dir_all(&shared).unwrap();
-        fs::write(shared.join("checks.yaml"), "specVersion: '0.1'\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: [echo, checked]\n    timeoutSeconds: 5\n").unwrap();
+        fs::create_dir_all(shared.join("skills/review")).unwrap();
+        fs::write(shared.join("skills/review/SKILL.md"), "Review changes").unwrap();
+        fs::write(shared.join("review.yaml"), "specVersion: '0.1'\nitems:\n  - id: review\n    kind: review\n    gate: beforePR\n    skill: skills/review/SKILL.md\n    independence:\n      differentSession: true\n      differentModel: true\n    failOn: P1\n").unwrap();
         fs::write(
             shared.join("closeout.yaml"),
-            "specVersion: '0.1'\nimports:\n  - path: checks.yaml\n    as: quality\n",
+            "specVersion: '0.1'\nimports:\n  - path: review.yaml\n    as: quality\n",
         )
         .unwrap();
         let config = Config::from_toml(&format!(
@@ -2458,7 +2459,11 @@ closeout = "fallback.yaml"
         ))
         .unwrap();
         let file = config.closeout_for(&project, None).unwrap().unwrap();
-        assert_eq!(file.items[0].id, "quality/test");
+        assert_eq!(file.items[0].id, "quality/review");
+        assert_eq!(
+            Path::new(&file.reviews["quality/review"].skill),
+            shared.join("skills/review/SKILL.md")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

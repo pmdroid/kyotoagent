@@ -14,6 +14,25 @@ const KILL_BUDGET: Duration = Duration::from_secs(5);
 
 impl Runner {
     pub async fn spawn_subagent(&self, session_id: &str, args: &Value) -> String {
+        self.spawn_child(session_id, args, None).await
+    }
+
+    pub(super) async fn spawn_closeout_reviewer(
+        &self,
+        session_id: &str,
+        args: &Value,
+        skill_directory: &Path,
+    ) -> String {
+        self.spawn_child(session_id, args, Some(skill_directory))
+            .await
+    }
+
+    async fn spawn_child(
+        &self,
+        session_id: &str,
+        args: &Value,
+        skill_directory: Option<&Path>,
+    ) -> String {
         let input = match subagent::parse_spawn(args) {
             Ok(input) => input,
             Err(error) => return error,
@@ -51,6 +70,12 @@ impl Runner {
         let model = input.model.clone().unwrap_or_else(|| parent.model.clone());
         let mut meta = SessionMeta::new(&id, &workspace, &model, &now());
         meta.parent_id = Some(parent.id.clone());
+        meta.closeout_reviewer = skill_directory.is_some();
+        if let Some(directory) = skill_directory {
+            meta.allow
+                .outside_read_paths
+                .push(directory.to_string_lossy().into_owned());
+        }
         meta.description = Some(input.description.clone());
         meta.title = Some(input.description.clone());
         meta.isolation = Some(input.isolation.label().to_string());
@@ -89,7 +114,11 @@ impl Runner {
             }
             return error.to_string();
         }
-        self.track_child(&id, &parent.id, input.background);
+        self.track_child(
+            &id,
+            &parent.id,
+            input.background && skill_directory.is_none(),
+        );
         let Some(child_state) = self.session_state(&id) else {
             self.forget_child(&id);
             return "no such session".to_string();
@@ -442,7 +471,7 @@ impl Runner {
         }
     }
 
-    fn session_state(&self, id: &str) -> Option<Arc<SessionState>> {
+    pub(super) fn session_state(&self, id: &str) -> Option<Arc<SessionState>> {
         self.sessions
             .lock()
             .expect("the session map is not poisoned")

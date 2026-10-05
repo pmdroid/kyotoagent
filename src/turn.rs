@@ -255,11 +255,12 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "run_closeout",
-            "Run a closeout check by its id and retain its transcript with the check. This does not publish an artifact. To share useful evidence, explicitly call attach_artifact with the returned file_id.",
+            "Run a closeout check by its id and retain its transcript with the check. Review checks start a fresh reviewer session following the configured skill. Set model to a different available model when required by independence. This does not publish an artifact. To share useful evidence, explicitly call attach_artifact with the returned file_id.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "id": { "type": "string" },
+                    "model": { "type": "string" },
                 },
                 "required": ["id"],
             }),
@@ -376,6 +377,20 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         tools.retain(|tool| tool.name != "ask" && tool.name != "spawn_subagent");
     }
     tools
+}
+
+pub(super) fn reviewer_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "read_file"
+            | "grep"
+            | "list_dir"
+            | "web_fetch"
+            | "web_search"
+            | "use_skill"
+            | "todo"
+            | "finish"
+    )
 }
 
 /// Something the runner could not do.

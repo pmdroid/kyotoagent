@@ -1,12 +1,14 @@
 use super::*;
 
 pub(super) async fn run_closeout(
-    tools: &Tools,
+    turn: &Turn,
     id: &str,
+    reviewer_model: Option<&str>,
     turn_id: &str,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     closeout: &mut CloseoutState,
 ) -> Result<String, TurnError> {
+    let tools = &turn.tools;
     refresh_closeout(tools, turn_id, closeout, &[])?;
     let Some(file) = closeout.file.as_ref() else {
         return Ok(format!("unknown closeout id: {id}"));
@@ -30,21 +32,23 @@ pub(super) async fn run_closeout(
         if closeout.item_mut(&step).passed {
             continue;
         }
-        let result = execute_closeout(tools, &step, turn_id, cancel, closeout).await?;
+        let result = execute_closeout(turn, &step, None, turn_id, cancel, closeout).await?;
         if !closeout.item_mut(&step).passed || *cancel.borrow() {
             return Ok(result);
         }
     }
-    execute_closeout(tools, id, turn_id, cancel, closeout).await
+    execute_closeout(turn, id, reviewer_model, turn_id, cancel, closeout).await
 }
 
 async fn execute_closeout(
-    tools: &Tools,
+    turn: &Turn,
     id: &str,
+    reviewer_model: Option<&str>,
     turn_id: &str,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     closeout: &mut CloseoutState,
 ) -> Result<String, TurnError> {
+    let tools = &turn.tools;
     refresh_closeout(tools, turn_id, closeout, &[])?;
     let (item, max_failures) = match closeout.file.as_ref().and_then(|file| {
         file.setup
@@ -79,7 +83,22 @@ async fn execute_closeout(
         ));
     }
 
-    let (argv, timeout) = closeout.file.as_ref().unwrap().execution(&item);
+    let review = closeout.file.as_ref().unwrap().reviews.get(id).cloned();
+    let model = reviewer_model.unwrap_or(&turn.config.model);
+    if review.as_ref().is_some_and(|review| {
+        review.independence.different_model
+            && (model.is_empty() || turn.config.model.is_empty() || model == turn.config.model)
+    }) {
+        return Ok(format!("Review {id} requires a different model. Call run_closeout with model set to a different available model."));
+    }
+    let (argv, timeout) = if let Some(review) = &review {
+        (
+            vec!["review".into(), review.skill.clone(), model.into()],
+            None,
+        )
+    } else {
+        closeout.file.as_ref().unwrap().execution(&item)
+    };
     let allowed = {
         let tools = tools.clone();
         let turn_id = turn_id.to_string();
@@ -132,20 +151,33 @@ async fn execute_closeout(
         })
     };
     let head = git_output(tools.workspace(), &["rev-parse", "HEAD"]);
-    let mut output = match tools
-        .execute_streaming(&argv, timeout, cancel, Some(sink))
-        .await
-    {
-        Ok(output) => output,
-        Err(error) => RunOutput {
-            argv: argv.clone(),
-            exit: None,
-            stdout: String::new(),
-            stderr: error.to_string(),
-            timed_out: false,
-            truncated: false,
-            denied: false,
-        },
+    let mut output = if let Some(review) = &review {
+        review_output(
+            turn,
+            review,
+            model,
+            &argv,
+            cancel,
+            sink,
+            &closeout.written_paths,
+        )
+        .await?
+    } else {
+        match tools
+            .execute_streaming(&argv, timeout, cancel, Some(sink))
+            .await
+        {
+            Ok(output) => output,
+            Err(error) => RunOutput {
+                argv: argv.clone(),
+                exit: None,
+                stdout: String::new(),
+                stderr: error.to_string(),
+                timed_out: false,
+                truncated: false,
+                denied: false,
+            },
+        }
     };
     if let Some(error) = output_error.lock().unwrap().take() {
         return Err(error.into());
@@ -234,6 +266,109 @@ async fn execute_closeout(
         file.id
     ));
     Ok(text)
+}
+
+async fn review_output(
+    turn: &Turn,
+    review: &crate::closeout::CloseoutReview,
+    model: &str,
+    argv: &[String],
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    sink: crate::tools::OutputSink,
+    paths: &[String],
+) -> Result<RunOutput, TurnError> {
+    let candidate = turn.session.meta()?;
+    let workspace = turn.tools.workspace();
+    let before = crate::closeout::workspace_snapshot(workspace);
+    let skill_path = workspace.join(&review.skill);
+    let skill = std::fs::read_to_string(&skill_path).map_err(|source| ToolError::Io {
+        path: skill_path,
+        source,
+    })?;
+    let changed = paths.join("\n");
+    let diff = git_output(workspace, &["diff", "HEAD"]);
+    let prompt = format!("Review the current workspace changes. Follow this skill at {}:\n{skill}\nChanged paths:\n{changed}\nThe host supplied the tracked git diff below. Inspect the listed files with read_file, including untracked files. If git is unavailable, review their current contents. Do not modify files or run commands. Finish with text containing only a JSON array of findings. Each finding must contain severity (P0, P1, P2, P3), location, explanation, and evidence. An empty array means no findings. Do not claim a pass; the host evaluates findings.\nTracked git diff:\n{diff}", review.skill);
+
+    let report = turn
+        .runner
+        .spawn_closeout_reviewer(
+            &candidate.id,
+            &serde_json::json!({
+                "prompt": prompt, "description": format!("Closeout review {}", review.skill),
+                "model": model, "run_in_background": true,
+            }),
+            Path::new(&review.skill).parent().unwrap(),
+        )
+        .await;
+    let report: Value = serde_json::from_str(&report).unwrap_or(Value::String(report));
+    let mut output = RunOutput {
+        argv: argv.to_vec(),
+        exit: Some(1),
+        stdout: String::new(),
+        stderr: String::new(),
+        timed_out: false,
+        truncated: false,
+        denied: false,
+    };
+    let Some(id) = report.get("id").and_then(Value::as_str) else {
+        output.stderr = format!("Reviewer could not start: {report}");
+        sink(true, output.stderr.as_bytes());
+        return Ok(output);
+    };
+    sink(
+        false,
+        format!("Reviewer session: {id}\nModel: {model}\n").as_bytes(),
+    );
+    loop {
+        if *cancel.borrow() {
+            turn.runner.kill_task(&candidate.id, id).await;
+            output.stderr = "Review cancelled".into();
+            return Ok(output);
+        }
+        let Some(state) = turn.runner.session_state(id) else {
+            output.stderr = "Reviewer session is missing".into();
+            return Ok(output);
+        };
+        let snapshot = crate::subagent::snapshot(&state.session);
+        if snapshot.state == "idle" {
+            let reviewer = state.session.meta()?;
+            output.stdout = format!(
+                "Reviewer session: {id}\nModel: {}\nFindings: {}",
+                reviewer.model, snapshot.result
+            );
+            match serde_json::from_str::<Vec<crate::closeout::ReviewFinding>>(&snapshot.result) {
+                Ok(findings) => {
+                    if review.accepts(
+                        &candidate.id,
+                        &turn.config.model,
+                        &reviewer.id,
+                        &reviewer.model,
+                        &findings,
+                    ) && before == crate::closeout::workspace_snapshot(workspace)
+                    {
+                        output.exit = Some(0);
+                    } else {
+                        output.stderr = "Review failed its severity, independence, or unchanged workspace requirement".into();
+                    }
+                }
+                Err(error) => output.stderr = format!("Reviewer findings are invalid: {error}"),
+            }
+            break;
+        }
+        if snapshot.state == "cancelled" {
+            output.stderr = "Reviewer cancelled".into();
+            break;
+        }
+        tokio::select! {
+            _ = cancel.changed() => {},
+            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {},
+        }
+    }
+    sink(false, output.stdout.as_bytes());
+    if !output.stderr.is_empty() {
+        sink(true, output.stderr.as_bytes());
+    }
+    Ok(output)
 }
 
 pub(super) fn refresh_closeout(

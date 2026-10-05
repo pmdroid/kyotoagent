@@ -209,6 +209,9 @@ fn closeout_block(closeout: Option<&CloseoutFile>, child: bool) -> String {
     suffix.push_str(
         "Call `run_closeout` with the id to run a check. It runs matching setup steps in order before checks and stops when setup fails. Skip checks that are not required. Checks are required only when workspace files change during this turn, including changes made by commands or workers. Read-only turns and changes outside the workspace do not require checks. The turn cannot finish until every required check has passed. An item with paths is required only when a changed workspace path matches one of them.\n",
     );
+    if !file.reviews.is_empty() {
+        suffix.push_str("Review checks launch an independent reviewer using the pinned skill. Pass model to run_closeout when the review requires a different model. The host evaluates the reviewer findings against failOn.\n");
+    }
     if child {
         suffix.push_str(
             "If a required check fails, fix it and call run_closeout again. If you cannot fix a required check, call finish with the error and what you tried.\n\n",
@@ -540,6 +543,7 @@ mod tests {
     fn the_prompt_lists_each_pinned_closeout_id_and_hint() {
         let file = crate::closeout::CloseoutFile {
             imports: Vec::new(),
+            reviews: std::collections::HashMap::new(),
             setup: Vec::new(),
             executions: Default::default(),
             items: vec![
@@ -717,6 +721,7 @@ mod tests {
     fn the_subagent_prompt_is_the_short_identity() {
         let file = crate::closeout::CloseoutFile {
             imports: Vec::new(),
+            reviews: std::collections::HashMap::new(),
             setup: Vec::new(),
             executions: Default::default(),
             items: vec![crate::closeout::CloseoutItem {
