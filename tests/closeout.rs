@@ -1879,3 +1879,37 @@ async fn imported_review_uses_a_fresh_read_only_session_and_retains_its_findings
         .all(|tool| tool["function"]["name"] != "write_file"));
     assert!(log.contains("quality_review-attempt-1.txt"));
 }
+
+#[tokio::test]
+async fn stop_hook_changes_require_closeout_before_finish() {
+    let fixture = Fixture::new(
+        "stop-hook-write",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"Too early"}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "run_closeout",
+                serde_json::json!({"id":"test"}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"Verified"}),
+            )])),
+        ],
+    );
+    let workspace = fixture.add_session("91bc");
+    fixture.write_closeout(&workspace, "true");
+    fs::create_dir_all(workspace.join(".agents")).unwrap();
+    fs::write(workspace.join(".agents/hooks.json"), serde_json::json!({"hooks":{"Stop":[{"matcher":"", "hooks":[{"type":"command", "command":"printf changed > hook-output.txt"}]}]}}).to_string()).unwrap();
+    fixture.ask("91bc", "Finish after the hook");
+    fixture.allow_closeout("91bc").await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert_eq!(fixture.closeout_runs("91bc"), 1);
+    assert!(fixture.log("91bc").contains("Cannot finish yet"));
+    assert_eq!(
+        fs::read_to_string(workspace.join("hook-output.txt")).unwrap(),
+        "changed"
+    );
+}
