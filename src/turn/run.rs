@@ -487,6 +487,10 @@ async fn completion_blocker(
     if reason.is_some() {
         return Ok(reason);
     }
+    refresh_closeout(&turn.tools, &turn.turn_id, closeout, &[])?;
+    if let Some(reason) = closeout.cannot_finish() {
+        return Ok(Some(reason));
+    }
     goal::verify_goal(turn, text, cancel, closeout).await
 }
 
