@@ -212,6 +212,9 @@ fn closeout_block(closeout: Option<&CloseoutFile>, child: bool) -> String {
     if !file.reviews.is_empty() {
         suffix.push_str("Review checks launch an independent reviewer using the pinned skill. Pass model to run_closeout when the review requires a different model. The host evaluates the reviewer findings against failOn.\n");
     }
+    if let Some(retry) = &file.retry {
+        suffix.push_str(&format!("Each requirement allows at most {} failed attempts in {:?} scope. Exhaustion blocks acceptance. Stop retrying and ask the operator for help; a new commit or agent session cannot clear task failures.\n", retry.max_failed_attempts_per_item, retry.scope));
+    }
     if child {
         suffix.push_str(
             "If a required check fails, fix it and call run_closeout again. If you cannot fix a required check, call finish with the error and what you tried.\n\n",
@@ -563,6 +566,9 @@ mod tests {
                 },
             ],
             max_failures: 3,
+            retry: None,
+            policy_digest: String::new(),
+            policy_files: Default::default(),
         };
         let prompt = system_prompt("/w", &[], Some(&file), "", None);
         assert!(prompt.contains("test"), "the id: {prompt}");
@@ -732,6 +738,9 @@ mod tests {
                 paths: vec![],
             }],
             max_failures: 3,
+            retry: None,
+            policy_digest: String::new(),
+            policy_files: Default::default(),
         };
         let skills = vec![SkillEntry {
             name: "review".into(),

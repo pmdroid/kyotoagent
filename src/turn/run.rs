@@ -478,6 +478,9 @@ async fn completion_blocker(
 ) -> Result<Option<String>, TurnError> {
     let workspace = turn.tools.workspace();
     refresh_closeout(&turn.tools, &turn.turn_id, closeout, &[])?;
+    if let Some(error) = sync_retry(turn, closeout, cancel).await {
+        return Ok(Some(error));
+    }
     if let Some(reason) = closeout.cannot_finish() {
         return Ok(Some(reason));
     }
@@ -496,6 +499,9 @@ async fn completion_blocker(
         return Ok(reason);
     }
     refresh_closeout(&turn.tools, &turn.turn_id, closeout, &[])?;
+    if let Some(error) = sync_retry(turn, closeout, cancel).await {
+        return Ok(Some(error));
+    }
     if let Some(reason) = closeout.cannot_finish() {
         return Ok(Some(reason));
     }

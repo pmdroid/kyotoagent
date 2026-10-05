@@ -611,6 +611,8 @@ fn refuse_root() -> Result<(), ServerError> {
 #[derive(Deserialize)]
 struct CreateSessionRequest {
     workspace: String,
+    #[serde(default, rename = "taskId")]
+    task_id: Option<String>,
     #[serde(default)]
     worktree: bool,
     #[serde(default)]
@@ -743,6 +745,15 @@ async fn create_session(
             return Err(ApiError::bad_request(format!("unknown profile: {name}")));
         }
     }
+    if body
+        .task_id
+        .as_deref()
+        .is_some_and(|id| id.trim().is_empty() || id.len() > 256)
+    {
+        return Err(ApiError::bad_request(
+            "taskId must be nonblank and at most 256 bytes",
+        ));
+    }
     let id = new_session_id(&state.root);
     let requested = workspace.clone();
     let workspace = if body.worktree {
@@ -753,6 +764,7 @@ async fn create_session(
     let session = Session::at(&session_dir(&state.root, &id));
     let model = state.runner.model();
     let mut meta = SessionMeta::new(&id, &workspace, &model, &now());
+    meta.task_id = body.task_id;
     let requested_text = requested.display().to_string();
     let workspace_text = workspace.display().to_string();
     meta.requested_workspace = Some(requested_text.clone());

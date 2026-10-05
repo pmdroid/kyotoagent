@@ -100,7 +100,11 @@ enum Command {
         listen: Option<String>,
     },
     /// Create a session for the current directory.
-    New { repo: Option<String> },
+    New {
+        repo: Option<String>,
+        #[arg(long)]
+        task: Option<String>,
+    },
     /// List the sessions, one plain-text row each.
     Sessions,
     #[command(
@@ -232,7 +236,7 @@ async fn run(command: Option<Command>, yolo: bool, url: Option<String>) -> Resul
         None => tui::attach(None, yolo, url).await,
         Some(Command::Attach { id }) => tui::attach(Some(id), yolo, url).await,
         Some(Command::Serve { listen }) => serve(listen).await,
-        Some(Command::New { repo }) => new_session(repo, url).await,
+        Some(Command::New { repo, task }) => new_session(repo, task, url).await,
         Some(Command::Sessions) => list_sessions(url).await,
         Some(Command::Repos) => list_repos(url).await,
         Some(Command::Log { id }) => log(id, url).await,
@@ -494,13 +498,18 @@ fn current_workspace() -> Result<String, String> {
     Ok(workspace.display().to_string())
 }
 
-async fn new_session(repo: Option<String>, url: Option<String>) -> Result<(), String> {
+async fn new_session(
+    repo: Option<String>,
+    task: Option<String>,
+    url: Option<String>,
+) -> Result<(), String> {
     let client = api_client(url).await?;
     let workspace = new_workspace(&client, repo.as_deref()).await?;
     let worktree = ask_worktree()?;
     let body = serde_json::json!({
         "workspace": workspace,
-        "worktree": worktree
+        "worktree": worktree,
+        "taskId": task
     });
     let (status, response) = client
         .request("POST", "/v1/sessions", Some(&body.to_string()))

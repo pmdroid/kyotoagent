@@ -28,6 +28,17 @@ pub(super) async fn run_closeout(
         .filter(|step| closeout.is_required(step))
         .map(|step| step.id.clone())
         .collect();
+    if file.retry.is_some()
+        && !file
+            .setup
+            .iter()
+            .chain(&file.items)
+            .any(|item| item.id == id && closeout.is_required(item))
+    {
+        return Ok(format!(
+            "Check {id} is skipped: no changed path matches. It will not run."
+        ));
+    }
     for step in setup {
         if closeout.item_mut(&step).passed {
             continue;
@@ -61,7 +72,44 @@ async fn execute_closeout(
         None => return Ok(format!("unknown closeout id: {id}")),
     };
 
-    if closeout.item_mut(id).failures >= max_failures {
+    let retry = closeout.file.as_ref().unwrap().retry.clone();
+    let mut ledger = if let Some(policy) = &retry {
+        let (directory, identity) = match retry_identity(turn, closeout, id) {
+            Ok(context) => context,
+            Err(error) => return Ok(error),
+        };
+        let ledger = match crate::closeout::RetryLedger::lock(&directory, cancel).await {
+            Ok(ledger) => ledger,
+            Err(error) => return Ok(format!("Closeout is blocked: {error}")),
+        };
+        closeout.item_mut(id).failures = ledger.failures(&identity, policy.scope);
+        Some((ledger, identity))
+    } else {
+        None
+    };
+    if retry.is_some() && closeout.item_mut(id).failures >= max_failures {
+        drop(ledger);
+        let gate = tools.gate().clone();
+        let turn_id = turn_id.to_string();
+        let question = format!("Check {id} is exhausted after {max_failures} failed attempts. Closeout is blocked. Ask the operator for help; retrying cannot accept this work.");
+        closeout.record_run(crate::events::ProofItem {
+            id: id.into(),
+            kind: item.kind.label().into(),
+            outcome: "exhausted".into(),
+            argv: Vec::new(),
+            exit: None,
+            tail: question.clone(),
+        });
+        tokio::task::spawn_blocking(move || {
+            gate.ask_question(&turn_id, &question, &["stop".into()])
+        })
+        .await??;
+        closeout.stop = Some(id.into());
+        return Ok(format!(
+            "Check {id} is exhausted. Closeout remains blocked."
+        ));
+    }
+    if retry.is_none() && closeout.item_mut(id).failures >= max_failures {
         let gate = tools.gate().clone();
         let turn_id = turn_id.to_string();
         let question = format!("Check {id} used all {max_failures} failed attempts.");
@@ -116,7 +164,14 @@ async fn execute_closeout(
         return Ok("Not allowed, so the check did not run.".to_string());
     }
 
-    let attempt = closeout.item_mut(id).attempts + 1;
+    let attempt = if let Some((ledger, identity)) = &mut ledger {
+        match ledger.start(identity.clone()) {
+            Ok(attempt) => attempt,
+            Err(error) => return Ok(format!("Closeout is blocked: {error}")),
+        }
+    } else {
+        closeout.item_mut(id).attempts + 1
+    };
     append_with_body(
         tools.session(),
         turn_id,
@@ -151,8 +206,8 @@ async fn execute_closeout(
         })
     };
     let head = git_output(tools.workspace(), &["rev-parse", "HEAD"]);
-    let mut output = if let Some(review) = &review {
-        review_output(
+    let (mut output, review_state) = if let Some(review) = &review {
+        let (output, state) = review_output(
             turn,
             review,
             model,
@@ -161,23 +216,27 @@ async fn execute_closeout(
             sink,
             &closeout.written_paths,
         )
-        .await?
+        .await?;
+        (output, Some(state))
     } else {
-        match tools
-            .execute_streaming(&argv, timeout, cancel, Some(sink))
-            .await
-        {
-            Ok(output) => output,
-            Err(error) => RunOutput {
-                argv: argv.clone(),
-                exit: None,
-                stdout: String::new(),
-                stderr: error.to_string(),
-                timed_out: false,
-                truncated: false,
-                denied: false,
+        (
+            match tools
+                .execute_streaming(&argv, timeout, cancel, Some(sink))
+                .await
+            {
+                Ok(output) => output,
+                Err(error) => RunOutput {
+                    argv: argv.clone(),
+                    exit: None,
+                    stdout: String::new(),
+                    stderr: error.to_string(),
+                    timed_out: false,
+                    truncated: false,
+                    denied: false,
+                },
             },
-        }
+            None,
+        )
     };
     if let Some(error) = output_error.lock().unwrap().take() {
         return Err(error.into());
@@ -191,12 +250,29 @@ async fn execute_closeout(
     refresh_closeout(tools, turn_id, closeout, &[])?;
     let exit = output.exit.unwrap_or(-1);
     let tail = crate::closeout::tail_of(&output);
+    let passed = output.exit == Some(0) && !output.timed_out && !head_changed && !*cancel.borrow();
+    let evaluated = if *cancel.borrow() {
+        "invalid"
+    } else if head_changed && review.is_none() {
+        "failed"
+    } else if head_changed {
+        "stale"
+    } else if let Some(state) = review_state {
+        state
+    } else if passed {
+        "passed"
+    } else {
+        "failed"
+    };
+    if let Some((ledger, _)) = &mut ledger {
+        if let Err(error) = ledger.finish(evaluated) {
+            closeout.item_mut(id).passed = false;
+            return Ok(format!("Closeout is blocked: {error}"));
+        }
+    }
     let (attempt, passed, unchanged) = {
         let state = closeout.item_mut(id);
-        state.attempts += 1;
-        let attempt = state.attempts;
-        let passed =
-            output.exit == Some(0) && !output.timed_out && !head_changed && !*cancel.borrow();
+        state.attempts = attempt;
         let unchanged = !passed
             && state
                 .last_failure
@@ -206,7 +282,9 @@ async fn execute_closeout(
         if passed {
             state.last_failure = None;
         } else {
-            state.failures += 1;
+            if retry.is_none() || evaluated == "failed" {
+                state.failures += 1;
+            }
             state.last_failure = Some((exit, tail));
         }
         (attempt, passed, unchanged)
@@ -246,6 +324,9 @@ async fn execute_closeout(
         crate::closeout::tail_of(&output),
     );
     proof.kind = item.kind.label().to_string();
+    if retry.is_some() {
+        proof.outcome = evaluated.into();
+    }
     closeout.record_run(proof);
 
     let mut text = if passed {
@@ -276,7 +357,7 @@ async fn review_output(
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     sink: crate::tools::OutputSink,
     paths: &[String],
-) -> Result<RunOutput, TurnError> {
+) -> Result<(RunOutput, &'static str), TurnError> {
     let candidate = turn.session.meta()?;
     let workspace = turn.tools.workspace();
     let before = crate::closeout::workspace_snapshot(workspace);
@@ -313,21 +394,22 @@ async fn review_output(
     let Some(id) = report.get("id").and_then(Value::as_str) else {
         output.stderr = format!("Reviewer could not start: {report}");
         sink(true, output.stderr.as_bytes());
-        return Ok(output);
+        return Ok((output, "invalid"));
     };
     sink(
         false,
         format!("Reviewer session: {id}\nModel: {model}\n").as_bytes(),
     );
+    let mut evaluated = "invalid";
     loop {
         if *cancel.borrow() {
             turn.runner.kill_task(&candidate.id, id).await;
             output.stderr = "Review cancelled".into();
-            return Ok(output);
+            return Ok((output, "invalid"));
         }
         let Some(state) = turn.runner.session_state(id) else {
             output.stderr = "Reviewer session is missing".into();
-            return Ok(output);
+            return Ok((output, "invalid"));
         };
         let snapshot = crate::subagent::snapshot(&state.session);
         if snapshot.state == "idle" {
@@ -338,17 +420,34 @@ async fn review_output(
             );
             match serde_json::from_str::<Vec<crate::closeout::ReviewFinding>>(&snapshot.result) {
                 Ok(findings) => {
-                    if review.accepts(
+                    evaluated = if findings.iter().any(|finding| {
+                        finding.location.is_empty()
+                            || finding.explanation.is_empty()
+                            || finding.evidence.is_empty()
+                    }) {
+                        "invalid"
+                    } else if !review.accepts(
                         &candidate.id,
                         &turn.config.model,
                         &reviewer.id,
                         &reviewer.model,
-                        &findings,
-                    ) && before == crate::closeout::workspace_snapshot(workspace)
+                        &[],
+                    ) {
+                        "independence"
+                    } else if before != crate::closeout::workspace_snapshot(workspace) {
+                        "stale"
+                    } else if findings
+                        .iter()
+                        .any(|finding| finding.severity <= review.fail_on)
                     {
+                        "failed"
+                    } else {
+                        "passed"
+                    };
+                    if evaluated == "passed" {
                         output.exit = Some(0);
                     } else {
-                        output.stderr = "Review failed its severity, independence, or unchanged workspace requirement".into();
+                        output.stderr = format!("Review evaluated as {evaluated}");
                     }
                 }
                 Err(error) => output.stderr = format!("Reviewer findings are invalid: {error}"),
@@ -368,7 +467,122 @@ async fn review_output(
     if !output.stderr.is_empty() {
         sink(true, output.stderr.as_bytes());
     }
-    Ok(output)
+    Ok((output, evaluated))
+}
+
+fn retry_identity(
+    turn: &Turn,
+    closeout: &CloseoutState,
+    id: &str,
+) -> Result<(PathBuf, crate::closeout::AttemptIdentity), String> {
+    let file = closeout.file.as_ref().ok_or("Closeout policy is missing")?;
+    let policy = file
+        .retry
+        .as_ref()
+        .ok_or("Closeout retry policy is missing")?;
+    let meta = turn.session.meta().map_err(|error| error.to_string())?;
+    let task = if let Some(goal) = meta.goal.as_ref().filter(|_| turn.goal_run) {
+        if goal.id.is_empty() {
+            let id = crate::session::new_task_id();
+            turn.session
+                .update(|meta| {
+                    if let Some(goal) = &mut meta.goal {
+                        goal.id = id.clone();
+                    }
+                    true
+                })
+                .map_err(|error| error.to_string())?;
+            id
+        } else {
+            goal.id.clone()
+        }
+    } else {
+        meta.task_id.unwrap_or_default()
+    };
+    if policy.scope == crate::closeout::RetryScope::Task
+        && (task.trim().is_empty() || task.len() > 256)
+    {
+        return Err("Closeout is blocked: task retry scope requires a stable task ID. Create a session with taskId or use kyoto new --task <id>. Keep the same ID across sessions and commits.".into());
+    }
+    let workspace = turn.tools.workspace();
+    let head = git_output(workspace, &["rev-parse", "HEAD"])
+        .trim()
+        .to_string();
+    if policy.scope == crate::closeout::RetryScope::Candidate
+        && (head.len() != 40 && head.len() != 64
+            || !head.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(
+            "Closeout is blocked: candidate retry scope requires a resolved HEAD commit".into(),
+        );
+    }
+    let base = git_output(workspace, &["merge-base", "HEAD", "origin/main"])
+        .trim()
+        .to_string();
+    let common = git_output(workspace, &["rev-parse", "--git-common-dir"]);
+    let repository = if common.trim().is_empty() {
+        workspace.to_path_buf()
+    } else {
+        workspace
+            .join(common.trim())
+            .canonicalize()
+            .map_err(|error| error.to_string())?
+    };
+    let digest = ring::digest::digest(
+        &ring::digest::SHA256,
+        repository.as_os_str().as_encoded_bytes(),
+    );
+    let key: String = digest
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let root = turn
+        .root
+        .as_deref()
+        .unwrap_or(turn.session.dir().parent().unwrap());
+    Ok((
+        root.join("closeout").join(key),
+        crate::closeout::AttemptIdentity {
+            item_id: id.into(),
+            policy_digest: file.policy_digest.clone(),
+            base: if base.is_empty() { head.clone() } else { base },
+            head,
+            task,
+        },
+    ))
+}
+
+pub(super) async fn sync_retry(
+    turn: &Turn,
+    closeout: &mut CloseoutState,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+) -> Option<String> {
+    let file = closeout.file.as_ref()?;
+    let policy = file.retry.clone()?;
+    let ids: Vec<_> = file
+        .setup
+        .iter()
+        .chain(&file.items)
+        .filter(|item| closeout.is_required(item))
+        .map(|item| item.id.clone())
+        .collect();
+    for id in ids {
+        let (directory, identity) = match retry_identity(turn, closeout, &id) {
+            Ok(context) => context,
+            Err(error) => return Some(error),
+        };
+        let ledger = match crate::closeout::RetryLedger::lock(&directory, cancel).await {
+            Ok(ledger) => ledger,
+            Err(error) => return Some(format!("Closeout is blocked: {error}")),
+        };
+        let state = closeout.item_mut(&id);
+        state.failures = ledger.failures(&identity, policy.scope);
+        if state.failures >= policy.max_failed_attempts_per_item {
+            state.passed = false;
+        }
+    }
+    None
 }
 
 pub(super) fn refresh_closeout(
@@ -398,16 +612,21 @@ pub(super) fn refresh_closeout(
     Ok(())
 }
 
-pub(super) fn guard_pull_request(
-    tools: &Tools,
+pub(super) async fn guard_pull_request(
+    turn: &Turn,
     turn_id: &str,
     closeout: &mut CloseoutState,
     argv: &[String],
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<Option<String>, TurnError> {
+    let tools = &turn.tools;
     if !Tools::is_gh_pr_create(argv) {
         return Ok(None);
     }
     refresh_closeout(tools, turn_id, closeout, &[])?;
+    if let Some(error) = sync_retry(turn, closeout, cancel).await {
+        return Ok(Some(format!("Cannot open a pull request. {error}")));
+    }
     Ok(closeout
         .required_blocker()
         .map(|reason| format!("Cannot open a pull request. {reason}")))
