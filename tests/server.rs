@@ -2975,6 +2975,70 @@ async fn delete_worktree_is_409_unless_isolation_is_worktree() {
 }
 
 #[tokio::test]
+async fn deleting_a_shared_child_keeps_the_parent_worktree() {
+    let fixture = Fixture::new("shared-child-delete", Vec::new()).await;
+    let repo = fixture.root.join("repo");
+    git_repo(&repo);
+    let body = serde_json::json!({
+        "workspace": repo.to_str().expect("a path"),
+        "worktree": true
+    })
+    .to_string();
+    let (status, response) = fixture
+        .client
+        .request("POST", "/v1/sessions", Some(&body))
+        .await;
+    assert_eq!(status, 201, "{response}");
+    let parent: Value = serde_json::from_str(&response).expect("parent json");
+    let parent_id = parent["id"].as_str().expect("parent id").to_string();
+    let parent_workspace = parent["workspace"].as_str().expect("parent workspace");
+    fs::write(
+        std::path::Path::new(parent_workspace).join("parent-only.txt"),
+        "parent work\n",
+    )
+    .expect("parent file");
+    let child = fixture.client.create_session(parent_workspace).await;
+    kyotoagent::session::Session::at(&fixture.root.join("sessions").join(&child))
+        .update(|meta| {
+            meta.parent_id = Some(parent_id.clone());
+            meta.isolation = Some("none".into());
+            true
+        })
+        .expect("child meta");
+    let rows = fixture.client.list().await;
+    let child_row = rows
+        .iter()
+        .find(|row| row["id"] == child)
+        .expect("the child is listed");
+    assert!(child_row.get("worktree").is_none(), "{child_row}");
+    let (status, response) = fixture
+        .client
+        .request("GET", &format!("/v1/sessions/{child}/workspace"), None)
+        .await;
+    assert_eq!(status, 200, "{response}");
+    let workspace: Value = serde_json::from_str(&response).expect("workspace json");
+    assert_eq!(workspace["managed"], false, "{response}");
+    let (status, response) = fixture
+        .client
+        .request(
+            "DELETE",
+            &format!("/v1/sessions/{child}?delete_workspace=true&confirm_dirty=true"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 409, "{response}");
+    assert!(response.contains("Only a managed worktree can be deleted."));
+    assert!(std::path::Path::new(parent_workspace).exists());
+    assert_eq!(
+        fs::read_to_string(std::path::Path::new(parent_workspace).join("parent-only.txt"))
+            .expect("parent file"),
+        "parent work\n"
+    );
+    assert!(fixture.root.join("sessions").join(&child).exists());
+    assert!(fixture.root.join("sessions").join(&parent_id).exists());
+}
+
+#[tokio::test]
 async fn delete_cancels_a_running_command_and_a_worktree_child() {
     let marker = "kyotoagent-hold-delete";
     let replies = vec![Canned::Json(tool_call_reply(vec![(
