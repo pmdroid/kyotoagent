@@ -1,5 +1,7 @@
 # Kyoto Agent
 
+> Kyoto is an early-stage alpha and may contain bugs.
+
 <p align="center">
   <img src="assets/kyoto-logo.png" alt="Kyoto Agent" width="360" />
 </p>
