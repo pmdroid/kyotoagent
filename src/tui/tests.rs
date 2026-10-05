@@ -800,6 +800,7 @@ fn esc_on_a_question_overlay_closes_it_and_a_bare_esc_does_not_cancel() {
         parent_id: None,
         isolation: None,
         worktree: false,
+        archived: false,
     }];
     app.overlay = true;
     app.cards = vec![Card::question("Which?", &[("a", false), ("b", false)])];
@@ -833,6 +834,27 @@ fn esc_on_a_question_overlay_closes_it_and_a_bare_esc_does_not_cancel() {
         Some(Effect::CloseOverlay)
     );
     assert_eq!(key(ctrl('x'), Mode::Working, true), Some(Effect::Cancel));
+}
+
+#[test]
+fn a_session_menu_offers_archive_and_an_archived_row_offers_restore() {
+    assert_eq!(
+        screen::session_menu_items(false),
+        vec![
+            screen::MENU_ARCHIVE.to_string(),
+            screen::MENU_CLOSE.to_string()
+        ]
+    );
+    assert_eq!(
+        screen::session_menu_items(true),
+        vec![
+            screen::MENU_UNARCHIVE.to_string(),
+            screen::MENU_CLOSE.to_string()
+        ]
+    );
+    let rows = command_catalog(&[]);
+    assert!(rows.iter().any(|row| row.line.name == "Archive session"));
+    assert!(rows.iter().any(|row| row.line.name == "Unarchive session"));
 }
 
 #[test]
@@ -876,6 +898,7 @@ fn blank_row() -> SessionRow {
         parent_id: None,
         isolation: None,
         worktree: false,
+        archived: false,
     }
 }
 
@@ -965,6 +988,7 @@ fn waiting_question(text: &str) -> App {
         parent_id: None,
         isolation: None,
         worktree: false,
+        archived: false,
     });
     app.cards.push(Card::question(
         "Which way?",
@@ -1204,6 +1228,7 @@ fn a_waiting_permission_does_not_auto_open() {
         parent_id: None,
         isolation: None,
         worktree: false,
+        archived: false,
     });
     app.cards
         .push(Card::permission("Replace notes.md", None, &["+hello"]));
@@ -1240,6 +1265,7 @@ fn a_waiting_row_is_permission_mode() {
         parent_id: None,
         isolation: None,
         worktree: false,
+        archived: false,
     });
     assert_eq!(mode(&app), Mode::Permission);
     app.notice = Some("Layout saved".into());
@@ -1608,6 +1634,7 @@ fn idle_proof_app(card: Card) -> App {
         parent_id: None,
         isolation: None,
         worktree: false,
+        archived: false,
     });
     app.cards.push(card);
     app
@@ -1760,6 +1787,7 @@ fn idle_with_skills() -> App {
         parent_id: None,
         isolation: None,
         worktree: false,
+        archived: false,
     });
     app.skills = vec![
         SkillEntry {

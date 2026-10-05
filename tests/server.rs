@@ -2902,6 +2902,67 @@ async fn the_first_ask_titles_with_the_default_model() {
 }
 
 #[tokio::test]
+async fn archive_hides_the_session_and_unarchive_restores_it() {
+    let fixture = Fixture::new("archive-session", write_then_finish()).await;
+    let id = fixture.add_session("notes").await;
+    let dir = fixture.root.join("sessions").join(&id);
+    let (status, _) = fixture.client.message(&id, "Create notes.md.").await;
+    assert_eq!(status, 202);
+    fixture.client.wait_for_status(&id, "waiting").await;
+
+    let (status, response) = fixture
+        .client
+        .request("POST", &format!("/v1/sessions/{id}/archive"), None)
+        .await;
+    assert_eq!(status, 204, "{response}");
+    assert!(dir.join("meta.json").is_file(), "the log stays");
+    let row = fixture
+        .client
+        .list()
+        .await
+        .into_iter()
+        .find(|row| row["id"] == id)
+        .expect("the session stays listed");
+    assert_eq!(row["archived"], true);
+    assert!(row["archivedAt"].as_str().is_some());
+
+    let (status, response) = fixture.client.message(&id, "Again.").await;
+    assert_eq!(
+        status, 409,
+        "an archived session refuses a new ask: {response}"
+    );
+
+    let (status, response) = fixture
+        .client
+        .request(
+            "POST",
+            &format!("/v1/sessions/{id}/archive"),
+            Some(r#"{"archived":false}"#),
+        )
+        .await;
+    assert_eq!(status, 204, "{response}");
+    let row = fixture
+        .client
+        .list()
+        .await
+        .into_iter()
+        .find(|row| row["id"] == id)
+        .expect("the session is listed");
+    assert_eq!(row["archived"], serde_json::Value::Null);
+    let (status, response) = fixture.client.message(&id, "Again.").await;
+    assert_eq!(
+        status, 202,
+        "a restored session takes a new ask: {response}"
+    );
+
+    let (status, response) = fixture
+        .client
+        .request("POST", "/v1/sessions/missing/archive", None)
+        .await;
+    assert_eq!(status, 404, "{response}");
+}
+
+#[tokio::test]
 async fn delete_session_is_204_and_an_unknown_id_is_404() {
     let fixture = Fixture::new("delete-session", write_then_finish()).await;
     let id = fixture.add_session("notes").await;

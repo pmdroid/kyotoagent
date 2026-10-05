@@ -18,6 +18,7 @@ results, and proof, and spends its space on looking deliberate.
 | Ctrl-Y | Toggles yolo |
 | Ctrl-M | Opens the model picker |
 | Ctrl-K | Opens the command palette |
+| right-click a session | Archive, unarchive, or delete it |
 | `?` | On an empty prompt, opens help |
 | Enter or a click | Opens the overlay |
 | Esc | Closes a popup |

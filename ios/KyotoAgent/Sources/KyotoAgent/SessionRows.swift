@@ -27,6 +27,9 @@ nonisolated public struct SessionLine: Equatable, Sendable {
     }
 
     public var badge: String {
+        if marks.contains("archived") {
+            return "archived"
+        }
         if status == .waiting, let waiting, !waiting.isEmpty {
             return waiting
         }
@@ -64,6 +67,9 @@ nonisolated public func sessionLine(_ session: Session, depth: Int) -> SessionLi
     }
     if session.compacting {
         marks.append("compacting")
+    }
+    if session.archived {
+        marks.append("archived")
     }
     if !session.model.isEmpty {
         marks.append(session.model)

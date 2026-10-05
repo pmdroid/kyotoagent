@@ -49,6 +49,8 @@ nonisolated public struct Session: Codable, Equatable, Sendable {
     public var parentId: String?
     public var isolation: String?
     public var worktree: Bool
+    public var archived: Bool
+    public var archivedAt: String?
     public var allow: AllowList
 
     public init(from decoder: Decoder) throws {
@@ -73,6 +75,8 @@ nonisolated public struct Session: Codable, Equatable, Sendable {
         parentId = try container.decodeIfPresent(String.self, forKey: .parentId)
         isolation = try container.decodeIfPresent(String.self, forKey: .isolation)
         worktree = try container.decodeIfPresent(Bool.self, forKey: .worktree) ?? false
+        archived = try container.decodeIfPresent(Bool.self, forKey: .archived) ?? false
+        archivedAt = try container.decodeIfPresent(String.self, forKey: .archivedAt)
         allow = try container.decode(AllowList.self, forKey: .allow)
     }
 
@@ -98,6 +102,8 @@ nonisolated public struct Session: Codable, Equatable, Sendable {
         try container.encodeIfPresent(parentId, forKey: .parentId)
         try container.encodeIfPresent(isolation, forKey: .isolation)
         try container.encode(worktree, forKey: .worktree)
+        try container.encode(archived, forKey: .archived)
+        try container.encodeIfPresent(archivedAt, forKey: .archivedAt)
         try container.encode(allow, forKey: .allow)
     }
 
@@ -122,6 +128,8 @@ nonisolated public struct Session: Codable, Equatable, Sendable {
         case parentId
         case isolation
         case worktree
+        case archived
+        case archivedAt
         case allow
     }
 }

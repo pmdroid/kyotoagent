@@ -593,6 +593,31 @@ public final class AppModel {
         requestDelete(id)
     }
 
+    public func setArchived(_ id: String, archived: Bool) async {
+        guard connected, let client else {
+            return
+        }
+        do {
+            try await client.setArchived(id, archived: archived)
+        } catch let error as HostError {
+            notice = error.serverMessage
+            return
+        } catch {
+            notice = error.localizedDescription
+            return
+        }
+        notice = nil
+        if archived, selection == id {
+            selection = nil
+            requestContext = UUID()
+            draft = ""
+            pastedDraft = nil
+            transcriptFailure = nil
+            transcript = TranscriptWindow()
+        }
+        await refreshSessions()
+    }
+
     public func closeSession(_ id: String, deleteWorkspace: Bool = false) async {
         guard connected, let client else {
             return
@@ -822,6 +847,20 @@ public final class AppModel {
             dismissOverlay()
             if let id {
                 requestDelete(id)
+            }
+            return .finished
+        case .archiveSession:
+            let id = selection
+            dismissOverlay()
+            if let id {
+                await setArchived(id, archived: true)
+            }
+            return .finished
+        case .unarchiveSession:
+            let id = selection
+            dismissOverlay()
+            if let id {
+                await setArchived(id, archived: false)
             }
             return .finished
         case .skill(let name):

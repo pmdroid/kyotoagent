@@ -26,6 +26,8 @@ public enum CommandKind: Equatable, Sendable {
     case profile
     case cancel
     case closeSession
+    case archiveSession
+    case unarchiveSession
     case help
     case skill(String)
 }
@@ -173,6 +175,8 @@ public func commandCatalog(skills: [Skill]) -> [CommandEntry] {
         CommandEntry(id: "yolo", title: "Yolo", hint: "allow writes and commands", kind: .yolo),
         CommandEntry(id: "profile", title: "Profile", hint: "limit this session's tools and skills", kind: .profile),
         CommandEntry(id: "cancel", title: "Cancel", hint: "stop the turn", kind: .cancel),
+        CommandEntry(id: "archive-session", title: "Archive session", hint: "hide the selected session until it is restored", kind: .archiveSession),
+        CommandEntry(id: "unarchive-session", title: "Unarchive session", hint: "restore an archived session", kind: .unarchiveSession),
         CommandEntry(id: "close-session", title: "Delete session", hint: "delete the selected session", kind: .closeSession),
         CommandEntry(id: "help", title: "Help", hint: "list every command", kind: .help),
         CommandEntry(id: "slash-model", title: "/model", hint: "open the model list", kind: .openModel),

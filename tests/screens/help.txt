@@ -1,19 +1,19 @@
  ☰  Kyoto Agent                                     3 sessions · 0 waiting ▦
 ╭ sessions ──────────────────╮╭ ~/work/kyotoagent ─────────────────────────╮
 │▸ ✓ kyotoagent              ││╭──────────────────────────────────────────x│
-│  idle                      │││  Ctrl-T  New session  ask where this sess││
-│                            │││  Ctrl-M  Open model  open the model list ││
-│  ✓ acpbot                  │││  Effort  open the effort list            ││
-│  idle                      │││  Profile  open the profile list          ││
-│                            │││  Server  manage saved servers            ││
-│  ✓ notes                   │││  Projects  configure projects on this ser││
-│  idle                      │││  Providers  sign in on the selected serve││
-│                            │││  Compact  summarize the older transcript ││
-│                            │││  Ctrl-Y  Yolo  allow writes and commands ││
+│  idle                      │││  Effort  open the effort list            ││
+│                            │││  Profile  open the profile list          ││
+│  ✓ acpbot                  │││  Server  manage saved servers            ││
+│  idle                      │││  Projects  configure projects on this ser││
+│                            │││  Providers  sign in on the selected serve││
+│  ✓ notes                   │││  Compact  summarize the older transcript ││
+│  idle                      │││  Ctrl-Y  Yolo  allow writes and commands ││
 │                            │││  Enhance  rewrite a short prompt before t││
 │                            │││  Queued messages  remove a pending messag││
 │                            │││  Ctrl-X  Cancel  stop the turn           ││
 │                            │││  Esc  Close popup  close the open popup  ││
+│                            │││  Archive session  hide the selected sessi││
+│                            │││  Unarchive session  restore an archived s││
 │                            │││  Ctrl-W  Delete session  delete the selec││
 │                            │││  Ctrl-B  Sessions  show or hide the sessi││
 │                            │││  Ctrl-G  Panes  show or hide the right co││

@@ -11,3 +11,6 @@ editUrl: https://github.com/pmdroid/kyotoagent/edit/main/docs/slash.md
 | `/effort <level>` | Sets the reasoning effort |
 | `/yolo`, `/yolo on`, `/yolo off` | Turns yolo on or off for this session. Anything else, such as `/yolo now`, is an ordinary ask |
 | `/compact` | Compacts the transcript |
+
+Archive and unarchive are command-palette rows, not slash commands. An archived
+session stays in an `archived` group at the bottom of the list.

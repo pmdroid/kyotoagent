@@ -110,6 +110,7 @@ const YOLO_RAINBOW: [Color; 7] = [
 
 pub const PRODUCT: &str = "Kyoto Agent";
 pub const OTHER_PROJECT: &str = "other";
+pub const ARCHIVED_GROUP: &str = "archived";
 
 /// The first four characters of a session id, as the list shows it.
 pub fn short_id(id: &str) -> String {
@@ -268,6 +269,7 @@ pub struct SessionRow {
     pub parent_id: Option<String>,
     pub isolation: Option<String>,
     pub worktree: bool,
+    pub archived: bool,
 }
 
 impl SessionRow {
@@ -289,6 +291,9 @@ impl SessionRow {
 
     /// The status as the list shows it. A waiting row also names its card.
     pub fn status_text(&self) -> String {
+        if self.archived {
+            return "archived".to_string();
+        }
         match (self.status, self.waiting) {
             (Status::Idle, _) => Status::Idle.label().to_string(),
             (Status::Working, _) => Status::Working.label().to_string(),
@@ -557,14 +562,23 @@ pub enum Overlay {
 }
 
 pub const MENU_CLOSE: &str = "Delete session";
+pub const MENU_ARCHIVE: &str = "Archive session";
+pub const MENU_UNARCHIVE: &str = "Unarchive session";
 pub const MENU_REMOVE_WORKTREE: &str = "Remove worktree";
 pub const DELETE_PROMPT: &str = "Delete this session?";
 pub const DELETE_DIRECTORY: &str = "That directory will be removed.";
 pub const DELETE_YES: &str = "Delete";
 pub const DELETE_NO: &str = "Cancel";
 
-pub fn session_menu_items(_worktree: bool) -> Vec<String> {
-    vec![MENU_CLOSE.to_string()]
+pub fn session_menu_items(archived: bool) -> Vec<String> {
+    vec![
+        if archived {
+            MENU_UNARCHIVE.to_string()
+        } else {
+            MENU_ARCHIVE.to_string()
+        },
+        MENU_CLOSE.to_string(),
+    ]
 }
 
 pub fn delete_labels(

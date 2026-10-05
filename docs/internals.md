@@ -14,7 +14,7 @@ model client, the turn loop, and the server that ties them together:
 - `src/mock.rs` holds the three hardcoded states, so the tests and the example
   cannot drift apart.
 - `src/main.rs` is the `kyotoagent` binary: the live TUI, `attach`, `serve`, `new`,
-  `sessions`, `log`, `cancel`, `provider`, and `doctor`.
+  `sessions`, `log`, `cancel`, `archive`, `unarchive`, `provider`, and `doctor`.
 - `src/doctor.rs` is `kyotoagent doctor`: the socket, the selected model catalog,
   and the workspace closeout file.
 - `src/auth.rs` handles provider authentication and stores credentials under
