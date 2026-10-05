@@ -1057,6 +1057,51 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
+    fn public_retry_requires_a_bounded_limit_and_scope() {
+        for scope in ["task", "candidate"] {
+            let file: CloseoutFile = serde_yaml::from_str(&format!(
+                "specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 5\n  scope: {scope}\n"
+            ))
+            .unwrap();
+            assert_eq!(file.max_failures, 5);
+        }
+        for retry in [
+            "maxFailedAttemptsPerItem: 0\n  scope: task",
+            "maxFailedAttemptsPerItem: 100001\n  scope: task",
+            "maxFailedAttemptsPerItem: 5",
+            "scope: task",
+            "maxFailedAttemptsPerItem: 5\n  scope: session",
+            "maxFailedAttemptsPerItem: 5\n  scope: task\n  extra: true",
+        ] {
+            assert!(serde_yaml::from_str::<CloseoutFile>(&format!(
+                "specVersion: '0.1'\nretry:\n  {retry}\n"
+            ))
+            .is_err());
+        }
+        let file: CloseoutFile = serde_yaml::from_str("specVersion: '0.1'\n").unwrap();
+        assert_eq!(file.max_failures, u32::MAX);
+    }
+
+    #[test]
+    fn an_import_cannot_set_a_retry_limit() {
+        let dir = temp_dir("import-retry");
+        write_file(
+            &dir,
+            "specVersion: '0.1'\nimports:\n  - path: child.yaml\n    as: child\n",
+        );
+        std::fs::write(
+            dir.join("child.yaml"),
+            "specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 5\n  scope: task\n",
+        )
+        .unwrap();
+        assert!(read(&dir)
+            .unwrap_err()
+            .to_string()
+            .contains("retry is only allowed on the entry policy"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn nested_imports_resolve_from_the_root_in_depth_first_order() {
         let dir = temp_dir("imports");
         std::fs::create_dir_all(dir.join("policies")).unwrap();
