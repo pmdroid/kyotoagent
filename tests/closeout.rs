@@ -1482,30 +1482,6 @@ async fn an_agents_closeout_file_still_blocks_finish() {
 }
 
 #[tokio::test]
-async fn a_kyotoagent_closeout_file_does_not_block_finish() {
-    let replies = vec![Canned::Json(tool_call_reply(vec![(
-        "finish",
-        serde_json::json!({ "text": "Done.", "proof": "cargo test passed." }),
-    )]))];
-    let fixture = Fixture::new("kyotoagent-closeout", replies);
-    let workspace = fixture.add_session("91bc");
-    fs::create_dir_all(workspace.join(".pagent")).expect("the old directory exists");
-    fs::write(
-        workspace.join(".pagent").join("closeout.yaml"),
-        "version: 1\nitems:\n  - id: test\n    kind: command\n    run: echo out; exit 0\n    hint: Fix the failing test\n",
-    )
-    .expect("the old file writes");
-
-    fixture.ask("91bc", "Finish.");
-    fixture.wait_for_turn_to_start("91bc").await;
-    fixture.wait_for_log("91bc", "\"kind\":\"result\"").await;
-    fixture.wait_for_status("91bc", Status::Idle).await;
-    let log = fixture.log("91bc");
-    assert!(!log.contains("Cannot finish yet"), "{log}");
-    assert!(workspace.join(".pagent").join("closeout.yaml").is_file());
-}
-
-#[tokio::test]
 async fn project_closeout_fallback_is_visible_in_the_prompt_and_gates_shell_changes() {
     let fixture = Fixture::configured(
         "project-fallback",

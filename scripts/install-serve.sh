@@ -135,11 +135,9 @@ apply_stop() {
   case $os in
     Linux)
       systemctl --user disable --now kyotoagent.service || true
-      systemctl --user disable --now pagent.service || true
       ;;
     Darwin)
       launchctl bootout "gui/$uid" "$unit" 2>/dev/null || launchctl unload -w "$unit" 2>/dev/null || true
-      launchctl bootout "gui/$uid/ai.pagent.serve" 2>/dev/null || launchctl bootout "gui/$uid" "$home/Library/LaunchAgents/ai.pagent.serve.plist" 2>/dev/null || launchctl unload -w "$home/Library/LaunchAgents/ai.pagent.serve.plist" 2>/dev/null || true
       ;;
   esac
 }

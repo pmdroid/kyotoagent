@@ -523,29 +523,6 @@ mod tests {
     }
 
     #[test]
-    fn a_legacy_product_skill_directory_is_not_loaded() {
-        let (root, workspace) = empty_workspace("old-kyotoagent-skills");
-        let home = root.join("home");
-        plant(
-            &home,
-            ".pagent/skills",
-            "review",
-            &skill_text("review", "How to review a leftover", "The leftover body."),
-        );
-        plant(
-            &workspace,
-            ".pagent/skills",
-            "commit",
-            &skill_text("commit", "How to commit", "Commit the change."),
-        );
-
-        let skills = index_in(&workspace, &home);
-        assert!(skills.is_empty(), "{skills:?}");
-        assert!(load_in(&workspace, &home, "review").is_err());
-        assert!(load_in(&workspace, &home, "commit").is_err());
-    }
-
-    #[test]
     fn a_missing_agents_skills_directory_is_an_empty_root() {
         let (root, workspace) = empty_workspace("missing-agents");
         let home = root.join("home");

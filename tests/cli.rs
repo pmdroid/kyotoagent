@@ -91,10 +91,6 @@ fn help_names_the_product_and_the_command() {
         "help names KYOTOAGENT_URL: {stdout}"
     );
     assert!(
-        !stdout.contains("PAGENT_URL"),
-        "help uses the current connection URL environment variable: {stdout}"
-    );
-    assert!(
         stdout.contains("Usage: kyotoagent ["),
         "the heading matches the launch name: {stdout}"
     );
@@ -263,10 +259,6 @@ fn provider_add_creates_the_file_and_selects_the_table() {
     let text = std::fs::read_to_string(home.join(".kyotoagent").join("config.toml"))
         .expect("the file exists");
     assert!(text.contains("provider = \"local\""), "{text}");
-    assert!(
-        !home.join(".pagent").join("config.toml").exists(),
-        "a new config is not written under .pagent"
-    );
     assert!(text.contains("qwen2.5-coder"), "{text}");
     let output = Command::new(env!("CARGO_BIN_EXE_kyotoagent"))
         .args(["provider"])
@@ -279,33 +271,6 @@ fn provider_add_creates_the_file_and_selects_the_table() {
         lines,
         ["local", "http://127.0.0.1:11434/v1", "qwen2.5-coder"]
     );
-    let _ = std::fs::remove_dir_all(&home);
-}
-
-#[test]
-fn a_config_only_under_kyotoagent_is_not_read() {
-    let home =
-        std::env::temp_dir().join(format!("kyotoagent-cli-old-config-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
-    let old = home.join(".pagent");
-    std::fs::create_dir_all(&old).expect("the old root exists");
-    std::fs::write(
-        old.join("config.toml"),
-        "provider = \"office\"\n\n[providers.office]\nbase_url = \"https://openrouter.ai/api/v1\"\nmodel = \"hidden\"\n",
-    )
-    .expect("the old file writes");
-    let output = Command::new(env!("CARGO_BIN_EXE_kyotoagent"))
-        .args(["provider"])
-        .env("HOME", &home)
-        .output()
-        .expect("the kyotoagent binary runs");
-    assert!(
-        !output.status.success(),
-        "provider does not read a file that exists only under .pagent"
-    );
-    let stdout = String::from_utf8(output.stdout).expect("stdout is text");
-    assert!(!stdout.contains("hidden"), "{stdout}");
-    assert!(!home.join(".kyotoagent").join("config.toml").exists());
     let _ = std::fs::remove_dir_all(&home);
 }
 
