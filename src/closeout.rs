@@ -488,6 +488,8 @@ pub struct CloseoutImport {
 #[serde(deny_unknown_fields)]
 pub struct CloseoutReview {
     pub skill: String,
+    #[serde(skip)]
+    pub policy_skill: String,
     pub independence: ReviewIndependence,
     #[serde(rename = "failOn")]
     pub fail_on: Severity,
@@ -809,6 +811,7 @@ impl CloseoutFile {
                                 item.id.clone(),
                                 CloseoutReview {
                                     skill: item.skill.clone(),
+                                    policy_skill: item.skill.clone(),
                                     independence: item.independence,
                                     fail_on: item.fail_on,
                                 },
@@ -1166,6 +1169,28 @@ mod tests {
     }
 
     #[test]
+    fn policy_digest_preserves_import_alias_paths_and_sorts_files_by_utf16() {
+        let dir = temp_dir("digest-order");
+        let child = "specVersion: '0.1'\n";
+        for name in ["\u{e000}.yaml", "\u{10000}.yaml"] {
+            std::fs::write(dir.join(name), child).unwrap();
+        }
+        std::os::unix::fs::symlink(dir.join("\u{e000}.yaml"), dir.join("alias.yaml")).unwrap();
+        let entry = "specVersion: '0.1'\nimports:\n  - path: \u{e000}.yaml\n    as: bmp\n  - path: \u{10000}.yaml\n    as: astral\n  - path: alias.yaml\n    as: alias\n";
+        write_file(&dir, entry);
+        let files: Vec<_> = [(".kyotoagent/closeout.yaml", entry), ("alias.yaml", child), ("\u{10000}.yaml", child), ("\u{e000}.yaml", child)].into_iter().map(|(path, contents)| serde_json::json!({"path":path,"sha256":retry::hash(contents.as_bytes())})).collect();
+        let expected = serde_json::json!({"specVersion":"0.1","files":files,"items":[]});
+        assert_eq!(
+            read(&dir).unwrap().unwrap().policy_digest,
+            format!(
+                "sha256:{}",
+                retry::hash(&serde_json::to_vec(&expected).unwrap())
+            )
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn nested_imports_resolve_from_the_root_in_depth_first_order() {
         let dir = temp_dir("imports");
         std::fs::create_dir_all(dir.join("policies")).unwrap();
@@ -1272,6 +1297,7 @@ mod tests {
     #[test]
     fn review_severity_and_independence_are_evaluated_by_the_host() {
         let mut review = CloseoutReview {
+            policy_skill: String::new(),
             skill: ".agents/skills/review/SKILL.md".into(),
             independence: ReviewIndependence {
                 different_session: true,

@@ -66,22 +66,27 @@ fn io_error(path: &Path, error: impl std::fmt::Display) -> CloseoutError {
 
 impl CloseoutFile {
     pub(super) fn digest(&self, root: &Path) -> Result<String, CloseoutError> {
-        let root = root.canonicalize().map_err(|error| io_error(root, error))?;
         let mut files = BTreeMap::new();
         for (path, sha256) in &self.policy_files {
-            let path = path.canonicalize().map_err(|error| io_error(path, error))?;
             let relative = path
-                .strip_prefix(&root)
-                .map_err(|error| io_error(&path, error))?;
+                .strip_prefix(root)
+                .map_err(|error| io_error(path, error))?;
             files.insert(relative.to_string_lossy().into_owned(), sha256.clone());
         }
-        let files: Vec<_> = files
+        let mut files: Vec<_> = files
             .into_iter()
             .map(|(path, sha256)| serde_json::json!({"path":path,"sha256":sha256}))
             .collect();
+        files.sort_by(|left, right| {
+            left["path"]
+                .as_str()
+                .unwrap()
+                .encode_utf16()
+                .cmp(right["path"].as_str().unwrap().encode_utf16())
+        });
         let requirement = |item: &super::CloseoutItem| {
             let mut value = if let Some(review) = self.reviews.get(&item.id) {
-                serde_json::json!({"id":item.id,"kind":"review","gate":"beforePR","skill":Path::new(&review.skill).strip_prefix(&root).unwrap().to_string_lossy(),"independence":{"differentSession":review.independence.different_session,"differentModel":review.independence.different_model},"failOn":format!("{:?}",review.fail_on)})
+                serde_json::json!({"id":item.id,"kind":"review","gate":"beforePR","skill":review.policy_skill,"independence":{"differentSession":review.independence.different_session,"differentModel":review.independence.different_model},"failOn":format!("{:?}",review.fail_on)})
             } else {
                 let (argv, timeout) = self.execution(item);
                 serde_json::json!({"id":item.id,"kind":item.kind.label(),"gate":"beforePR","exec":argv,"timeoutSeconds":timeout})
@@ -101,7 +106,7 @@ impl CloseoutFile {
         }
         Ok(format!(
             "sha256:{}",
-            hash(&serde_json::to_vec(&identity).map_err(|error| io_error(&root, error))?)
+            hash(&serde_json::to_vec(&identity).map_err(|error| io_error(root, error))?)
         ))
     }
 }
