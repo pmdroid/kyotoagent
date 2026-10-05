@@ -746,6 +746,110 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
+    fn nested_imports_resolve_from_the_root_in_depth_first_order() {
+        let dir = temp_dir("imports");
+        std::fs::create_dir_all(dir.join("policies")).unwrap();
+        write_file(&dir, "specVersion: '0.1'\nimports:\n  - path: policies/outer.yaml\n    as: quality\nitems:\n  - id: entry\n    kind: command\n    gate: beforePR\n    exec: [echo, entry]\n    timeoutSeconds: 30\n");
+        std::fs::write(dir.join("policies/outer.yaml"), "specVersion: '0.1'\nimports:\n  - path: policies/inner.yaml\n    as: nested\nitems:\n  - id: outer\n    kind: command\n    gate: beforePR\n    exec: [echo, outer]\n    timeoutSeconds: 40\n").unwrap();
+        std::fs::write(dir.join("policies/inner.yaml"), "specVersion: '0.1'\nitems:\n  - id: inner\n    kind: command\n    gate: beforePR\n    exec: [echo, inner]\n    timeoutSeconds: 50\n    paths: ['src/**']\n").unwrap();
+        let file = read(&dir).unwrap().unwrap();
+        assert_eq!(
+            file.items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["quality/nested/inner", "quality/outer", "entry"]
+        );
+        assert_eq!(
+            file.execution(&file.items[0]),
+            (vec!["echo".into(), "inner".into()], Some(50))
+        );
+        let mut state = CloseoutState::with_file(&dir, Some(file));
+        state.record_write("src/lib.rs");
+        assert!(state
+            .cannot_finish()
+            .unwrap()
+            .contains("quality/nested/inner"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn imports_reject_missing_files_cycles_duplicate_names_and_imported_setup() {
+        for (name, child, imports, expected) in [
+            ("missing", None, "  - path: child.yaml\n    as: child\n", "child.yaml"),
+            ("cycle", Some("specVersion: '0.1'\nimports:\n  - path: .kyotoagent/closeout.yaml\n    as: entry\n"), "  - path: child.yaml\n    as: child\n", "import cycle:"),
+            ("duplicate", Some("specVersion: '0.1'\n"), "  - path: child.yaml\n    as: child\n  - path: child.yaml\n    as: child\n", "duplicate import name"),
+            ("setup", Some("specVersion: '0.1'\nsetup:\n  - id: prepare\n    exec: [echo, ready]\n    timeoutSeconds: 5\n"), "  - path: child.yaml\n    as: child\n", "setup is only allowed"),
+            ("legacy", Some("version: 1\nitems: []\n"), "  - path: child.yaml\n    as: child\n", "imported policies need specVersion"),
+        ] {
+            let dir = temp_dir(name);
+            write_file(&dir, &format!("specVersion: '0.1'\nimports:\n{imports}"));
+            if let Some(child) = child { std::fs::write(dir.join("child.yaml"), child).unwrap(); }
+            assert!(read(&dir).unwrap_err().to_string().contains(expected));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn import_paths_and_names_must_stay_inside_the_repository() {
+        for path in [
+            "../outside.yaml",
+            "/outside.yaml",
+            "~/.agents/closeout.yaml",
+            "a/./b.yaml",
+            "a//b.yaml",
+            "a\\b.yaml",
+            "C:/outside.yaml",
+            "a/",
+        ] {
+            let dir = temp_dir("unsafe-import");
+            write_file(
+                &dir,
+                &format!("specVersion: '0.1'\nimports:\n  - path: '{path}'\n    as: child\n"),
+            );
+            assert!(read(&dir).is_err(), "{path}");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+        for name in ["Bad", "child--name", "child-", "a/b"] {
+            let dir = temp_dir("unsafe-namespace");
+            write_file(
+                &dir,
+                &format!("specVersion: '0.1'\nimports:\n  - path: child.yaml\n    as: '{name}'\n"),
+            );
+            assert!(read(&dir).is_err(), "{name}");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+        let dir = temp_dir("symlink-import");
+        let outside = temp_dir("outside-import");
+        std::fs::write(outside.join("policy.yaml"), "specVersion: '0.1'\n").unwrap();
+        std::os::unix::fs::symlink(outside.join("policy.yaml"), dir.join("child.yaml")).unwrap();
+        write_file(
+            &dir,
+            "specVersion: '0.1'\nimports:\n  - path: child.yaml\n    as: child\n",
+        );
+        assert!(read(&dir).unwrap_err().to_string().contains("child.yaml"));
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn one_file_can_be_imported_under_two_names() {
+        let dir = temp_dir("shared-import");
+        std::fs::write(dir.join("child.yaml"), "specVersion: '0.1'\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: [echo, ok]\n    timeoutSeconds: 5\n").unwrap();
+        write_file(&dir, "specVersion: '0.1'\nimports:\n  - path: child.yaml\n    as: first\n  - path: child.yaml\n    as: second\n");
+        let file = read(&dir).unwrap().unwrap();
+        assert_eq!(
+            file.items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["first/test", "second/test"]
+        );
+        assert_eq!(file.executions.len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn subsequent_writes_mark_recorded_passes_stale() {
         let mut state = CloseoutState::default();
         state.record_run(proof_item(
