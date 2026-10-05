@@ -39,7 +39,9 @@ pub(super) async fn execute(
         )?;
         let outcome = if *cancel.borrow() || turn.tools.gate().rejected() {
             Err(("Skipped because the turn ended.".to_string(), false))
-        } else if !turn.config.tool_allowed(profile.as_deref(), &call.name) {
+        } else if !turn.config.tool_allowed(profile.as_deref(), &call.name)
+            || (turn.session.meta()?.closeout_reviewer && !reviewer_tool(&call.name))
+        {
             Err((format!("unknown tool: {}", call.name), true))
         } else {
             match args {

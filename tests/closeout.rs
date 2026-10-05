@@ -108,7 +108,7 @@ fn serve_one(
     }
     if path.contains("/models") {
         let catalog = serde_json::json!({
-            "data": [{ "id": "test/model", "context_length": 200000 }]
+            "data": [{ "id": "test/model", "context_length": 200000 }, { "id": "test/reviewer", "context_length": 200000 }]
         })
         .to_string();
         respond(&mut stream, 200, &catalog);
@@ -1799,4 +1799,119 @@ async fn pr_creation_requires_another_pass_after_a_new_write() {
     fixture.respond("91bc", Answer::allow_once()).await;
     fixture.wait_for_status("91bc", Status::Idle).await;
     assert!(fixture.log("91bc").contains("Cannot open a pull request"));
+}
+
+#[tokio::test]
+async fn imported_review_uses_a_fresh_read_only_session_and_retains_its_findings() {
+    let replies = vec![
+        Canned::Json(tool_call_reply(vec![(
+            "write_file",
+            serde_json::json!({"path":"changed.txt", "contents":"candidate"}),
+        )])),
+        Canned::Json(tool_call_reply(vec![(
+            "run_closeout",
+            serde_json::json!({"id":"quality/review", "model":"test/model"}),
+        )])),
+        Canned::Json(tool_call_reply(vec![(
+            "finish",
+            serde_json::json!({"text":"Too early", "proof":""}),
+        )])),
+        Canned::Json(tool_call_reply(vec![(
+            "run_closeout",
+            serde_json::json!({"id":"quality/review", "model":"test/reviewer"}),
+        )])),
+        Canned::Json(tool_call_reply(vec![(
+            "write_file",
+            serde_json::json!({"path":"changed.txt", "contents":"reviewer edit"}),
+        )])),
+        Canned::Json(tool_call_reply(vec![(
+            "finish",
+            serde_json::json!({"text":"[]", "proof":"Inspected candidate"}),
+        )])),
+        Canned::Json(tool_call_reply(vec![(
+            "finish",
+            serde_json::json!({"text":"Verified", "proof":"review passed"}),
+        )])),
+    ];
+    let fixture = Fixture::new("imported-review", replies);
+    let workspace = fixture.add_session("91bc");
+    fs::create_dir_all(workspace.join(".agents/closeout")).unwrap();
+    fs::create_dir_all(workspace.join(".agents/skills/review")).unwrap();
+    fs::write(
+        workspace.join(".agents/skills/review/SKILL.md"),
+        "Inspect each changed file for correctness.",
+    )
+    .unwrap();
+    fs::write(
+        workspace.join(".agents/closeout.yaml"),
+        "specVersion: '0.1'\nimports:\n  - path: .agents/closeout/review.yaml\n    as: quality\n",
+    )
+    .unwrap();
+    fs::write(workspace.join(".agents/closeout/review.yaml"), "specVersion: '0.1'\nitems:\n  - id: review\n    kind: review\n    gate: beforePR\n    skill: .agents/skills/review/SKILL.md\n    independence:\n      differentSession: true\n      differentModel: true\n    failOn: P1\n").unwrap();
+    fixture.ask("91bc", "Write and review");
+    fixture.respond("91bc", Answer::allow_once()).await;
+    fixture.respond("91bc", Answer::allow_once()).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert_eq!(
+        fs::read_to_string(workspace.join("changed.txt")).unwrap(),
+        "candidate"
+    );
+    let row = &fixture.view("91bc").closeout[0];
+    assert_eq!(row.id, "quality/review");
+    assert_eq!(row.status, view::CloseoutStatus::Passed);
+    assert!(row.tail.contains("Findings: []"));
+    assert!(row.tail.contains("test/reviewer"));
+    let log = fixture.log("91bc");
+    assert!(log.contains("requires a different model"));
+    assert!(log.contains("Cannot finish yet"));
+    assert!(!log
+        .lines()
+        .any(|line| line.contains("\"kind\":\"result\"") && line.contains("Too early")));
+    let prompts = fixture.prompts();
+    let review_prompt = prompts
+        .iter()
+        .find(|body| body.contains("Inspect each changed file"))
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_str(review_prompt).unwrap();
+    assert_eq!(body["model"], "test/reviewer");
+    assert!(body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|tool| tool["function"]["name"] != "write_file"));
+    assert!(log.contains("quality_review-attempt-1.txt"));
+}
+
+#[tokio::test]
+async fn stop_hook_changes_require_closeout_before_finish() {
+    let fixture = Fixture::new(
+        "stop-hook-write",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"Too early"}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "run_closeout",
+                serde_json::json!({"id":"test"}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"Verified"}),
+            )])),
+        ],
+    );
+    let workspace = fixture.add_session("91bc");
+    fixture.write_closeout(&workspace, "true");
+    fs::create_dir_all(workspace.join(".agents")).unwrap();
+    fs::write(workspace.join(".agents/hooks.json"), serde_json::json!({"hooks":{"Stop":[{"matcher":"", "hooks":[{"type":"command", "command":"printf changed > hook-output.txt"}]}]}}).to_string()).unwrap();
+    fixture.ask("91bc", "Finish after the hook");
+    fixture.allow_closeout("91bc").await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert_eq!(fixture.closeout_runs("91bc"), 1);
+    assert!(fixture.log("91bc").contains("Cannot finish yet"));
+    assert_eq!(
+        fs::read_to_string(workspace.join("hook-output.txt")).unwrap(),
+        "changed"
+    );
 }

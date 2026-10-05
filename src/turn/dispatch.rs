@@ -74,7 +74,9 @@ pub(super) async fn execute_tool(
     let turn_id = turn.turn_id.as_str();
     let config = &turn.config;
     let profile = session.meta().ok().and_then(|meta| meta.profile);
-    if !config.tool_allowed(profile.as_deref(), call.name.as_str()) {
+    if !config.tool_allowed(profile.as_deref(), call.name.as_str())
+        || (session.meta()?.closeout_reviewer && !reviewer_tool(&call.name))
+    {
         return Ok(ToolOutcome {
             is_error: true,
             images: Vec::new(),
@@ -539,7 +541,9 @@ pub(super) async fn execute_tool(
         }
         "run_closeout" => {
             let id = string_arg(args, "id").unwrap_or_default();
-            let summary = run_closeout(tools, &id, turn_id, cancel, closeout).await?;
+            let model = string_arg(args, "model");
+            let summary =
+                run_closeout(turn, &id, model.as_deref(), turn_id, cancel, closeout).await?;
             ToolOutcome {
                 is_error: false,
                 images: Vec::new(),

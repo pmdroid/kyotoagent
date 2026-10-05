@@ -2349,6 +2349,27 @@ fn required_and_untouched_closeout_checks_have_clear_labels() {
 }
 
 #[test]
+fn untouched_closeout_checks_hide_the_pane_and_its_column() {
+    let mut model = two_checks("");
+    model.right_open = true;
+    model.right_panes.clear();
+    model.right_panes.insert(RightPane::Closeout);
+    for check in &mut model.closeout {
+        check.required = false;
+        check.status = CloseoutMark::NotRequired;
+    }
+    assert!(!right_column_visible(&model));
+    assert!(stacked_panes(&model).is_empty());
+    assert!(!draw(&model).contains("Not required"));
+    model.closeout[0].required = true;
+    assert!(right_column_visible(&model));
+    assert_eq!(stacked_panes(&model), [RightPane::Closeout]);
+    assert!(closeout_content_lines(&model, 40)
+        .iter()
+        .any(|(line, _)| line.to_string() == "Closeout checks are required"));
+}
+
+#[test]
 fn a_running_check_changes_its_spinner_with_the_tick() {
     let mut model = two_checks("");
     model.right_open = true;

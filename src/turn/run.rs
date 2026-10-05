@@ -34,7 +34,12 @@ pub(super) async fn run_turn(
     maybe_title(turn);
 
     let requested = session.meta()?.requested_workspace;
-    let mut closeout = match turn.config.closeout_for(&workspace, requested.as_deref()) {
+    let policy = if session.meta()?.closeout_reviewer {
+        Ok(None)
+    } else {
+        turn.config.closeout_for(&workspace, requested.as_deref())
+    };
+    let mut closeout = match policy {
         Ok(file) => CloseoutState::with_file(&workspace, file),
         Err(error) => {
             let result_text = error.to_string();
@@ -68,7 +73,10 @@ pub(super) async fn run_turn(
     let mut compact_id =
         crate::compact::latest_compact(&initial_events).map(|event| event.id.clone());
     let profile = turn.session.meta().ok().and_then(|meta| meta.profile);
-    let tool_defs = tool_definitions_for(&turn.config, turn.child, profile.as_deref());
+    let mut tool_defs = tool_definitions_for(&turn.config, turn.child, profile.as_deref());
+    if session.meta()?.closeout_reviewer {
+        tool_defs.retain(|tool| reviewer_tool(&tool.name));
+    }
     let tools_json = serde_json::to_string(&tool_defs)?;
 
     let mut result_text = String::new();
@@ -486,6 +494,10 @@ async fn completion_blocker(
     };
     if reason.is_some() {
         return Ok(reason);
+    }
+    refresh_closeout(&turn.tools, &turn.turn_id, closeout, &[])?;
+    if let Some(reason) = closeout.cannot_finish() {
+        return Ok(Some(reason));
     }
     goal::verify_goal(turn, text, cancel, closeout).await
 }

@@ -1,11 +1,11 @@
  ☰  Kyoto Agent                                     3 sessions · 0 waiting ▦
 ╭ sessions ──────────────────╮╭ ~/work/kyotoagent╮╭ closeout ──────────────x
-│▸ ✓ kyotoagent              ││                  ││· test  command  missing│
-│  idle                      ││▎ RESULT          ││Required for this turn  │
-│                            │││ The readme      ││- lint  command  not req│
-│  ✓ acpbot                  │││ now names       ││Not required; won't run │
-│  idle                      │││ the binary      ││                        │
-│                            │││ under the       ││                        │
+│▸ ✓ kyotoagent              ││                  ││Closeout checks are     │
+│  idle                      ││▎ RESULT          ││required                │
+│                            │││ The readme      ││· test  command  missing│
+│  ✓ acpbot                  │││ now names       ││Required for this turn  │
+│  idle                      │││ the binary      ││- lint  command  not req│
+│                            │││ under the       ││Not required; won't run │
 │  ✓ notes                   │││ heading         ││                        │
 │  idle                      │││ Kyoto           ││                        │
 │                            │││ Agent.          ││                        │

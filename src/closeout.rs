@@ -47,7 +47,7 @@ impl CloseoutKind {
     }
 
     pub fn is_supported(self) -> bool {
-        matches!(self, CloseoutKind::Command)
+        matches!(self, CloseoutKind::Command | CloseoutKind::Review)
     }
 }
 
@@ -57,6 +57,7 @@ pub struct CloseoutFile {
     pub imports: Vec<CloseoutImport>,
     pub setup: Vec<CloseoutItem>,
     pub executions: HashMap<String, CloseoutExecution>,
+    pub reviews: HashMap<String, CloseoutReview>,
     pub items: Vec<CloseoutItem>,
     pub max_failures: u32,
 }
@@ -210,6 +211,9 @@ impl CloseoutState {
     pub fn pinned_run(&self, argv: &[String]) -> Option<String> {
         let file = self.file.as_ref()?;
         for item in file.setup.iter().chain(&file.items) {
+            if item.kind == CloseoutKind::Review {
+                continue;
+            }
             let (check_argv, _) = file.execution(item);
             if argv == check_argv || argv.join(" ") == item.run {
                 return Some(item.id.clone());
@@ -269,7 +273,7 @@ impl CloseoutState {
     }
 }
 
-fn workspace_snapshot(workspace: &Path) -> HashMap<String, u64> {
+pub(crate) fn workspace_snapshot(workspace: &Path) -> HashMap<String, u64> {
     use std::hash::{Hash, Hasher};
     let mut paths = Vec::new();
     let listing = std::process::Command::new("git")
@@ -434,7 +438,7 @@ struct PublicFile {
     spec_version: String,
     description: Option<String>,
     #[serde(default)]
-    items: Vec<PublicCommand>,
+    items: Vec<PublicItem>,
     #[serde(default)]
     imports: Vec<CloseoutImport>,
     setup: Option<Vec<SetupStep>>,
@@ -446,6 +450,90 @@ pub struct CloseoutImport {
     pub path: String,
     #[serde(rename = "as")]
     pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloseoutReview {
+    pub skill: String,
+    pub independence: ReviewIndependence,
+    #[serde(rename = "failOn")]
+    pub fail_on: Severity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewIndependence {
+    #[serde(rename = "differentSession")]
+    pub different_session: bool,
+    #[serde(rename = "differentModel")]
+    pub different_model: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+pub enum Severity {
+    P0,
+    P1,
+    P2,
+    P3,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewFinding {
+    pub severity: Severity,
+    pub location: String,
+    pub explanation: String,
+    pub evidence: String,
+}
+
+impl CloseoutReview {
+    pub fn accepts(
+        &self,
+        candidate_session: &str,
+        candidate_model: &str,
+        reviewer_session: &str,
+        reviewer_model: &str,
+        findings: &[ReviewFinding],
+    ) -> bool {
+        let distinct = |required: bool, candidate: &str, reviewer: &str| {
+            !required || (!candidate.is_empty() && !reviewer.is_empty() && candidate != reviewer)
+        };
+        distinct(
+            self.independence.different_session,
+            candidate_session,
+            reviewer_session,
+        ) && distinct(
+            self.independence.different_model,
+            candidate_model,
+            reviewer_model,
+        ) && findings.iter().all(|finding| {
+            !finding.location.is_empty()
+                && !finding.explanation.is_empty()
+                && !finding.evidence.is_empty()
+                && finding.severity > self.fail_on
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+enum PublicItem {
+    Command(PublicCommand),
+    Review(PublicReview),
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublicReview {
+    id: String,
+    kind: CloseoutKind,
+    gate: String,
+    skill: String,
+    independence: ReviewIndependence,
+    #[serde(rename = "failOn")]
+    fail_on: Severity,
+    paths: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -517,6 +605,22 @@ impl CloseoutFile {
         root: &Path,
         stack: &mut Vec<PathBuf>,
     ) -> Result<Self, CloseoutError> {
+        for review in self.reviews.values_mut() {
+            let skill = root.join(&review.skill);
+            let canonical_root = root.canonicalize().map_err(|source| CloseoutError::Parse {
+                path: root.to_path_buf(),
+                source: source.to_string(),
+            })?;
+            validate_skill(&skill, &canonical_root)?;
+            review.skill = skill
+                .canonicalize()
+                .map_err(|source| CloseoutError::Parse {
+                    path: skill.clone(),
+                    source: source.to_string(),
+                })?
+                .to_string_lossy()
+                .into_owned();
+        }
         let mut imported_items = Vec::new();
         for entry in std::mem::take(&mut self.imports) {
             let path = root.join(&entry.path);
@@ -564,6 +668,9 @@ impl CloseoutFile {
                 if let Some(execution) = child.executions.remove(&item.id) {
                     self.executions.insert(id.clone(), execution);
                 }
+                if let Some(review) = child.reviews.remove(&item.id) {
+                    self.reviews.insert(id.clone(), review);
+                }
                 item.id = id;
                 if item.kind == CloseoutKind::Command {
                     item.hint = format!("Run {}", item.id);
@@ -584,6 +691,7 @@ impl CloseoutFile {
     }
 
     fn from_raw(raw: RawFile) -> Result<CloseoutFile, CloseoutError> {
+        let mut reviews = HashMap::new();
         let mut imports = Vec::new();
         let mut executions = HashMap::new();
         let (items, setup, max_failures) = match raw {
@@ -637,6 +745,41 @@ impl CloseoutFile {
                 imports = raw.imports;
                 let mut items = Vec::new();
                 for item in raw.items {
+                    let item = match item {
+                        PublicItem::Command(item) => item,
+                        PublicItem::Review(item) => {
+                            validate_execution(
+                                &item.id,
+                                std::slice::from_ref(&item.skill),
+                                1,
+                                &item.paths,
+                            )?;
+                            if item.kind != CloseoutKind::Review
+                                || item.gate != "beforePR"
+                                || !is_valid_import_path(&item.skill)
+                                || item.skill.len() > 256
+                                || !item.skill.ends_with("/SKILL.md")
+                            {
+                                return Err(CloseoutError::BadDefinition { message: format!("{} needs kind review, gate beforePR and a skill path ending in /SKILL.md", item.id) });
+                            }
+                            reviews.insert(
+                                item.id.clone(),
+                                CloseoutReview {
+                                    skill: item.skill.clone(),
+                                    independence: item.independence,
+                                    fail_on: item.fail_on,
+                                },
+                            );
+                            items.push(CloseoutItem {
+                                id: item.id,
+                                kind: CloseoutKind::Review,
+                                run: String::new(),
+                                hint: format!("Review using {}", item.skill),
+                                paths: item.paths.unwrap_or_default(),
+                            });
+                            continue;
+                        }
+                    };
                     validate_execution(&item.id, &item.exec, item.timeout, &item.paths)?;
                     if item.kind != CloseoutKind::Command || item.gate != "beforePR" {
                         return Err(CloseoutError::BadDefinition {
@@ -673,7 +816,9 @@ impl CloseoutFile {
                     id: item.id.clone(),
                 });
             }
-            if !item.kind.is_supported() {
+            if !item.kind.is_supported()
+                || (item.kind == CloseoutKind::Review && !reviews.contains_key(&item.id))
+            {
                 return Err(CloseoutError::UnsupportedKind {
                     id: item.id.clone(),
                     kind: item.kind.label().to_string(),
@@ -718,6 +863,7 @@ impl CloseoutFile {
             items,
             setup: steps,
             executions,
+            reviews,
             max_failures,
         })
     }
@@ -731,6 +877,38 @@ fn is_valid_id(id: &str) -> bool {
         }
         _ => false,
     }
+}
+
+fn validate_skill(skill: &Path, root: &Path) -> Result<(), CloseoutError> {
+    let fail = |source: String| CloseoutError::Parse {
+        path: skill.to_path_buf(),
+        source,
+    };
+    let canonical = skill
+        .canonicalize()
+        .map_err(|source| fail(source.to_string()))?;
+    if !canonical.starts_with(root) || !canonical.is_file() {
+        return Err(fail("skill must be a file inside the repository".into()));
+    }
+    fn walk(path: &Path) -> std::io::Result<()> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(std::io::Error::other(
+                "symlinks are not allowed in a skill directory",
+            ));
+        }
+        if metadata.is_dir() {
+            for entry in std::fs::read_dir(path)? {
+                walk(&entry?.path())?;
+            }
+        } else if !metadata.is_file() {
+            return Err(std::io::Error::other(
+                "skill directory entries must be regular files",
+            ));
+        }
+        Ok(())
+    }
+    walk(skill.parent().unwrap()).map_err(|source| fail(source.to_string()))
 }
 
 fn is_valid_import_path(path: &str) -> bool {
@@ -979,6 +1157,62 @@ mod tests {
             ["first/test", "second/test"]
         );
         assert_eq!(file.executions.len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn review_severity_and_independence_are_evaluated_by_the_host() {
+        let mut review = CloseoutReview {
+            skill: ".agents/skills/review/SKILL.md".into(),
+            independence: ReviewIndependence {
+                different_session: true,
+                different_model: true,
+            },
+            fail_on: Severity::P1,
+        };
+        assert!(review.accepts("candidate", "writer", "reviewer", "reader", &[]));
+        assert!(!review.accepts("candidate", "writer", "candidate", "reader", &[]));
+        assert!(!review.accepts("candidate", "writer", "reviewer", "writer", &[]));
+        assert!(!review.accepts("", "writer", "reviewer", "reader", &[]));
+        assert!(!review.accepts("candidate", "", "reviewer", "reader", &[]));
+        for severity in [Severity::P0, Severity::P1, Severity::P2, Severity::P3] {
+            let finding = ReviewFinding {
+                severity,
+                location: "src/lib.rs:1".into(),
+                explanation: "Finding".into(),
+                evidence: "Observed behavior".into(),
+            };
+            assert_eq!(
+                review.accepts("candidate", "writer", "reviewer", "reader", &[finding]),
+                severity > Severity::P1
+            );
+        }
+        review.independence = ReviewIndependence {
+            different_session: false,
+            different_model: false,
+        };
+        assert!(review.accepts("", "", "", "", &[]));
+        let finding = ReviewFinding {
+            severity: Severity::P3,
+            location: String::new(),
+            explanation: "Finding".into(),
+            evidence: "Observed behavior".into(),
+        };
+        assert!(!review.accepts("candidate", "writer", "reviewer", "reader", &[finding]));
+    }
+
+    #[test]
+    fn reviews_require_a_real_skill_directory_without_symlinks() {
+        let dir = temp_dir("review-skill");
+        write_file(&dir, "specVersion: '0.1'\nitems:\n  - id: review\n    kind: review\n    gate: beforePR\n    skill: skills/review/SKILL.md\n    independence:\n      differentSession: true\n      differentModel: false\n    failOn: P1\n");
+        assert!(read(&dir).is_err());
+        std::fs::create_dir_all(dir.join("skills/review")).unwrap();
+        std::fs::write(dir.join("skills/review/SKILL.md"), "Review changes").unwrap();
+        let file = read(&dir).unwrap().unwrap();
+        assert_eq!(file.items[0].kind, CloseoutKind::Review);
+        assert_eq!(file.reviews["review"].fail_on, Severity::P1);
+        std::os::unix::fs::symlink("SKILL.md", dir.join("skills/review/link")).unwrap();
+        assert!(read(&dir).unwrap_err().to_string().contains("symlinks"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
