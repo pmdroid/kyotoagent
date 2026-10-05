@@ -1095,7 +1095,7 @@ fn wide_pr_table() -> &'static str {
     "\
 | Repository | PR | Title | Approval | Conflicts | Draft |
 | --- | --- | --- | --- | --- | --- |
-| pmdroid/pagent | [#87](https://github.com/pmdroid/pagent/pull/87) | Install kyotoagent serve as a user service | None | No | No |
+| pmdroid/kyotoagent | [#87](https://github.com/pmdroid/kyotoagent/pull/87) | Install kyotoagent serve as a user service | None | No | No |
 | pmdroid/barkvisor_private | [#4](https://github.com/pmdroid/barkvisor_private/pull/4) | Watch private builds | None | No | No |
 | placeholder-tech/klar-magento-1 | [#1](https://github.com/placeholder-tech/klar-magento-1/pull/1) | Validate orders using response | None | No | No |
 "
@@ -1923,7 +1923,11 @@ fn a_proof_with_text_is_clickable_and_a_blank_one_is_not() {
 
 fn idle_with_pull() -> ScreenModel {
     let mut model = crate::mock::idle();
-    let url = format!("{}/pmdroid/pagent/pull/14", crate::session::github_origin());
+    model.left_width = 20;
+    let url = format!(
+        "{}/pmdroid/kyotoagent/pull/14",
+        crate::session::github_origin()
+    );
     model.sessions[0].pull_url = Some(url);
     model
 }
@@ -2242,7 +2246,10 @@ fn file_at_hits_a_proof_wrote_line() {
 #[test]
 fn link_at_hits_a_pull_overlay_url() {
     let mut model = crate::mock::idle();
-    let url = format!("{}/pmdroid/pagent/pull/14", crate::session::github_origin());
+    let url = format!(
+        "{}/pmdroid/kyotoagent/pull/14",
+        crate::session::github_origin()
+    );
     model.sessions[0].pull_url = Some(url.clone());
     model.overlay = Some(Overlay::Pull { url: url.clone() });
     let area = Rect::new(0, 0, 76, 24);

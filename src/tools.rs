@@ -2837,8 +2837,14 @@ mod tests {
     fn a_gh_pr_create_stores_the_url_from_stdout_and_a_later_one_replaces_it() {
         let (tools, workspace) = tools_for("pr-create");
         tools.gate().queue(Answer::allow_session());
-        let first = format!("{}/pmdroid/pagent/pull/14", crate::session::github_origin());
-        let second = format!("{}/pmdroid/pagent/pull/22", crate::session::github_origin());
+        let first = format!(
+            "{}/pmdroid/kyotoagent/pull/14",
+            crate::session::github_origin()
+        );
+        let second = format!(
+            "{}/pmdroid/kyotoagent/pull/22",
+            crate::session::github_origin()
+        );
         let bin = workspace.join("bin");
         let argv = vec!["gh".to_string(), "pr".to_string(), "create".to_string()];
         let _guard = PATH_LOCK.lock().expect("path lock");
@@ -2864,7 +2870,10 @@ mod tests {
     fn a_gh_pr_create_stores_a_url_printed_on_stderr() {
         let (tools, workspace) = tools_for("pr-stderr");
         tools.gate().queue(Answer::allow_session());
-        let url = format!("{}/pmdroid/pagent/pull/14", crate::session::github_origin());
+        let url = format!(
+            "{}/pmdroid/kyotoagent/pull/14",
+            crate::session::github_origin()
+        );
         let bin = workspace.join("bin");
         let script = format!("#!/bin/sh\nprintf '%s\\n' '{url}' >&2\n");
         install_gh(&bin, &script);
@@ -2890,7 +2899,10 @@ mod tests {
     fn a_command_that_is_not_gh_pr_create_does_not_store_a_url() {
         let (tools, _workspace) = tools_for("not-pr");
         tools.gate().queue(Answer::allow_session());
-        let url = format!("{}/pmdroid/pagent/pull/14", crate::session::github_origin());
+        let url = format!(
+            "{}/pmdroid/kyotoagent/pull/14",
+            crate::session::github_origin()
+        );
         let output = tools
             .run(
                 "t1",

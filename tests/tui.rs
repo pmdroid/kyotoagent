@@ -1495,7 +1495,7 @@ fn a_click_on_a_proof_card_opens_the_overlay() {
 
 fn sample_pull() -> String {
     format!(
-        "{}/pmdroid/pagent/pull/14",
+        "{}/pmdroid/kyotoagent/pull/14",
         kyotoagent::session::github_origin()
     )
 }

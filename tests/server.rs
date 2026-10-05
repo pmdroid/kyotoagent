@@ -2147,7 +2147,7 @@ async fn an_idle_session_fills_its_pull_url_from_gh_on_serve() {
     let bin = fixture.root.join("bin");
     fs::create_dir_all(&bin).expect("the bin exists");
     let gh = bin.join("gh");
-    let url = format!("{}/pmdroid/pagent/pull/42", github_origin());
+    let url = format!("{}/pmdroid/kyotoagent/pull/42", github_origin());
     fs::write(&gh, format!("#!/bin/sh\necho '{{\"url\":\"{url}\"}}'\n")).expect("gh is written");
     let mut perm = fs::metadata(&gh).expect("gh metadata").permissions();
     perm.set_mode(0o755);
