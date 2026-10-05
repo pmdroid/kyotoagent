@@ -166,7 +166,7 @@ struct File {
 struct ProjectFile {
     path: String,
     #[serde(default)]
-    closeout: Option<crate::closeout::CloseoutFile>,
+    closeout: Option<PathBuf>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -240,7 +240,7 @@ pub struct Profile {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Project {
-    pub closeout: Option<crate::closeout::CloseoutFile>,
+    pub closeout: Option<PathBuf>,
     pub id: String,
     pub name: String,
     pub path: PathBuf,
@@ -503,11 +503,23 @@ impl Config {
             return Ok(Some(file));
         }
         let id = self.project_for(&workspace.to_string_lossy(), requested);
-        Ok(self
+        let Some(project) = self
             .projects
             .iter()
             .find(|project| Some(&project.id) == id.as_ref())
-            .and_then(|project| project.closeout.clone()))
+        else {
+            return Ok(None);
+        };
+        let Some(path) = &project.closeout else {
+            return Ok(None);
+        };
+        let path = project.path.join(path);
+        let root = if path.starts_with(&project.path) {
+            project.path.as_path()
+        } else {
+            path.parent().unwrap_or(Path::new("."))
+        };
+        crate::closeout::parse_from_root(&path, root).map(Some)
     }
 
     pub fn profile_for(&self, workspace: &str, requested: Option<&str>) -> Option<String> {
@@ -1157,6 +1169,15 @@ fn projects_in(
         let name = project_str(item, "name")
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| id.to_string());
+        if definitions
+            .get(id)
+            .and_then(|project| project.closeout.as_ref())
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err(ConfigError::Missing {
+                field: format!("projects.{id}.closeout"),
+            });
+        }
         projects.push(Project {
             closeout: definitions
                 .get(id)
@@ -2341,20 +2362,12 @@ base_url = "x"
 model = "m"
 [projects.repo]
 path = {root:?}
-[projects.repo.closeout]
-version = 1
-[projects.repo.closeout.retry]
-maxFailedAttemptsPerItem = 2
-[[projects.repo.closeout.items]]
-id = "fallback"
-kind = "command"
-run = "true"
-hint = "Run the fallback check"
-paths = ["src/**"]
+closeout = "fallback.yaml"
 "#,
             root = root.to_string_lossy()
         ))
         .unwrap();
+        fs::write(root.join("fallback.yaml"), "version: 1\nretry:\n  maxFailedAttemptsPerItem: 2\nitems:\n  - id: fallback\n    kind: command\n    run: true\n    hint: Run the fallback check\n    paths: ['src/**']\n").unwrap();
         let file = config.closeout_for(&root, None).unwrap().unwrap();
         assert_eq!(file.items[0].id, "fallback");
         assert_eq!(file.items[0].paths, ["src/**"]);
@@ -2401,30 +2414,64 @@ paths = ["src/**"]
     }
 
     #[test]
-    fn project_closeout_uses_the_repository_validation_rules() {
-        let template = r#"
-base_url = "x"
-model = "m"
-[projects.repo]
-path = "/repo"
-[projects.repo.closeout]
-version = 1
-[[projects.repo.closeout.items]]
-id = "tests"
-kind = "command"
-run = "true"
-hint = "Run tests"
-paths = ["src/**"]
-"#;
+    fn project_closeout_imports_resolve_inside_the_selected_workspace() {
+        let root =
+            std::env::temp_dir().join(format!("kyotoagent-config-imports-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("checks.yaml"), "specVersion: '0.1'\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: [echo, checked]\n    timeoutSeconds: 5\n").unwrap();
+        fs::write(
+            root.join("fallback.yaml"),
+            "specVersion: '0.1'\nimports:\n  - path: checks.yaml\n    as: quality\n",
+        )
+        .unwrap();
+        let config = Config::from_toml(&format!(
+            "base_url = 'x'\nmodel = 'm'\n[projects.repo]\npath = {:?}\ncloseout = 'fallback.yaml'\n",
+            root.to_string_lossy()
+        ))
+        .unwrap();
+        let file = config.closeout_for(&root, None).unwrap().unwrap();
+        assert_eq!(file.items[0].id, "quality/test");
+        assert_eq!(file.executions["quality/test"].argv, ["echo", "checked"]);
+        std::fs::remove_file(root.join("checks.yaml")).unwrap();
+        assert!(config.closeout_for(&root, None).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn external_project_policy_imports_resolve_beside_the_yaml() {
+        let root =
+            std::env::temp_dir().join(format!("kyotoagent-external-policy-{}", std::process::id()));
+        let project = root.join("project");
+        let shared = root.join("shared");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("checks.yaml"), "specVersion: '0.1'\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: [echo, checked]\n    timeoutSeconds: 5\n").unwrap();
+        fs::write(
+            shared.join("closeout.yaml"),
+            "specVersion: '0.1'\nimports:\n  - path: checks.yaml\n    as: quality\n",
+        )
+        .unwrap();
+        let config = Config::from_toml(&format!(
+            "base_url = 'x'\nmodel = 'm'\n[projects.repo]\npath = {:?}\ncloseout = {:?}\n",
+            project.to_string_lossy(),
+            shared.join("closeout.yaml").to_string_lossy()
+        ))
+        .unwrap();
+        let file = config.closeout_for(&project, None).unwrap().unwrap();
+        assert_eq!(file.items[0].id, "quality/test");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_closeout_requires_a_yaml_path() {
+        let template = "base_url = 'x'\nmodel = 'm'\n[projects.repo]\npath = '/repo'\ncloseout = '/shared/closeout.yaml'\n";
         assert!(Config::from_toml(template).is_ok());
-        for invalid in [
-            template.replace("version = 1", "version = 2"),
-            template.replace("id = \"tests\"", "id = \"Tests\""),
-            template.replace("kind = \"command\"", "kind = \"visual\""),
-            template.replace("src/**", "../outside"),
-            format!("{template}\n[[projects.repo.closeout.items]]\nid = \"tests\"\nkind = \"command\"\nrun = \"true\"\nhint = \"Duplicate\"\n"),
-        ] {
-            assert!(Config::from_toml(&invalid).is_err(), "{invalid}");
-        }
+        assert!(Config::from_toml(&template.replace("'/shared/closeout.yaml'", "''")).is_err());
+        assert!(Config::from_toml(
+            "base_url = 'x'\nmodel = 'm'\n[projects.repo]\npath = '/repo'\n[projects.repo.closeout]\nspecVersion = '0.1'\n"
+        )
+        .is_err());
+        let config = Config::from_toml(template).unwrap();
+        assert!(config.closeout_for(Path::new("/repo"), None).is_err());
     }
 }

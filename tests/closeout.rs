@@ -1530,23 +1530,11 @@ async fn project_closeout_fallback_is_visible_in_the_prompt_and_gates_shell_chan
         r#"
 [projects.repo]
 path = "WORKSPACE"
-[projects.repo.closeout]
-version = 1
-[[projects.repo.closeout.items]]
-id = "test"
-kind = "command"
-run = "true"
-hint = "Run the configured check"
-paths = ["src/**"]
-[[projects.repo.closeout.items]]
-id = "docs"
-kind = "command"
-run = "false"
-hint = "Check docs"
-paths = ["docs/**"]
+closeout = "fallback.yaml"
 "#,
     );
     let workspace = fixture.add_session("91bc");
+    fs::write(workspace.join("fallback.yaml"), "version: 1\nitems:\n  - id: test\n    kind: command\n    run: true\n    hint: Run the configured check\n    paths: ['src/**']\n  - id: docs\n    kind: command\n    run: false\n    hint: Check docs\n    paths: ['docs/**']\n").unwrap();
     assert!(!workspace.join(".kyotoagent/closeout.yaml").exists());
     let rows = fixture.view("91bc").closeout;
     assert_eq!(rows.len(), 2);

@@ -54,6 +54,7 @@ impl CloseoutKind {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "RawFile")]
 pub struct CloseoutFile {
+    pub imports: Vec<CloseoutImport>,
     pub setup: Vec<CloseoutItem>,
     pub executions: HashMap<String, CloseoutExecution>,
     pub items: Vec<CloseoutItem>,
@@ -136,7 +137,7 @@ pub fn located(workspace: &Path) -> Option<PathBuf> {
 
 pub fn read(workspace: &Path) -> Result<Option<CloseoutFile>, CloseoutError> {
     match located(workspace) {
-        Some(path) => load_file(&path),
+        Some(path) => load_file(&path, workspace),
         None => Ok(None),
     }
 }
@@ -331,7 +332,20 @@ fn snapshot_paths(root: &Path, dir: &Path, paths: &mut Vec<String>) {
     }
 }
 pub fn parse(path: &Path) -> Result<CloseoutFile, CloseoutError> {
-    match load_file(path)? {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let root = if matches!(
+        parent.file_name().and_then(|name| name.to_str()),
+        Some(".agents" | ".kyotoagent")
+    ) {
+        parent.parent().unwrap_or(Path::new("."))
+    } else {
+        parent
+    };
+    parse_from_root(path, root)
+}
+
+pub fn parse_from_root(path: &Path, root: &Path) -> Result<CloseoutFile, CloseoutError> {
+    match load_file(path, root)? {
         Some(file) => Ok(file),
         None => Err(CloseoutError::Parse {
             path: path.to_path_buf(),
@@ -340,7 +354,18 @@ pub fn parse(path: &Path) -> Result<CloseoutFile, CloseoutError> {
     }
 }
 
-fn load_file(path: &Path) -> Result<Option<CloseoutFile>, CloseoutError> {
+fn load_file(path: &Path, root: &Path) -> Result<Option<CloseoutFile>, CloseoutError> {
+    let Some(file) = load_document(path, false)? else {
+        return Ok(None);
+    };
+    let mut stack = vec![path.canonicalize().map_err(|source| CloseoutError::Parse {
+        path: path.to_path_buf(),
+        source: source.to_string(),
+    })?];
+    Ok(Some(file.resolve_imports(root, &mut stack)?))
+}
+
+fn load_document(path: &Path, imported: bool) -> Result<Option<CloseoutFile>, CloseoutError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -356,6 +381,11 @@ fn load_file(path: &Path) -> Result<Option<CloseoutFile>, CloseoutError> {
             path: path.to_path_buf(),
             source: source.to_string(),
         })?;
+    if imported && value.get("version").is_some() {
+        return Err(CloseoutError::BadDefinition {
+            message: "imported policies need specVersion 0.1".into(),
+        });
+    }
     let raw = if value.get("version").is_some() {
         serde_yaml::from_str::<LegacyFile>(&text).map(RawFile::Legacy)
     } else {
@@ -405,7 +435,17 @@ struct PublicFile {
     description: Option<String>,
     #[serde(default)]
     items: Vec<PublicCommand>,
+    #[serde(default)]
+    imports: Vec<CloseoutImport>,
     setup: Option<Vec<SetupStep>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloseoutImport {
+    pub path: String,
+    #[serde(rename = "as")]
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -472,6 +512,70 @@ fn validate_execution(
 }
 
 impl CloseoutFile {
+    fn resolve_imports(
+        mut self,
+        root: &Path,
+        stack: &mut Vec<PathBuf>,
+    ) -> Result<Self, CloseoutError> {
+        let mut imported_items = Vec::new();
+        for entry in std::mem::take(&mut self.imports) {
+            let path = root.join(&entry.path);
+            let canonical = path.canonicalize().map_err(|source| CloseoutError::Parse {
+                path: path.clone(),
+                source: source.to_string(),
+            })?;
+            let canonical_root = root.canonicalize().map_err(|source| CloseoutError::Parse {
+                path: root.to_path_buf(),
+                source: source.to_string(),
+            })?;
+            if !canonical.starts_with(&canonical_root) {
+                return Err(CloseoutError::BadPath { path: entry.path });
+            }
+            if stack.contains(&canonical) {
+                let chain = stack
+                    .iter()
+                    .chain(std::iter::once(&canonical))
+                    .map(|path| {
+                        path.strip_prefix(&canonical_root)
+                            .unwrap_or(path)
+                            .display()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                return Err(CloseoutError::BadDefinition {
+                    message: format!("import cycle: {chain}"),
+                });
+            }
+            let child = load_document(&path, true)?.ok_or_else(|| CloseoutError::Parse {
+                path: path.clone(),
+                source: "import is missing".into(),
+            })?;
+            if !child.setup.is_empty() {
+                return Err(CloseoutError::BadDefinition {
+                    message: "setup is only allowed on the entry policy".into(),
+                });
+            }
+            stack.push(canonical);
+            let mut child = child.resolve_imports(root, stack)?;
+            stack.pop();
+            for mut item in child.items {
+                let id = format!("{}/{}", entry.name, item.id);
+                if let Some(execution) = child.executions.remove(&item.id) {
+                    self.executions.insert(id.clone(), execution);
+                }
+                item.id = id;
+                if item.kind == CloseoutKind::Command {
+                    item.hint = format!("Run {}", item.id);
+                }
+                imported_items.push(item);
+            }
+        }
+        imported_items.append(&mut self.items);
+        self.items = imported_items;
+        Ok(self)
+    }
+
     pub fn execution(&self, item: &CloseoutItem) -> (Vec<String>, Option<u64>) {
         match self.executions.get(&item.id) {
             Some(exec) => (exec.argv.clone(), Some(exec.timeout)),
@@ -480,6 +584,7 @@ impl CloseoutFile {
     }
 
     fn from_raw(raw: RawFile) -> Result<CloseoutFile, CloseoutError> {
+        let mut imports = Vec::new();
         let mut executions = HashMap::new();
         let (items, setup, max_failures) = match raw {
             RawFile::Legacy(raw) => {
@@ -499,6 +604,7 @@ impl CloseoutFile {
             RawFile::Public(raw) => {
                 if raw.spec_version != "0.1"
                     || raw.items.len() > 128
+                    || raw.imports.len() > 64
                     || raw.description.as_ref().is_some_and(|description| {
                         description.is_empty() || description.len() > 500
                     })
@@ -507,6 +613,28 @@ impl CloseoutFile {
                         message: "Invalid Closeout 0.1 policy".into(),
                     });
                 }
+                let mut names = std::collections::HashSet::new();
+                for entry in &raw.imports {
+                    if !is_valid_id(&entry.name)
+                        || entry.name.ends_with('-')
+                        || entry.name.contains("--")
+                    {
+                        return Err(CloseoutError::BadId {
+                            id: entry.name.clone(),
+                        });
+                    }
+                    if !names.insert(entry.name.clone()) {
+                        return Err(CloseoutError::BadDefinition {
+                            message: format!("duplicate import name {}", entry.name),
+                        });
+                    }
+                    if !is_valid_import_path(&entry.path) {
+                        return Err(CloseoutError::BadPath {
+                            path: entry.path.clone(),
+                        });
+                    }
+                }
+                imports = raw.imports;
                 let mut items = Vec::new();
                 for item in raw.items {
                     validate_execution(&item.id, &item.exec, item.timeout, &item.paths)?;
@@ -586,6 +714,7 @@ impl CloseoutFile {
             }
         }
         Ok(CloseoutFile {
+            imports,
             items,
             setup: steps,
             executions,
@@ -602,6 +731,10 @@ fn is_valid_id(id: &str) -> bool {
         }
         _ => false,
     }
+}
+
+fn is_valid_import_path(path: &str) -> bool {
+    is_valid_path_pattern(path) && !path.ends_with('/') && !path.contains(['*', '?', '[', ']'])
 }
 
 fn is_valid_path_pattern(path: &str) -> bool {
