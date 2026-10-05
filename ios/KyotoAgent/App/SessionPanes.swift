@@ -78,7 +78,7 @@ struct PaneColumn: SwiftUI.View {
                             todoLinks
                         }
                         if !sheets.closeout.isEmpty {
-                            columnHeader("Closeout")
+                            columnHeader("Closeout checks are required")
                             closeoutLinks
                         }
                         if !sheets.tasks.isEmpty {
@@ -121,6 +121,12 @@ struct DockPaneSheet: SwiftUI.View {
                     case .todos:
                         todoLinks
                     case .closeout:
+                        if !(model.sheets?.closeout.isEmpty ?? true) {
+                            Text("Closeout checks are required")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Ink.text)
+                                .accessibilityIdentifier("closeout-required")
+                        }
                         closeoutLinks
                     case .tasks:
                         taskLinks
