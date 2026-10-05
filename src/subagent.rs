@@ -39,6 +39,7 @@ pub struct SpawnInput {
     pub resume_from: Option<String>,
     pub cwd: Option<String>,
     pub model: Option<String>,
+    pub visible: bool,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -76,6 +77,11 @@ pub fn parse_spawn(args: &Value) -> Result<SpawnInput, String> {
     let resume_from = optional_string(args, "resume_from");
     let cwd = optional_string(args, "cwd");
     let model = optional_string(args, "model");
+    let visible = match args.get("visible") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err("visible must be a boolean".to_string()),
+    };
     if cwd.is_some() && isolation == Isolation::Worktree {
         return Err(CWD_WORKTREE_ERROR.to_string());
     }
@@ -87,6 +93,7 @@ pub fn parse_spawn(args: &Value) -> Result<SpawnInput, String> {
         resume_from,
         cwd,
         model,
+        visible,
     })
 }
 
@@ -378,5 +385,24 @@ mod tests {
         assert_eq!(input.isolation, Isolation::None);
         assert!(input.cwd.is_none());
         assert!(input.resume_from.is_none());
+        assert!(!input.visible);
+    }
+
+    #[test]
+    fn visible_defaults_off_and_rejects_a_non_boolean() {
+        let shown = parse_spawn(&json!({
+            "prompt": "do the thing",
+            "description": "Do the thing",
+            "visible": true,
+        }))
+        .expect("the input parses");
+        assert!(shown.visible);
+        let error = parse_spawn(&json!({
+            "prompt": "do the thing",
+            "description": "Do the thing",
+            "visible": "yes",
+        }))
+        .expect_err("a string is refused");
+        assert!(error.contains("visible"), "{error}");
     }
 }

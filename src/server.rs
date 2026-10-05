@@ -656,6 +656,8 @@ struct SessionRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     isolation: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hidden: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     worktree: bool,
     allow: AllowList,
 }
@@ -895,6 +897,7 @@ async fn list_sessions(State(state): State<AppState>) -> Result<impl IntoRespons
                 project,
                 parent_id: meta.parent_id,
                 isolation: meta.isolation,
+                hidden: meta.hidden,
                 worktree,
                 allow: meta.allow,
             })
@@ -1748,6 +1751,7 @@ mod ios_fixtures {
                 project: Some("kyotoagent".into()),
                 parent_id: Some("a11a0001".into()),
                 isolation: Some("worktree".into()),
+                hidden: false,
                 worktree: true,
                 allow: child_allow,
             },
@@ -1771,6 +1775,7 @@ mod ios_fixtures {
                 project: Some("kyotoagent".into()),
                 parent_id: None,
                 isolation: None,
+                hidden: false,
                 worktree: false,
                 allow: AllowList::default(),
             },

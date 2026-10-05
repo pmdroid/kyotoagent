@@ -1351,6 +1351,7 @@ fn idle_proof_app() -> App {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
     });
     app.cards.push(Card::Proof {
@@ -2577,6 +2578,7 @@ fn tall_session() -> App {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
     });
     app.cards = (0..20)
@@ -2776,6 +2778,7 @@ async fn selecting_another_session_turns_follow_on() {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
     });
     apply(&mut app, &client, Effect::SelectNext)
@@ -2813,6 +2816,7 @@ async fn clicking_a_session_selects_it_and_turns_follow_on() {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
     });
     apply(&mut app, &client, Effect::SelectSession("3f2ae04c".into()))

@@ -35,6 +35,7 @@ nonisolated public struct SessionLine: Equatable, Sendable {
 }
 
 nonisolated public func nestedSessions(_ rows: [Session]) -> [SessionNode] {
+    let rows = rows.filter { !$0.hidden }
     let ids = Set(rows.map(\.id))
     var out: [SessionNode] = []
     var seen = Set<String>()

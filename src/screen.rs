@@ -267,6 +267,7 @@ pub struct SessionRow {
     pub project_name: Option<String>,
     pub parent_id: Option<String>,
     pub isolation: Option<String>,
+    pub hidden: bool,
     pub worktree: bool,
 }
 
