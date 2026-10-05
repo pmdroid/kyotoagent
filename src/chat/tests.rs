@@ -318,6 +318,44 @@ fn a_catalog_row_keeps_advertised_context_length() {
 }
 
 #[test]
+fn catalog_effort_capabilities_keep_every_supported_level() {
+    let row = parse_model(
+        r#"{"id":"opus","capabilities":{"effort":{"supported":true,"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},"xhigh":{"supported":true},"max":{"supported":true},"ultra":{"supported":true},"custom":{"supported":true},"disabled":{"supported":false},"missing":{},"malformed":{"supported":"true"}}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        row.reasoning_efforts,
+        ["low", "medium", "high", "xhigh", "max", "ultra", "custom"]
+    );
+    assert!(row.takes_effort());
+}
+
+#[test]
+fn catalog_explicit_efforts_take_precedence_over_capabilities() {
+    for efforts in [r#"["custom", "ultra"]"#, "[]"] {
+        let rows = parse_catalog(&format!(
+            r#"{{"data":[{{"id":"opus","reasoning_efforts":{efforts},"capabilities":{{"effort":{{"low":{{"supported":true}}}}}}}}]}}"#,
+        ))
+        .unwrap();
+        let expected = if efforts == "[]" {
+            vec!["low"]
+        } else {
+            vec!["custom", "ultra"]
+        };
+        assert_eq!(rows[0].reasoning_efforts, expected);
+    }
+}
+
+#[test]
+fn catalog_malformed_effort_capabilities_leave_efforts_empty() {
+    for capabilities in ["null", "{}", r#"{"effort":true}"#, r#"{"effort":[]}"#] {
+        let row =
+            parse_model(&format!(r#"{{"id":"opus","capabilities":{capabilities}}}"#,)).unwrap();
+        assert!(row.reasoning_efforts.is_empty());
+    }
+}
+
+#[test]
 fn catalog_length_falls_back_through_window_fields() {
     let rows = parse_catalog(r#"{"data":[{"id":"m","max_model_len":32000}]}"#)
         .expect("the catalog parses");
