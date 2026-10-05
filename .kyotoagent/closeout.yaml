@@ -1,0 +1,16 @@
+version: 1
+retry:
+  maxFailedAttemptsPerItem: 3
+items:
+  - id: cargo-test
+    kind: command
+    run: cargo test --offline
+    hint: cargo test must pass
+  - id: cargo-fmt
+    kind: command
+    run: cargo fmt --check
+    hint: rustfmt must be clean
+  - id: cargo-clippy
+    kind: command
+    run: cargo clippy --all-targets --offline -- -D warnings
+    hint: clippy -D warnings must be clean

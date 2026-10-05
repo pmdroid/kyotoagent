@@ -1,0 +1,24 @@
+ ☰  Kyoto Agent                                     3 sessions · 0 waiting ▦
+╭ sessions ──────────────────╮╭ ~/work/kyotoagent╮╭ closeout ──────────────x
+│▸ ✓ kyotoagent              ││                  ││· test  command  missing│
+│  idle                      ││▎ RESULT          ││Required for this turn  │
+│                            │││ The readme      ││- lint  command  not req│
+│  ✓ acpbot                  │││ now names       ││Not required; won't run │
+│  idle                      │││ the binary      ││                        │
+│                            │││ under the       ││                        │
+│  ✓ notes                   │││ heading         ││                        │
+│  idle                      │││ Kyoto           ││                        │
+│                            │││ Agent.          ││                        │
+│                            ││                  ││                        │
+│                            ││▎ PROOF           ││                        │
+│                            │││ cargo test      ││                        │
+│                            │││ passed on       ││                        │
+│                            │││ the readme      ││                        │
+│                            │││ heading.        ││                        │
+│                            ││                  ││                        │
+│                            ││                  ││                        │
+│ctrl-n/p  ctrl-k  commands  ││                  ││                        │
+╰────────────────────────────╯╰──────────────────╯╰────────────────────────╯
+╭ Message ─────────────────────────────────────────────────────────────────╮
+│ › >█                                                                     │
+╰──────────────────────────────────────────────────────────────────────────╯

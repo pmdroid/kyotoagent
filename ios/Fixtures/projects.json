@@ -1,0 +1,13 @@
+[
+  {
+    "id": "kyotoagent",
+    "name": "kyotoagent",
+    "path": "/home/pascal/work/kyotoagent",
+    "yolo": true
+  },
+  {
+    "id": "notes",
+    "name": "notes",
+    "path": "/home/pascal/notes"
+  }
+]

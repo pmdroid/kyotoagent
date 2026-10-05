@@ -1,0 +1,24 @@
+ ☰  Kyoto Agent                                     3 sessions · 0 waiting ▦
+│╭ ~/work/kyotoagent ──────────────────────────────────────────────────────╮
+││                                                                         │
+││▎ RESULT                                                                 │
+│││ Repository          PR   Title               Approval  Conflicts  Draft│
+│││ ──────────────────  ───  ──────────────────  ────────  ─────────  ─────│
+│││ pmdroid/pagent      #87  Install kyotoagent  None      No         No   │
+│││                          serve as a user                               │
+│││                          service                                       │
+│││ pmdroid/            #4   Watch private       None      No         No   │
+│││ barkvisor_private        builds                                        │
+│││ placeholder-tech/   #1   Validate orders     None      No         No   │
+│││ klar-magento-1           using response                                │
+││                                                                         │
+││                                                                         │
+││                                                                         │
+││                                                                         │
+││                                                                         │
+││                                                                         │
+││                                                                         │
+│╰─────────────────────────────────────────────────────────────────────────╯
+╭ Message ─────────────────────────────────────────────────────────────────╮
+│ › >█                                                                     │
+╰──────────────────────────────────────────────────────────────────────────╯

@@ -1,0 +1,24 @@
+ ☰  Kyoto Agent                                     3 sessions · 1 waiting ▦
+╭ sessions ──────────────────╮╭ ~/work/kyotoagent ─────────────────────────╮
+│▸ ! kyotoagent              ││                                            │
+│  waiting question          ││                                       ASK ▎│
+│                            ││                    Add a readme line that ▎│
+│  acpbot                    ││                         names the binary. ▎│
+│  working                   ││                                            │
+│                            ││▎ QUESTION                                  │
+│  ✓ notes                   │││ Check test used all 3 failed attempts.    │
+│  idle                      │││ ○ 1  continue                             │
+│                            │││ ○ 2  stop                                 │
+│                            ││                                            │
+│                            ││                                            │
+│                            ││                                            │
+│                            ││                                            │
+│                            ││                                            │
+│                            ││                                            │
+│                            ││                                            │
+│                            ││                                            │
+│                            ││                                            │
+│                            ││                                            │
+│ctrl-n/p  ctrl-k  commands  ││· Waiting                                   │
+╰────────────────────────────╯╰────────────────────────────────────────────╯
+ › █

@@ -1,0 +1,41 @@
+name: ios
+
+on:
+  pull_request:
+    paths:
+      - ios/**
+      - .github/workflows/ios.yml
+  push:
+    branches:
+      - main
+    paths:
+      - ios/**
+      - .github/workflows/ios.yml
+
+jobs:
+  ios:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test --package-path ios/KyotoAgent
+      - run: xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme "Kyoto Agent" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO build
+      - name: Launch on an iPhone simulator
+        run: |
+          mkdir -p build/ios-smoke
+          device=$(xcrun simctl list devices available --json | python3 -c 'import json, sys; print(next(device["udid"] for runtime, devices in json.load(sys.stdin)["devices"].items() if runtime.startswith("com.apple.CoreSimulator.SimRuntime.iOS-26-") for device in devices if device["name"].startswith("iPhone")))')
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          xcrun simctl install "$device" 'build/ios/Build/Products/Debug-iphonesimulator/Kyoto Agent.app'
+          xcrun simctl launch "$device" sh.pascal.kyotoagent | tee build/ios-smoke/launch.txt
+          app_pid=$(awk '{print $NF}' build/ios-smoke/launch.txt)
+          sleep 5
+          kill -0 "$app_pid"
+          xcrun simctl io "$device" screenshot build/ios-smoke/launch.png
+          xcrun simctl terminate "$device" sh.pascal.kyotoagent
+          xcrun simctl shutdown "$device"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-simulator-smoke
+          path: build/ios-smoke
+          if-no-files-found: ignore

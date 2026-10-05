@@ -1,0 +1,15 @@
+---
+import BrandHead from './BrandHead.astro';
+import Metadata from './Metadata.astro';
+const head = Astro.locals.starlightRoute.head.filter(
+  ({ tag, attrs }) => !(
+    (tag === 'link' && ['shortcut icon', 'canonical', 'sitemap'].includes(String(attrs?.rel))) ||
+    (tag === 'meta' && (String(attrs?.property).startsWith('og:') || String(attrs?.name).startsWith('twitter:') || attrs?.name === 'robots'))
+  )
+);
+const title = Astro.locals.starlightRoute.entry.data.title + ' · Kyoto Agent';
+const description = Astro.locals.starlightRoute.entry.data.description || 'The agent that focuses on what you build, not what it does.';
+---
+{head.map(({ tag: Tag, attrs, content }) => <Tag {...attrs} set:html={content} />)}
+<Metadata title={title} description={description} type="article" noindex={Astro.url.pathname === '/404/'} />
+<BrandHead />

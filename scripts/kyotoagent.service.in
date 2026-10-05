@@ -1,0 +1,8 @@
+[Service]
+ExecStart=@KYOTOAGENT@ serve
+Restart=on-failure
+WorkingDirectory=%h
+Environment=HOME=%h
+
+[Install]
+WantedBy=default.target
