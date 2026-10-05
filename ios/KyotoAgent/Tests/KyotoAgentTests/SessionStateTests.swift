@@ -15,6 +15,11 @@ final class SessionStateTests: XCTestCase {
         XCTAssertTrue(panesHaveRows(SessionSheets(view)))
     }
 
+    func testCloseoutHidesUnneededChecksAlongsideRequiredChecks() throws {
+        let view = try JSONDecoder().decode(View.self, from: Data(#"{"revision":0,"status":"idle","cards":[],"todos":[],"tasks":[],"schedules":[],"closeout":[{"id":"tests","kind":"command","hint":"Run tests","status":"passed","required":true},{"id":"ui","kind":"command","hint":"Check UI","status":"not_required","required":false},{"id":"old","kind":"command","hint":"Previous check","status":"passed","required":false}]}"#.utf8))
+        XCTAssertEqual(SessionSheets(view).closeout.map(\.id), ["tests"])
+    }
+
     func testFixtureRowsMapIntoTheSheets() throws {
         let sheets = SessionSheets(try fixture(View.self, "view.json"))
         let todo = try XCTUnwrap(sheets.todos.first)
