@@ -102,10 +102,34 @@ pub(super) fn row_from_value(value: &Value) -> Option<ModelRow> {
     if id.is_empty() {
         return None;
     }
+    let mut reasoning_efforts = string_list(value, "reasoning_efforts");
+    if reasoning_efforts.is_empty() {
+        if let Some(efforts) = value
+            .pointer("/capabilities/effort")
+            .and_then(Value::as_object)
+        {
+            reasoning_efforts = efforts
+                .iter()
+                .filter(|(level, capability)| {
+                    !level.is_empty()
+                        && capability.get("supported").and_then(Value::as_bool) == Some(true)
+                })
+                .map(|(level, _)| level.clone())
+                .collect();
+            reasoning_efforts.sort_by_key(|level| {
+                [
+                    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+                ]
+                .iter()
+                .position(|known| known == level)
+                .unwrap_or(usize::MAX)
+            });
+        }
+    }
     Some(ModelRow {
         id,
         aliases: string_list(value, "aliases"),
-        reasoning_efforts: string_list(value, "reasoning_efforts"),
+        reasoning_efforts,
         context_length: advertised_length(value),
         provider: None,
     })
