@@ -64,6 +64,8 @@ impl std::error::Error for SessionError {}
 /// What a session is, and what it has been allowed to do.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionMeta {
+    #[serde(default, rename = "taskId", skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
     /// The session id, as the directory is named.
     pub id: String,
     /// The working directory every relative path in the log is against.
@@ -157,6 +159,7 @@ impl SessionMeta {
     /// both ends.
     pub fn new(id: &str, workspace: &Path, model: &str, at: &str) -> SessionMeta {
         SessionMeta {
+            task_id: None,
             id: id.to_string(),
             workspace: workspace.display().to_string(),
             model: model.to_string(),
@@ -182,6 +185,15 @@ impl SessionMeta {
             goal: None,
         }
     }
+}
+
+pub(crate) fn new_task_id() -> String {
+    use ring::rand::SecureRandom;
+    let mut bytes = [0; 16];
+    ring::rand::SystemRandom::new()
+        .fill(&mut bytes)
+        .expect("task identity randomness");
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// The exact things one session has been allowed, remembered on `meta.json`.

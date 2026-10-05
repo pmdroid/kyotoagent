@@ -370,7 +370,8 @@ pub(super) async fn execute_tool(
         }
         "run" => {
             let argv = argv_arg(args);
-            if let Some(reason) = guard_pull_request(tools, turn_id, closeout, &argv)? {
+            if let Some(reason) = guard_pull_request(turn, turn_id, closeout, &argv, cancel).await?
+            {
                 return Ok(failed(reason));
             }
             if let Some(id) = closeout.pinned_run(&argv) {
@@ -413,7 +414,9 @@ pub(super) async fn execute_tool(
                     failure: None,
                 }
             } else {
-                if let Some(reason) = guard_pull_request(tools, turn_id, closeout, &argv)? {
+                if let Some(reason) =
+                    guard_pull_request(turn, turn_id, closeout, &argv, cancel).await?
+                {
                     return Ok(failed(reason));
                 }
                 match tools.execute_cancellable(&argv, timeout_sec, cancel).await {
@@ -451,7 +454,8 @@ pub(super) async fn execute_tool(
         }
         "start_task" => {
             let argv = argv_arg(args);
-            if let Some(reason) = guard_pull_request(tools, turn_id, closeout, &argv)? {
+            if let Some(reason) = guard_pull_request(turn, turn_id, closeout, &argv, cancel).await?
+            {
                 return Ok(failed(reason));
             }
             let timeout_sec = args.get("timeout_sec").and_then(Value::as_u64);
@@ -479,7 +483,9 @@ pub(super) async fn execute_tool(
             let summary = if !allowed {
                 format!("Not allowed, so {} did not start.", argv.join(" "))
             } else {
-                if let Some(reason) = guard_pull_request(tools, turn_id, closeout, &argv)? {
+                if let Some(reason) =
+                    guard_pull_request(turn, turn_id, closeout, &argv, cancel).await?
+                {
                     return Ok(failed(reason));
                 }
                 match tools.tasks().start(turn_id, &argv, timeout_sec).await {

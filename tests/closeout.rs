@@ -214,6 +214,99 @@ struct Fixture {
     root: PathBuf,
 }
 
+#[tokio::test]
+async fn task_retry_exhaustion_survives_another_session_and_cannot_be_cleared_by_continue() {
+    let write = |path: &str| {
+        Canned::Json(tool_call_reply(vec![(
+            "write_file",
+            serde_json::json!({"path":path,"contents":"changed"}),
+        )]))
+    };
+    let check = || {
+        Canned::Json(tool_call_reply(vec![(
+            "run_closeout",
+            serde_json::json!({"id":"test"}),
+        )]))
+    };
+    let fixture = Fixture::new(
+        "task-retry-persistent",
+        vec![
+            write("first.txt"),
+            check(),
+            check(),
+            write("second.txt"),
+            check(),
+        ],
+    );
+    let workspace = fixture.add_session("91bc");
+    let first = Session::at(&fixture.root.join("session-91bc"));
+    first
+        .update(|meta| {
+            meta.task_id = Some("stable-task".into());
+            true
+        })
+        .unwrap();
+    fs::create_dir_all(workspace.join(".agents")).unwrap();
+    fs::write(workspace.join(".agents/closeout.yaml"), "specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 1\n  scope: task\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: [sh, -c, 'exit 1']\n    timeoutSeconds: 5\n").unwrap();
+    fixture.ask("91bc", "Write and run the check twice");
+    fixture.respond("91bc", Answer::allow_once()).await;
+    fixture.respond("91bc", Answer::allow_once()).await;
+    let question = fixture.wait_for_waiting_question("91bc").await;
+    assert!(question.body["text"]
+        .as_str()
+        .unwrap()
+        .contains("is exhausted"));
+    assert_eq!(question.body["choices"], serde_json::json!(["stop"]));
+    fixture.answer_question("91bc", "continue");
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert_eq!(fixture.closeout_runs("91bc"), 1);
+    let second = Session::at(&fixture.root.join("session-92bc"));
+    let mut meta = SessionMeta::new("92bc", &workspace, "test/model", AT);
+    meta.task_id = Some("stable-task".into());
+    second.create(&meta).unwrap();
+    fixture.runner.add_session(&second).unwrap();
+    fixture.ask("92bc", "Continue the same task in another session");
+    fixture.respond("92bc", Answer::allow_once()).await;
+    let question = fixture.wait_for_waiting_question("92bc").await;
+    assert!(question.body["text"]
+        .as_str()
+        .unwrap()
+        .contains("is exhausted"));
+    fixture.answer_question("92bc", "stop");
+    fixture.wait_for_status("92bc", Status::Idle).await;
+    assert_eq!(fixture.closeout_runs("92bc"), 0);
+}
+
+#[tokio::test]
+async fn a_public_policy_without_retry_allows_more_than_three_failed_attempts() {
+    let mut replies = vec![Canned::Json(tool_call_reply(vec![(
+        "write_file",
+        serde_json::json!({"path":"changed.txt","contents":"changed"}),
+    )]))];
+    for _ in 0..4 {
+        replies.push(Canned::Json(tool_call_reply(vec![(
+            "run_closeout",
+            serde_json::json!({"id":"test"}),
+        )])));
+    }
+    replies.push(Canned::Json(tool_call_reply(vec![(
+        "ask",
+        serde_json::json!({"text":"Help","choices":["stop"]}),
+    )])));
+    let fixture = Fixture::new("public-unlimited", replies);
+    let workspace = fixture.add_session("91bc");
+    fs::create_dir_all(workspace.join(".agents")).unwrap();
+    fs::write(workspace.join(".agents/closeout.yaml"), "specVersion: '0.1'\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: [sh, -c, 'exit 1']\n    timeoutSeconds: 5\n").unwrap();
+    fixture.ask("91bc", "Write and run four checks");
+    for _ in 0..5 {
+        fixture.respond("91bc", Answer::allow_once()).await;
+    }
+    fixture.wait_for_waiting_question("91bc").await;
+    assert_eq!(fixture.closeout_runs("91bc"), 4);
+    fixture.runner.cancel("91bc");
+    fixture.wait_for_status("91bc", Status::Idle).await;
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         for entry in fs::read_dir(&self.root).into_iter().flatten().flatten() {

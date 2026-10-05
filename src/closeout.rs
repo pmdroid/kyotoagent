@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 use crate::events::{CloseoutRunBody, ProofItem};
 use crate::tools::RunOutput;
 
+mod retry;
+pub(crate) use retry::{AttemptIdentity, RetryLedger};
+pub use retry::{RetryPolicy, RetryScope};
+
 pub const DEFAULT_MAX_FAILURES: u32 = 3;
 const TAIL_LINES: usize = 200;
 pub const ID_RULE: &str = "^[a-z][a-z0-9-]*$";
@@ -60,6 +64,9 @@ pub struct CloseoutFile {
     pub reviews: HashMap<String, CloseoutReview>,
     pub items: Vec<CloseoutItem>,
     pub max_failures: u32,
+    pub retry: Option<RetryPolicy>,
+    pub policy_digest: String,
+    pub policy_files: std::collections::BTreeMap<PathBuf, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -177,14 +184,21 @@ impl CloseoutState {
         }
         let mut result = String::from("Cannot finish yet.");
         for (item, state) in open {
-            let status = if state.failures > 0 {
+            let status = if file.retry.is_some() && state.failures >= file.max_failures {
+                "exhausted"
+            } else if state.failures > 0 {
                 "failed"
             } else {
                 "missing"
             };
+            let attempts = if file.max_failures == u32::MAX {
+                format!("Failed attempts {}.", state.failures)
+            } else {
+                format!("Attempts {} of {}.", state.failures, file.max_failures)
+            };
             result.push_str(&format!(
-                " Check {} is {}. Attempts {} of {}. Hint: {}.",
-                item.id, status, state.failures, file.max_failures, item.hint
+                " Check {} is {}. {} Hint: {}.",
+                item.id, status, attempts, item.hint
             ));
         }
         Some(result)
@@ -366,7 +380,9 @@ fn load_file(path: &Path, root: &Path) -> Result<Option<CloseoutFile>, CloseoutE
         path: path.to_path_buf(),
         source: source.to_string(),
     })?];
-    Ok(Some(file.resolve_imports(root, &mut stack)?))
+    let mut file = file.resolve_imports(root, &mut stack)?;
+    file.policy_digest = file.digest(root)?;
+    Ok(Some(file))
 }
 
 fn load_document(path: &Path, imported: bool) -> Result<Option<CloseoutFile>, CloseoutError> {
@@ -390,6 +406,11 @@ fn load_document(path: &Path, imported: bool) -> Result<Option<CloseoutFile>, Cl
             message: "imported policies need specVersion 0.1".into(),
         });
     }
+    if imported && value.get("retry").is_some() {
+        return Err(CloseoutError::BadDefinition {
+            message: "retry is only allowed on the entry policy".into(),
+        });
+    }
     let raw = if value.get("version").is_some() {
         serde_yaml::from_str::<LegacyFile>(&text).map(RawFile::Legacy)
     } else {
@@ -399,7 +420,10 @@ fn load_document(path: &Path, imported: bool) -> Result<Option<CloseoutFile>, Cl
         path: path.to_path_buf(),
         source: source.to_string(),
     })?;
-    Ok(Some(CloseoutFile::from_raw(raw)?))
+    let mut file = CloseoutFile::from_raw(raw)?;
+    file.policy_files
+        .insert(path.to_path_buf(), retry::hash(text.as_bytes()));
+    Ok(Some(file))
 }
 
 #[derive(Clone, Debug)]
@@ -442,6 +466,14 @@ struct PublicFile {
     #[serde(default)]
     imports: Vec<CloseoutImport>,
     setup: Option<Vec<SetupStep>>,
+    #[serde(default, deserialize_with = "present_retry")]
+    retry: Option<RetryPolicy>,
+}
+
+fn present_retry<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<RetryPolicy>, D::Error> {
+    RetryPolicy::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -612,6 +644,7 @@ impl CloseoutFile {
                 source: source.to_string(),
             })?;
             validate_skill(&skill, &canonical_root)?;
+            retry::skill_files(skill.parent().unwrap(), &mut self.policy_files)?;
             review.skill = skill
                 .canonicalize()
                 .map_err(|source| CloseoutError::Parse {
@@ -663,6 +696,7 @@ impl CloseoutFile {
             stack.push(canonical);
             let mut child = child.resolve_imports(root, stack)?;
             stack.pop();
+            self.policy_files.extend(child.policy_files);
             for mut item in child.items {
                 let id = format!("{}/{}", entry.name, item.id);
                 if let Some(execution) = child.executions.remove(&item.id) {
@@ -693,6 +727,7 @@ impl CloseoutFile {
     fn from_raw(raw: RawFile) -> Result<CloseoutFile, CloseoutError> {
         let mut reviews = HashMap::new();
         let mut imports = Vec::new();
+        let mut retry = None;
         let mut executions = HashMap::new();
         let (items, setup, max_failures) = match raw {
             RawFile::Legacy(raw) => {
@@ -710,6 +745,14 @@ impl CloseoutFile {
                 )
             }
             RawFile::Public(raw) => {
+                if let Some(policy) = &raw.retry {
+                    policy.validate()?;
+                }
+                let limit = raw
+                    .retry
+                    .as_ref()
+                    .map_or(u32::MAX, |policy| policy.max_failed_attempts_per_item);
+                retry = raw.retry;
                 if raw.spec_version != "0.1"
                     || raw.items.len() > 128
                     || raw.imports.len() > 64
@@ -801,7 +844,7 @@ impl CloseoutFile {
                         paths: item.paths.unwrap_or_default(),
                     });
                 }
-                (items, raw.setup, DEFAULT_MAX_FAILURES)
+                (items, raw.setup, limit)
             }
         };
         let mut ids = std::collections::HashSet::new();
@@ -865,6 +908,9 @@ impl CloseoutFile {
             executions,
             reviews,
             max_failures,
+            retry,
+            policy_digest: String::new(),
+            policy_files: Default::default(),
         })
     }
 }
@@ -1080,6 +1126,7 @@ mod tests {
         }
         let file: CloseoutFile = serde_yaml::from_str("specVersion: '0.1'\n").unwrap();
         assert_eq!(file.max_failures, u32::MAX);
+        assert!(serde_yaml::from_str::<CloseoutFile>("specVersion: '0.1'\nretry: null\n").is_err());
     }
 
     #[test]
@@ -1098,6 +1145,23 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("retry is only allowed on the entry policy"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retry_identity_changes_with_imported_policy_and_skill_bytes() {
+        let dir = temp_dir("retry-digest");
+        std::fs::create_dir_all(dir.join("skill")).unwrap();
+        std::fs::write(dir.join("skill/SKILL.md"), "Review").unwrap();
+        write_file(&dir, "specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 5\n  scope: task\nimports:\n  - path: child.yaml\n    as: child\n");
+        let child = "specVersion: '0.1'\nitems:\n  - id: review\n    kind: review\n    gate: beforePR\n    skill: skill/SKILL.md\n    independence:\n      differentSession: true\n      differentModel: true\n    failOn: P1\n";
+        std::fs::write(dir.join("child.yaml"), child).unwrap();
+        let first = read(&dir).unwrap().unwrap().policy_digest;
+        std::fs::write(dir.join("child.yaml"), format!("{child}\n")).unwrap();
+        let second = read(&dir).unwrap().unwrap().policy_digest;
+        assert_ne!(first, second);
+        std::fs::write(dir.join("skill/SKILL.md"), "New criteria").unwrap();
+        assert_ne!(second, read(&dir).unwrap().unwrap().policy_digest);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

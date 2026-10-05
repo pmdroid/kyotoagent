@@ -11,6 +11,8 @@ pub enum GoalStatus {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Goal {
+    #[serde(default)]
+    pub id: String,
     pub objective: String,
     pub status: GoalStatus,
     pub token_budget: Option<u64>,
@@ -30,6 +32,7 @@ pub struct GoalEvidence {
 impl Goal {
     pub fn new(objective: &str, token_budget: Option<u64>) -> Self {
         Self {
+            id: crate::session::new_task_id(),
             objective: objective.to_string(),
             status: GoalStatus::Active,
             token_budget,
