@@ -1011,9 +1011,10 @@ pub fn session_inner_of(model: &ScreenModel, area: Rect) -> Rect {
 }
 
 pub fn right_column_visible(model: &ScreenModel) -> bool {
-    !model.right_panes.is_empty()
-        || !model.todos.is_empty()
-        || !model.closeout.is_empty()
+    model.right_panes.iter().any(|pane| {
+        *pane != RightPane::Closeout || model.closeout.iter().any(|check| check.required)
+    }) || !model.todos.is_empty()
+        || model.closeout.iter().any(|check| check.required)
         || !model.tasks.is_empty()
         || !model.schedules.is_empty()
 }
@@ -1024,7 +1025,11 @@ pub fn stacked_panes(model: &ScreenModel) -> Vec<RightPane> {
     }
     RightPane::ORDER
         .into_iter()
-        .filter(|pane| model.right_panes.contains(pane))
+        .filter(|pane| {
+            model.right_panes.contains(pane)
+                && (*pane != RightPane::Closeout
+                    || model.closeout.iter().any(|check| check.required))
+        })
         .collect()
 }
 
@@ -1477,7 +1482,18 @@ fn terminal_lines(text: &str, width: usize) -> Vec<String> {
 }
 
 fn closeout_content_lines(model: &ScreenModel, width: usize) -> Vec<(Line<'static>, String)> {
-    let mut out = Vec::new();
+    if !model.closeout.iter().any(|check| check.required) {
+        return Vec::new();
+    }
+    let mut out = wrap("Closeout checks are required", width.max(1))
+        .into_iter()
+        .map(|line| {
+            (
+                Line::from(Span::styled(line, theme::faint())),
+                String::new(),
+            )
+        })
+        .collect::<Vec<_>>();
     for item in &model.closeout {
         let marker = closeout_marker(model, item.status);
         let header = format!(
@@ -1542,6 +1558,7 @@ pub fn closeout_row_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -
     let (index, width) = pane_line_index(model, area, RightPane::Closeout, column, row)?;
     closeout_content_lines(model, width)
         .get(index)
+        .filter(|(_, id)| !id.is_empty())
         .map(|(_, id)| id.clone())
 }
 

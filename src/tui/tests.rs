@@ -4,6 +4,7 @@ use super::*;
 fn pane_close_buttons_hide_only_the_clicked_pane_and_allow_reopening() {
     for pane in RightPane::ORDER {
         let mut app = todos_app(true);
+        app.closeout = vec![closeout_check()];
         app.right_panes = RightPane::ORDER.into_iter().collect();
         app.area = Rect::new(0, 0, 160, 40);
         let model = screen_model(&app);

@@ -274,10 +274,10 @@ try:
         send(b'\r')
     frame = capture('empty-right-panes')
     assert 'No todos yet' in frame and 'No schedules yet' in frame, frame
-    assert 'No tasks yet' in frame and 'No closeout yet' in frame, frame
+    assert 'No tasks yet' in frame and 'No closeout yet' not in frame, frame
     time.sleep(1)
     frame = capture('empty-right-panes-after-refresh')
-    assert 'No schedules yet' in frame and 'No closeout yet' in frame, frame
+    assert 'No schedules yet' in frame and 'No closeout yet' not in frame, frame
     send(b'\x0b')
     send(b'Closeout')
     send(b'\r')
