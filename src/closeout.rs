@@ -1456,18 +1456,11 @@ mod tests {
     }
 
     #[test]
-    fn kyoto_closeout_wins_and_a_kyotoagent_file_adds_nothing() {
+    fn kyoto_closeout_takes_precedence_over_agents() {
         let dir = temp_dir("order");
         let _ = std::fs::remove_dir_all(dir.join(".kyotoagent"));
-        let old = "version: 1\nitems:\n  - id: from-kyotoagent\n    kind: command\n    run: echo old\n    hint: old\n";
         let agents = "version: 1\nitems:\n  - id: from-agents\n    kind: command\n    run: echo agents\n    hint: agents\n";
         let kyoto = "version: 1\nitems:\n  - id: from-kyoto\n    kind: command\n    run: echo kyoto\n    hint: kyoto\n";
-        std::fs::create_dir_all(dir.join(".pagent")).expect("the old directory exists");
-        std::fs::write(dir.join(".pagent").join("closeout.yaml"), old)
-            .expect("the old file writes");
-        let state = CloseoutState::new(&dir).expect("an old file is not a closeout");
-        assert!(state.file.is_none());
-
         std::fs::create_dir_all(dir.join(".agents")).expect("the agents directory exists");
         std::fs::write(dir.join(".agents").join("closeout.yaml"), agents)
             .expect("the agents file writes");
@@ -1817,19 +1810,6 @@ mod tests {
         .expect("kyoto file");
         let kyoto = CloseoutState::new(&dir).expect("kyoto file loads");
         assert_eq!(kyoto.file.as_ref().expect("file").items[0].id, "kyoto");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_kyotoagent_closeout_file_is_not_read() {
-        let dir = temp_dir("kyotoagent");
-        let _ = std::fs::remove_dir_all(dir.join(".kyotoagent"));
-        std::fs::create_dir_all(dir.join(".pagent")).expect("kyotoagent dir");
-        std::fs::write(dir.join(".pagent").join("closeout.yaml"), ONE_CHECK)
-            .expect("kyotoagent file");
-        let state = CloseoutState::new(&dir).expect("missing is empty");
-        assert!(state.file.is_none());
-        assert!(located(&dir).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -165,7 +165,7 @@ pub fn result_wide_table() -> ScreenModel {
         "\
 | Repository | PR | Title | Approval | Conflicts | Draft |
 | --- | --- | --- | --- | --- | --- |
-| pmdroid/pagent | [#87](https://github.com/pmdroid/pagent/pull/87) | Install kyotoagent serve as a user service | None | No | No |
+| pmdroid/kyotoagent | [#87](https://github.com/pmdroid/kyotoagent/pull/87) | Install kyotoagent serve as a user service | None | No | No |
 | pmdroid/barkvisor_private | [#4](https://github.com/pmdroid/barkvisor_private/pull/4) | Watch private builds | None | No | No |
 | placeholder-tech/klar-magento-1 | [#1](https://github.com/placeholder-tech/klar-magento-1/pull/1) | Validate orders using response | None | No | No |
 ",

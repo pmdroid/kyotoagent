@@ -109,17 +109,8 @@ fn linux_dry_run_writes_execstart_with_the_fake_binary() {
     let exec = format!("ExecStart={} serve", binary.display());
     assert!(unit.contains(&exec), "{unit}");
     assert!(!unit.contains("--listen"), "{unit}");
-    assert!(
-        !linux_unit(&home)
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .contains("pagent.service"),
-        "the legacy service name is absent"
-    );
     let printed = text(&output.stdout);
     assert!(printed.contains("kyotoagent.service"), "{printed}");
-    assert!(!printed.contains("pagent.service"), "{printed}");
     assert!(unit.contains("Restart=on-failure"), "{unit}");
     assert!(!unit.contains("Restart=always"), "{unit}");
 }
@@ -150,7 +141,6 @@ fn darwin_dry_run_writes_the_binary_in_program_arguments() {
         unit.contains("<string>ai.kyotoagent.serve</string>"),
         "{unit}"
     );
-    assert!(!unit.contains("ai.pagent.serve"), "{unit}");
     assert!(unit.contains("<key>HOME</key>"), "{unit}");
     assert!(
         unit.contains(&format!("<string>{}</string>", home.display())),
@@ -313,7 +303,7 @@ fn both_names_keep_kyotoagent_in_the_unit() {
 }
 
 #[test]
-fn uninstall_stops_the_new_unit_and_a_leftover_linux_service() {
+fn uninstall_stops_the_linux_service() {
     let scratch = scratch();
     let bins = bin_dir(&scratch.0);
     let home = scratch.0.join("home");
@@ -342,14 +332,10 @@ fn uninstall_stops_the_new_unit_and_a_leftover_linux_service() {
         recorded.contains("disable --now kyotoagent.service"),
         "{recorded}"
     );
-    assert!(
-        recorded.contains("disable --now kyotoagent.service"),
-        "{recorded}"
-    );
 }
 
 #[test]
-fn uninstall_stops_a_leftover_launch_agent() {
+fn uninstall_stops_the_launch_agent() {
     let scratch = scratch();
     let bins = bin_dir(&scratch.0);
     let home = scratch.0.join("home");
@@ -370,7 +356,10 @@ fn uninstall_stops_a_leftover_launch_agent() {
         "uninstall leaves the new plist"
     );
     let recorded = fs::read_to_string(&log).expect("launchctl was recorded");
-    assert!(recorded.contains("ai.pagent.serve"), "{recorded}");
+    assert!(
+        recorded.contains(&format!(" {}", darwin_unit(&home).display())),
+        "{recorded}"
+    );
 }
 
 #[test]

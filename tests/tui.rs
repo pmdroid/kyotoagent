@@ -1495,7 +1495,7 @@ fn a_click_on_a_proof_card_opens_the_overlay() {
 
 fn sample_pull() -> String {
     format!(
-        "{}/pmdroid/pagent/pull/14",
+        "{}/pmdroid/kyotoagent/pull/14",
         kyotoagent::session::github_origin()
     )
 }
@@ -1503,6 +1503,7 @@ fn sample_pull() -> String {
 #[tokio::test]
 async fn enter_on_a_session_with_a_pull_opens_the_overlay() {
     let mut app = idle_proof_app();
+    app.left_width = 20;
     app.cards = vec![Card::proof("cargo test passed.", &[])];
     let url = sample_pull();
     app.sessions[0].pull_url = Some(url.clone());

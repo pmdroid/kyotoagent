@@ -1028,7 +1028,7 @@ mod tests {
     }
 
     fn sample_pull(n: u32) -> String {
-        format!("{}/pmdroid/pagent/pull/{n}", github_origin())
+        format!("{}/pmdroid/kyotoagent/pull/{n}", github_origin())
     }
 
     #[test]
@@ -1040,7 +1040,7 @@ mod tests {
         assert_eq!(pull_mark(&url).as_deref(), Some("pr 14"));
         assert_eq!(opened_line(&url), format!("Opened {url}"));
         assert!(github_pull_url("no pull here").is_none());
-        assert!(github_pull_url("github.com/pmdroid/pagent/pull/14").is_none());
+        assert!(github_pull_url("github.com/pmdroid/kyotoagent/pull/14").is_none());
     }
 
     #[test]

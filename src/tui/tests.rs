@@ -1711,7 +1711,10 @@ fn a_proof_with_no_items_stays_on_the_pane() {
 #[test]
 fn a_pull_url_opens_a_pull_overlay_and_esc_closes_it() {
     let mut app = idle_proof_app(Card::proof("cargo test passed.", &[]));
-    let url = format!("{}/pmdroid/pagent/pull/14", crate::session::github_origin());
+    let url = format!(
+        "{}/pmdroid/kyotoagent/pull/14",
+        crate::session::github_origin()
+    );
     app.sessions[0].pull_url = Some(url.clone());
     app.overlay = true;
     app.overlay_pull = true;
@@ -2910,7 +2913,10 @@ fn a_click_on_a_todo_link_opens_the_url() {
 #[test]
 fn a_click_on_a_pull_overlay_url_opens_the_browser() {
     let mut app = idle_proof_app(Card::proof("cargo test passed.", &[]));
-    let url = format!("{}/pmdroid/pagent/pull/14", crate::session::github_origin());
+    let url = format!(
+        "{}/pmdroid/kyotoagent/pull/14",
+        crate::session::github_origin()
+    );
     app.sessions[0].pull_url = Some(url.clone());
     app.overlay = true;
     app.overlay_pull = true;

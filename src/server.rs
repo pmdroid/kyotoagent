@@ -1735,7 +1735,7 @@ mod ios_fixtures {
                 updated_at: "2026-10-01T21:40:00.000Z".into(),
                 created_at: "2026-10-01T21:40:00.000Z".into(),
                 waiting: Some("permission"),
-                pull_url: Some("https://github.com/pmdroid/pagent/pull/92".into()),
+                pull_url: Some("https://github.com/pmdroid/kyotoagent/pull/92".into()),
                 compacting: true,
                 yolo: true,
                 enhance: false,

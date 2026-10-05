@@ -4,7 +4,7 @@
 ││▎ RESULT                                                                 │
 │││ Repository          PR   Title               Approval  Conflicts  Draft│
 │││ ──────────────────  ───  ──────────────────  ────────  ─────────  ─────│
-│││ pmdroid/pagent      #87  Install kyotoagent  None      No         No   │
+│││ pmdroid/kyotoagent  #87  Install kyotoagent  None      No         No   │
 │││                          serve as a user                               │
 │││                          service                                       │
 │││ pmdroid/            #4   Watch private       None      No         No   │

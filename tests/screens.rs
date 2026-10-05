@@ -1000,7 +1000,7 @@ fn no_frame_names_a_tool() {
 fn a_detail_row_wider_than_the_list_pane_still_draws() {
     let mut model = mock::waiting();
     for row in model.sessions.iter_mut() {
-        row.pull_url = Some("https://github.com/pmdroid/pagent/pull/12345".to_string());
+        row.pull_url = Some("https://github.com/pmdroid/kyotoagent/pull/12345".to_string());
     }
     draw(&model);
 

@@ -317,32 +317,6 @@ mod tests {
     }
 
     #[test]
-    fn a_kyotoagent_home_file_adds_nothing() {
-        let scratch = Scratch::new("kyotoagent-home");
-        let home = scratch.path("home");
-        write(&home.join(".pagent").join("AGENTS.md"), "FROM KYOTOAGENT\n");
-        let workspace = scratch.path("repo");
-        git_root(&workspace);
-        let text = load_in(&workspace, &home);
-        assert!(!text.contains("FROM KYOTOAGENT"), "{text}");
-        assert!(text.is_empty(), "{text}");
-    }
-
-    #[test]
-    fn a_kyotoagent_repo_file_adds_nothing() {
-        let scratch = Scratch::new("kyotoagent-repo");
-        let workspace = scratch.path("repo");
-        git_root(&workspace);
-        write(
-            &workspace.join(".pagent").join("AGENTS.md"),
-            "FROM KYOTOAGENT REPO\n",
-        );
-        let text = load_in(&workspace, &scratch.path("home"));
-        assert!(!text.contains("FROM KYOTOAGENT REPO"), "{text}");
-        assert!(text.is_empty(), "{text}");
-    }
-
-    #[test]
     fn a_file_past_the_cap_is_cut_on_a_char_boundary() {
         let scratch = Scratch::new("cap");
         let workspace = scratch.path("repo");

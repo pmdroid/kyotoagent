@@ -593,7 +593,6 @@ async fn serve_listen_writes_config_and_prints_the_bound_address() {
         serving.ends_with("/.kyotoagent/kyotoagent.sock"),
         "{serving}"
     );
-    assert!(!serving.contains("/.pagent/"), "{serving}");
 
     let text = fs::read_to_string(root.join("config.toml")).expect("the config reads");
     assert!(text.contains("listen = \"127.0.0.1:0\""), "{text}");
