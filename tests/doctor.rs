@@ -547,6 +547,24 @@ async fn a_present_opencode_key_is_not_printed() {
     let _ = fs::remove_dir_all(&home);
 }
 
+#[tokio::test]
+async fn systemprompt_prints_the_workspace_prompt() {
+    let (home, cwd) = temp_home("prompt");
+    fs::write(cwd.join("AGENTS.md"), "Ship the small change.\n").expect("agents writes");
+    let output = kyotoagent_bin(&home, &cwd, &["systemprompt"]).await;
+    let stdout = String::from_utf8(output.stdout).expect("prompt is text");
+    assert!(output.status.success(), "{stdout}");
+    assert!(
+        stdout.contains(&format!(
+            "You are Kyoto Agent, a coding agent working in {}.",
+            cwd.display()
+        )),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Ship the small change."), "{stdout}");
+    let _ = fs::remove_dir_all(&home);
+}
+
 #[test]
 fn help_names_doctor() {
     let output = Command::new(env!("CARGO_BIN_EXE_kyotoagent"))
@@ -555,6 +573,11 @@ fn help_names_doctor() {
         .expect("the kyotoagent binary runs");
     let stdout = String::from_utf8(output.stdout).expect("help is text");
     assert!(stdout.contains("doctor"), "{stdout}");
+    assert!(stdout.contains("systemprompt"), "{stdout}");
+    assert!(
+        stdout.contains("Print the system prompt with systemprompt"),
+        "{stdout}"
+    );
     assert!(stdout.contains("Kyoto Agent"), "{stdout}");
 }
 

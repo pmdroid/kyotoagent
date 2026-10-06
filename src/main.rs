@@ -37,6 +37,7 @@ Usage:
   kyotoagent provider add <id> --base-url <url> --model <model> [--api-key-env <name>]
   kyotoagent provider add opencode [--model <model>] [--api-key-env <name>]
   kyotoagent doctor
+  kyotoagent systemprompt
   kyotoagent pair hostname:7841
   kyotoagent doctor --url https://box.tailnet.ts.net:7841
 
@@ -54,7 +55,8 @@ Commands:
   archive   Hide a session until it is restored. The log stays.
   unarchive Restore an archived session.
   provider  Print or change the model server in ~/.kyotoagent/config.toml.
-  doctor    Check the socket, the model, and closeout.yaml.
+  doctor    Check the socket, the model, and closeout.yaml. Print the system prompt with systemprompt.
+  systemprompt  Print the system prompt for the current directory.
   pair      Pair with a server, or show a temporary pairing QR code.
 
 The server speaks HTTP on ~/.kyotoagent/kyotoagent.sock. Optional listen in
@@ -126,8 +128,12 @@ enum Command {
     Unarchive { id: Option<String> },
     #[command(about = "Open the session list with that session selected.")]
     Attach { id: String },
-    #[command(about = "Check the socket, the model, and closeout.yaml.")]
+    #[command(
+        about = "Check the socket, the model, and closeout.yaml. Print the system prompt with systemprompt."
+    )]
     Doctor,
+    /// Print the system prompt for the current directory.
+    Systemprompt,
     #[command(
         about = "Exchange a pairing URI for a saved JWT, or show a 10-minute code for HOST:PORT."
     )]
@@ -253,9 +259,28 @@ async fn run(command: Option<Command>, yolo: bool, url: Option<String>) -> Resul
         Some(Command::Unarchive { id }) => set_archive(id, false, url).await,
         Some(Command::Provider { command }) => provider(command),
         Some(Command::Doctor) => unreachable!(),
+        Some(Command::Systemprompt) => systemprompt(),
         Some(Command::Pair { host }) => pair(&host).await,
     }
     .map(|()| true)
+}
+
+fn systemprompt() -> Result<(), String> {
+    let workspace = current_workspace()?;
+    let path = PathBuf::from(&workspace);
+    let config = Config::default_path()
+        .and_then(|path| Config::load(&path).ok())
+        .unwrap_or_default();
+    let closeout = kyotoagent::closeout::read(&path).unwrap_or(None);
+    let prompt = kyotoagent::prompt::system_prompt(
+        &workspace,
+        &kyotoagent::skills::index(&path),
+        closeout.as_ref(),
+        &kyotoagent::agents_doc::load(&path),
+        config.provider_context_window(),
+    );
+    print!("{prompt}");
+    Ok(())
 }
 
 async fn pair(host: &str) -> Result<(), String> {

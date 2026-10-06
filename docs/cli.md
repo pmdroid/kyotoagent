@@ -29,7 +29,8 @@ choice of socket or `--url` / `KYOTOAGENT_URL`.
 | `kyotoagent provider` | Prints the current model server |
 | `kyotoagent provider use <id>` | Selects a table in the file |
 | `kyotoagent provider add <id> --base-url <url> --model <model> [--api-key-env <name>]` | Inserts a table and selects it |
-| `kyotoagent doctor` | Checks all configured credentials, model catalogs, the socket, and the closeout file |
+| `kyotoagent doctor` | Checks all configured credentials, model catalogs, the socket, and the closeout file. Print the system prompt with `systemprompt` |
+| `kyotoagent systemprompt` | Prints the system prompt for the current directory |
 | `kyotoagent doctor --url <connection-link>` | Checks remote server connectivity alongside local configuration and credentials |
 
 `doctor` checks authentication for every configured provider and queries each model
