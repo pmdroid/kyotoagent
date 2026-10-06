@@ -195,26 +195,12 @@ fn agents_block(agents: &str) -> String {
 }
 
 fn closeout_block(closeout: Option<&CloseoutFile>, child: bool) -> String {
-    let Some(file) = closeout else {
+    let Some(_) = closeout else {
         return String::new();
     };
-    let mut suffix = String::from("This workspace pins these closeout checks:\n");
-    for item in file.setup.iter().chain(&file.items) {
-        suffix.push_str("- ");
-        suffix.push_str(&item.id);
-        suffix.push_str(": ");
-        suffix.push_str(&item.hint);
-        suffix.push('\n');
-    }
-    suffix.push_str(
-        "Call `run_closeout` with the id to run a check. It runs matching setup steps in order before checks and stops when setup fails. Skip checks that are not required. Checks are required only when workspace files change during this turn, including changes made by commands or workers. Read-only turns and changes outside the workspace do not require checks. The turn cannot finish until every required check has passed. An item with paths is required only when a changed workspace path matches one of them.\n",
+    let mut suffix = String::from(
+        "This workspace has closeout checks. After changes and before finishing, call `get_closeout` to discover the required checks and their current status. Run each pending ID in order with `run_closeout`, then call `get_closeout` again. The run_closeout tool runs matching setup steps before checks. Pass a different model to run_closeout when a review has different_model set. Further workspace edits can make passed checks stale. The turn cannot finish until every required check has passed. If blocked is non-null, stop retrying and report the blocker.\n",
     );
-    if !file.reviews.is_empty() {
-        suffix.push_str("Review checks launch an independent reviewer using the pinned skill. Pass model to run_closeout when the review requires a different model. The host evaluates the reviewer findings against failOn.\n");
-    }
-    if let Some(retry) = &file.retry {
-        suffix.push_str(&format!("Each requirement allows at most {} failed attempts in {:?} scope. Exhaustion blocks acceptance. Stop retrying and ask the operator for help; a new commit or agent session cannot clear task failures.\n", retry.max_failed_attempts_per_item, retry.scope));
-    }
     if child {
         suffix.push_str(
             "If a required check fails, fix it and call run_closeout again. If you cannot fix a required check, call finish with the error and what you tried.\n\n",
@@ -543,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prompt_lists_each_pinned_closeout_id_and_hint() {
+    fn the_prompt_discovers_closeout_requirements_through_the_tool() {
         let file = crate::closeout::CloseoutFile {
             imports: Vec::new(),
             reviews: std::collections::HashMap::new(),
@@ -551,14 +537,14 @@ mod tests {
             executions: Default::default(),
             items: vec![
                 crate::closeout::CloseoutItem {
-                    id: "test".into(),
+                    id: "pinned-test-id".into(),
                     kind: crate::closeout::CloseoutKind::Command,
                     run: "cargo test".into(),
                     hint: "Fix the failing test".into(),
                     paths: vec![],
                 },
                 crate::closeout::CloseoutItem {
-                    id: "lint".into(),
+                    id: "pinned-lint-id".into(),
                     kind: crate::closeout::CloseoutKind::Command,
                     run: "cargo clippy".into(),
                     hint: "Fix the lint".into(),
@@ -571,13 +557,11 @@ mod tests {
             policy_files: Default::default(),
         };
         let prompt = system_prompt("/w", &[], Some(&file), "", None);
-        assert!(prompt.contains("test"), "the id: {prompt}");
-        assert!(
-            prompt.contains("Fix the failing test"),
-            "the hint: {prompt}"
-        );
-        assert!(prompt.contains("lint"), "the second id: {prompt}");
-        assert!(prompt.contains("Fix the lint"), "the second hint: {prompt}");
+        assert!(!prompt.contains("pinned-test-id"), "{prompt}");
+        assert!(!prompt.contains("pinned-lint-id"), "{prompt}");
+        assert!(!prompt.contains("Fix the failing test"), "{prompt}");
+        assert!(!prompt.contains("Fix the lint"), "{prompt}");
+        assert!(prompt.contains("`get_closeout`"), "{prompt}");
         assert!(
             prompt.contains("`run_closeout`"),
             "the instruction: {prompt}"
@@ -760,7 +744,8 @@ mod tests {
         assert!(prompt.contains("The workspace is /w."), "{prompt}");
         assert!(prompt.contains("pnpm test"), "{prompt}");
         assert!(prompt.contains("review"), "{prompt}");
-        assert!(prompt.contains("Fix the failing test"), "{prompt}");
+        assert!(!prompt.contains("Fix the failing test"), "{prompt}");
+        assert!(prompt.contains("`get_closeout`"), "{prompt}");
         assert!(prompt.contains("You work for the parent agent"), "{prompt}");
         assert!(
             prompt.contains(

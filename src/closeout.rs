@@ -23,6 +23,12 @@ pub struct CloseoutItem {
     pub paths: Vec<String>,
 }
 
+impl CloseoutItem {
+    fn matches_path(&self, path: &str) -> bool {
+        self.paths.is_empty() || self.paths.iter().any(|glob| glob_matches(glob, path))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CloseoutKind {
@@ -213,13 +219,62 @@ impl CloseoutState {
         {
             return false;
         }
-        if item.paths.is_empty() {
-            !self.written_paths.is_empty()
-        } else {
-            self.written_paths
+        self.written_paths
+            .iter()
+            .any(|written| item.matches_path(written))
+    }
+
+    pub(crate) fn report(&self) -> serde_json::Value {
+        let mut required = Vec::new();
+        let mut pending = Vec::new();
+        let mut blocked = None;
+        if let Some(file) = &self.file {
+            for item in file
+                .setup
                 .iter()
-                .any(|written| item.paths.iter().any(|glob| glob_matches(glob, written)))
+                .chain(&file.items)
+                .filter(|item| self.is_required(item))
+            {
+                let state = self.items.get(&item.id).cloned().unwrap_or_default();
+                let exhausted = file.retry.is_some() && state.failures >= file.max_failures;
+                let status = if exhausted {
+                    blocked = self.required_blocker();
+                    "exhausted"
+                } else if state.passed {
+                    "passed"
+                } else if self
+                    .proof_items
+                    .iter()
+                    .any(|proof| proof.id == item.id && proof.outcome == "stale")
+                {
+                    "stale"
+                } else if state.failures > 0 {
+                    "failed"
+                } else {
+                    "missing"
+                };
+                if !state.passed && !exhausted {
+                    pending.push(&item.id);
+                }
+                let matched_paths: std::collections::BTreeSet<_> = self
+                    .written_paths
+                    .iter()
+                    .filter(|path| item.matches_path(path))
+                    .collect();
+                required.push(serde_json::json!({
+                    "id": item.id,
+                    "kind": item.kind.label(),
+                    "hint": item.hint,
+                    "matched_paths": matched_paths,
+                    "status": status,
+                    "failed_attempts": state.failures,
+                    "remaining_attempts": (file.max_failures != u32::MAX).then(|| file.max_failures.saturating_sub(state.failures)),
+                    "retry_scope": file.retry.as_ref().map(|retry| retry.scope),
+                    "different_model": file.reviews.get(&item.id).is_some_and(|review| review.independence.different_model),
+                }));
+            }
         }
+        serde_json::json!({"required": required, "pending": pending, "blocked": blocked})
     }
 
     pub fn pinned_run(&self, argv: &[String]) -> Option<String> {

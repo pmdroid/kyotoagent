@@ -55,12 +55,18 @@ evidence is not lost to a short card.
 ## The turn loop
 
 `turn::Runner` runs one ask as a tool loop against the chat client. The core tools include `read_file`, `grep`, `list_dir`, `search_replace`, `write_file`,
-`run`, `ask`, `finish`, and `use_skill`.
+`run`, `get_closeout`, `run_closeout`, `ask`, `finish`, and `use_skill`.
 
 - A read, a search, or a list inside the workspace runs immediately.
 - A write, a command, or an outside read waits on the gate, and the session reads
   `waiting` until the answer.
 - `ask` appends a `question` event and blocks until the answer.
+- `get_closeout` refreshes workspace changes and returns the required checks,
+  their matched paths and status, and the pending IDs to run with `run_closeout`.
+  It includes remaining failed attempts and any exhausted retry blocker. Query
+  again after edits and before finishing because edits invalidate passed checks.
+- `run_closeout` runs a check by ID, including matching setup steps, and retains
+  its transcript. Review checks marked `different_model` need another model.
 - `finish` appends a `result` event and ends the turn, after Stop hooks pass.
 
 One task per running turn. An ask sent during a live turn is queued. An open question or permission
