@@ -1601,3 +1601,167 @@ async fn manual_compaction_cannot_rewind_an_active_checkpoint() {
         1
     );
 }
+
+async fn closeout_across_turns(name: &str, external_edit: bool, commit: bool) {
+    let finish = || {
+        Canned::Json(tool_reply(
+            "finish",
+            serde_json::json!({"text": "done", "proof": "checked"}),
+            100,
+        ))
+    };
+    let check = || {
+        Canned::Json(tool_reply(
+            "run_closeout",
+            serde_json::json!({"id": "docs"}),
+            100,
+        ))
+    };
+    let mut replies = vec![
+        Canned::Json(tool_reply(
+            "write_file",
+            serde_json::json!({"path": "docs/x.md", "contents": "first"}),
+            100,
+        )),
+        check(),
+    ];
+    if commit {
+        replies.push(Canned::Json(tool_reply(
+            "run",
+            serde_json::json!({"argv": ["git", "commit", "-am", "turn one"]}),
+            100,
+        )));
+    }
+    replies.extend([finish(), finish()]);
+    if external_edit {
+        replies.extend([check(), finish()]);
+    }
+    let fixture = Fixture::new(name, catalog(Some(100000)), replies, Duration::ZERO);
+    let workspace = fixture.add_session("91bc");
+    fs::create_dir_all(workspace.join(".kyotoagent")).unwrap();
+    fs::create_dir_all(workspace.join("docs")).unwrap();
+    fs::write(workspace.join("docs/x.md"), "baseline").unwrap();
+    fs::write(workspace.join(".kyotoagent/closeout.yaml"), "version: 1\nitems:\n  - id: docs\n    kind: command\n    run: 'true'\n    hint: docs\n    paths: [docs/**]\n").unwrap();
+    for args in [
+        vec!["init"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "user.name", "Test"],
+        vec!["add", "."],
+        vec!["commit", "-m", "baseline"],
+    ] {
+        assert!(std::process::Command::new("git")
+            .args(args)
+            .current_dir(&workspace)
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    fixture
+        .runner
+        .ask("91bc", "Edit docs and check them")
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let current = fixture.view("91bc");
+        if current.status == Status::Waiting {
+            fixture
+                .runner
+                .answer("91bc", kyotoagent::permit::Answer::allow_once())
+                .unwrap();
+        }
+        if fixture
+            .events("91bc")
+            .iter()
+            .any(|event| event.kind == EventKind::Proof)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "first turn did not finish");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        fixture
+            .events("91bc")
+            .iter()
+            .filter(|event| event.kind == EventKind::CloseoutRun)
+            .count(),
+        1
+    );
+    if external_edit {
+        fs::write(workspace.join("docs/x.md"), "changed by user").unwrap();
+    }
+    fixture
+        .runner
+        .ask("91bc", "Explain the result without editing")
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if fixture.view("91bc").status == Status::Waiting {
+            fixture
+                .runner
+                .answer("91bc", kyotoagent::permit::Answer::allow_once())
+                .unwrap();
+        }
+        if fixture
+            .events("91bc")
+            .iter()
+            .filter(|event| event.kind == EventKind::Proof)
+            .count()
+            == 2
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "second turn did not finish");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let events = fixture.events("91bc");
+    let proof = events
+        .iter()
+        .rfind(|event| event.kind == EventKind::Proof)
+        .unwrap();
+    assert_eq!(proof.body["items"][0]["id"], "docs");
+    assert_eq!(
+        proof.body["items"][0]["outcome"],
+        if external_edit {
+            "passed"
+        } else {
+            "passed_earlier"
+        }
+    );
+    let blocked = events
+        .iter()
+        .filter(|event| event.turn_id == proof.turn_id && event.kind == EventKind::ToolResult)
+        .any(|event| {
+            event.body["output"]
+                .as_str()
+                .is_some_and(|output| output.contains("Cannot finish yet"))
+        });
+    assert_eq!(blocked, external_edit);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == EventKind::CloseoutRun)
+            .count(),
+        if external_edit { 2 } else { 1 }
+    );
+    let rows = &fixture.view("91bc").closeout;
+    assert!(rows
+        .iter()
+        .any(|row| row.required && row.status == view::CloseoutStatus::Passed));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closeout_passes_and_proof_carry_across_turns() {
+    closeout_across_turns("closeout-carry", false, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closeout_passes_expire_after_between_turn_edits() {
+    closeout_across_turns("closeout-external-edit", true, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closeout_fingerprint_uses_the_head_at_turn_end() {
+    closeout_across_turns("closeout-commit", false, true).await;
+}

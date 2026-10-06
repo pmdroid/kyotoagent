@@ -83,6 +83,14 @@ final class MarkdownTests: XCTestCase {
         XCTAssertEqual(formatted, [.paragraph([TranscriptRun(text: "same", bold: true)])])
     }
 
+    func testACarriedCloseoutPassShowsEarlier() {
+        let parts = transcriptCardText(.proof(ProofCard(
+            text: "checked",
+            items: [ProofItem(id: "docs", kind: "command", outcome: "passed_earlier", argv: nil, exit: 0, tail: nil)]
+        )))
+        XCTAssertTrue(parts.contains(.plain("docs · ✓ (earlier)", .proofItem)))
+    }
+
     func testAPermissionPathStaysPlain() {
         let path = "/tmp/**bold** and `code`"
         let parts = transcriptCardText(.permission(PermissionCard(
