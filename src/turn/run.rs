@@ -69,9 +69,10 @@ pub(super) async fn run_turn(
     let initial_events = session.event_snapshot()?.1;
     let mut transcript =
         crate::compact::projected_messages(&system_prompt, &initial_events, &workspace_text);
-    let mut active_start = transcript.len() - 1;
-    let mut compact_id =
-        crate::compact::latest_compact(&initial_events).map(|event| event.id.clone());
+    let mut history_cursor = HistoryCursor {
+        active_start: transcript.len() - 1,
+        compact_id: crate::compact::latest_compact(&initial_events).map(|event| event.id.clone()),
+    };
     let profile = turn.session.meta().ok().and_then(|meta| meta.profile);
     let mut tool_defs = tool_definitions_for(&turn.config, turn.child, profile.as_deref());
     if session.meta()?.closeout_reviewer {
@@ -87,6 +88,8 @@ pub(super) async fn run_turn(
     let mut writes: Vec<String> = Vec::new();
     let mut failures: Vec<ProofFailure> = Vec::new();
     let mut live_compact_attempted = false;
+    let mut usage = None;
+    let mut overflow_retried = false;
 
     loop {
         if let Some(reason) = goal::goal_stop(turn)? {
@@ -104,8 +107,8 @@ pub(super) async fn run_turn(
             &mut transcript,
             &tools_json,
             &mut live_compact_attempted,
-            &mut active_start,
-            &mut compact_id,
+            &mut history_cursor,
+            &mut usage,
         )
         .await
         {
@@ -139,6 +142,16 @@ pub(super) async fn run_turn(
             Ok(reply) => reply,
             Err(error) => {
                 turn.flight.clear();
+                if !overflow_retried && error.is_context_overflow() {
+                    overflow_retried = true;
+                    wait_and_run_compact(&turn.compact, session, client, &turn.config, &mut cancel)
+                        .await?;
+                    if refresh_compacted_history(turn, &mut transcript, &mut history_cursor)? {
+                        usage = None;
+                        live_compact_attempted = false;
+                        continue;
+                    }
+                }
                 result_text = error.to_string();
                 break;
             }
@@ -151,6 +164,10 @@ pub(super) async fn run_turn(
         let tokens = reply
             .prompt_tokens
             .unwrap_or_else(|| crate::compact::estimate_request(&transcript, &tools_json));
+        usage = Some((
+            crate::compact::estimate_request(&transcript, &tools_json),
+            tokens,
+        ));
         crate::compact::store_prompt_tokens(session, tokens)?;
         let _ = crate::compact::resolve_window(&turn.client, &turn.config, session).await;
 
@@ -211,7 +228,7 @@ pub(super) async fn run_turn(
                     if let Some(failure) = outcome.failure {
                         failures.push(failure);
                     }
-                    append_tool_output(
+                    let output = append_tool_output(
                         session,
                         turn_id,
                         call,
@@ -220,7 +237,7 @@ pub(super) async fn run_turn(
                         outcome.is_error,
                     )?;
                     read_images.extend(outcome.images);
-                    transcript.push(Message::tool_result(&call.id, &outcome.summary));
+                    transcript.push(Message::tool_result(&call.id, &output));
                 }
                 stopped = *cancel.borrow() || tools.gate().rejected();
                 continue;
@@ -399,7 +416,7 @@ pub(super) async fn run_turn(
             if let Some(failure) = outcome.failure {
                 failures.push(failure);
             }
-            append_tool_output(
+            let output = append_tool_output(
                 session,
                 turn_id,
                 call,
@@ -408,7 +425,7 @@ pub(super) async fn run_turn(
                 outcome.is_error,
             )?;
             read_images.extend(outcome.images);
-            transcript.push(Message::tool_result(&call.id, &outcome.summary));
+            transcript.push(Message::tool_result(&call.id, &output));
             stopped = *cancel.borrow() || tools.gate().rejected();
             if let Some(id) = closeout.stop.take() {
                 result_text = format!("Check {id} did not pass.");

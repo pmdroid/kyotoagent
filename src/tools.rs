@@ -391,7 +391,7 @@ impl Tools {
             limit,
             ..
         } = options;
-        if let Some(line) = line {
+        if let Some(line) = line.or_else(|| offset.is_none().then_some(1)) {
             let (text, next_line) = read_line_slice(&target.absolute, line, limit)?;
             return Ok(ReadFile {
                 path: name,
@@ -2003,7 +2003,7 @@ fn read_line_slice(
             break;
         }
     }
-    let max_lines = limit.unwrap_or(u64::MAX);
+    let max_lines = limit.unwrap_or(200);
     let mut out = String::new();
     let mut produced = 0u64;
     let mut number = line;
@@ -2570,7 +2570,7 @@ mod tests {
             "drawing.svg",
         ] {
             fs::write(workspace.join(name), "Readable text π\n").unwrap();
-            let text = tools.read_file("t1", name, None, None, None).unwrap();
+            let text = tools.read_file("t1", name, Some(0), None, None).unwrap();
             assert_eq!(text.text, "Readable text π\n");
             assert!(text.images.is_empty());
         }
@@ -2626,7 +2626,7 @@ mod tests {
         let text = format!("{}πmore", "x".repeat(READ_LIMIT - 1));
         fs::write(workspace.join("unicode.txt"), &text).unwrap();
         let first = tools
-            .read_file("t1", "unicode.txt", None, None, None)
+            .read_file("t1", "unicode.txt", Some(0), None, None)
             .unwrap();
         assert_eq!(first.next_offset, Some((READ_LIMIT - 1) as u64));
         let rest = tools
@@ -2663,7 +2663,7 @@ mod tests {
         fs::write(workspace.join("big.txt"), &big).expect("a big file");
 
         let first = tools
-            .read_file("t1", "big.txt", None, None, None)
+            .read_file("t1", "big.txt", Some(0), None, None)
             .expect("the first read runs");
         assert_eq!(first.text.len(), READ_LIMIT);
         assert!(!first.text.contains('→'), "a byte read has no line prefix");

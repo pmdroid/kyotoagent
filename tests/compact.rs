@@ -406,11 +406,11 @@ fn is_compact_body(body: &Value) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn manual_compaction_discovers_capacity_before_sending_oversized_history() {
+async fn manual_compaction_fits_oversized_history_before_sending() {
     let fixture = Fixture::new(
         "uncached-manual-capacity",
         catalog(Some(10000)),
-        vec![Canned::Json(text_reply("unexpected model call", 1))],
+        vec![Canned::Json(text_reply("bounded history summary", 1))],
         Duration::from_millis(250),
     );
     fixture.add_session("91bc");
@@ -418,19 +418,21 @@ async fn manual_compaction_discovers_capacity_before_sending_oversized_history()
     fixture.runner.compact("91bc").unwrap();
     fixture.wait_compacting("91bc", true).await;
     fixture.wait_compacting("91bc", false).await;
-    assert!(fixture.chat().is_empty());
+    let posts = fixture.chat();
+    assert!(is_compact_body(&posts[0]));
+    assert!(posts[0]["messages"].to_string().len() < 20000);
     assert!(fixture
         .events("91bc")
         .iter()
-        .all(|event| event.kind != EventKind::Compact));
+        .any(|event| event.kind == EventKind::Compact));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn oversized_history_is_not_sent_to_the_compactor_or_inference() {
+async fn oversized_history_is_fitted_before_compaction_and_inference() {
     let fixture = Fixture::new(
         "oversized-history",
         catalog(Some(10000)),
-        vec![Canned::Json(text_reply("unexpected model call", 1))],
+        vec![Canned::Json(text_reply("bounded history summary", 1))],
         Duration::ZERO,
     );
     fixture.add_session("91bc");
@@ -441,11 +443,13 @@ async fn oversized_history_is_not_sent_to_the_compactor_or_inference() {
         .unwrap();
     fixture.wait_for_cards("91bc", 4).await;
     fixture.wait_for_status("91bc", Status::Idle).await;
-    assert!(fixture.chat().is_empty());
+    let posts = fixture.chat();
+    assert!(is_compact_body(&posts[0]));
+    assert!(posts[0]["messages"].to_string().len() < 20000);
     assert!(fixture
         .events("91bc")
         .iter()
-        .all(|event| event.kind != EventKind::Compact));
+        .any(|event| event.kind == EventKind::Compact));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -630,7 +634,7 @@ async fn a_single_new_ask_without_older_history_is_not_summarized() {
         Duration::ZERO,
     );
     fixture.add_session("91bc");
-    let request = "x".repeat(108800);
+    let request = "x".repeat(100000);
     fixture.runner.ask("91bc", &request).unwrap();
     fixture.wait_for_cards("91bc", 2).await;
     fixture.wait_for_status("91bc", Status::Idle).await;
@@ -719,10 +723,10 @@ async fn new_tool_output_compacts_before_the_next_completion() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|message| message["role"] == "tool"
-            && message["content"]
-                .as_str()
-                .is_some_and(|text| text.contains(&"e".repeat(100)))));
+        .all(|message| message["role"] != "tool"));
+    assert!(user_contents(&posts[2])
+        .iter()
+        .any(|text| text.contains("file findings")));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1368,4 +1372,231 @@ async fn provider_overflow_compacts_and_resubmits_once() {
         .cards
         .iter()
         .any(|card| card.body["text"] == "recovered"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_usage_includes_new_tool_output_before_compaction() {
+    let fixture = Fixture::new(
+        "provider-usage-growth",
+        catalog(Some(100000)),
+        vec![
+            Canned::Json(tool_reply(
+                "read_file",
+                serde_json::json!({"path": "large.txt"}),
+                80000,
+            )),
+            Canned::Json(text_reply("file findings", 20)),
+            Canned::Json(tool_reply(
+                "finish",
+                serde_json::json!({"text": "done", "proof": "checked"}),
+                50,
+            )),
+        ],
+        Duration::ZERO,
+    );
+    let workspace = fixture.add_session("91bc");
+    fs::write(
+        workspace.join("large.txt"),
+        format!("{}\n", "x".repeat(150)).repeat(200),
+    )
+    .unwrap();
+    fixture.runner.ask("91bc", "Inspect the file").unwrap();
+    fixture.wait_for_cards("91bc", 2).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert!(is_compact_body(&fixture.chat()[1]));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_provider_overflow_stops_without_another_retry() {
+    let overflow = Canned::Status(400, "context_length_exceeded".into());
+    let fixture = Fixture::new(
+        "bounded-overflow-retry",
+        catalog(Some(100000)),
+        vec![
+            Canned::Json(tool_reply(
+                "read_file",
+                serde_json::json!({"path": "large.txt"}),
+                100,
+            )),
+            overflow.clone(),
+            Canned::Json(text_reply("file findings", 20)),
+            overflow,
+        ],
+        Duration::ZERO,
+    );
+    let workspace = fixture.add_session("91bc");
+    fs::write(workspace.join("large.txt"), "evidence\n".repeat(200)).unwrap();
+    fixture.runner.ask("91bc", "Keep the task").unwrap();
+    fixture.wait_for_cards("91bc", 2).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert_eq!(fixture.chat().len(), 4);
+    assert_eq!(
+        fixture
+            .chat()
+            .iter()
+            .filter(|body| is_compact_body(body))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn large_tool_output_is_saved_and_referenced_in_live_history() {
+    let fixture = Fixture::new(
+        "saved-tool-output",
+        catalog(Some(100000)),
+        vec![
+            Canned::Json(tool_reply(
+                "read_file",
+                serde_json::json!({"path": "large.txt"}),
+                100,
+            )),
+            Canned::Json(tool_reply(
+                "finish",
+                serde_json::json!({"text": "done", "proof": "checked"}),
+                100,
+            )),
+        ],
+        Duration::ZERO,
+    );
+    let workspace = fixture.add_session("91bc");
+    let first_line = "x".repeat(32764);
+    fs::write(
+        workspace.join("large.txt"),
+        format!("{first_line}\nlast line\n"),
+    )
+    .unwrap();
+    fixture.runner.ask("91bc", "Inspect the file").unwrap();
+    fixture.wait_for_cards("91bc", 2).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    let saved = fs::read_dir(fixture.root.join("session-91bc/tool-output"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(fs::read_to_string(&saved).unwrap().contains(&first_line));
+    let posts = fixture.chat();
+    let output = posts[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(output.len() <= 32768);
+    assert!(output.contains(&saved.to_string_lossy().to_string()));
+    assert!(output.contains("line 2"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unrelated_bad_requests_are_not_compacted_or_retried() {
+    let fixture = Fixture::new(
+        "unrelated-bad-request",
+        catalog(Some(100000)),
+        vec![
+            Canned::Json(tool_reply(
+                "list_dir",
+                serde_json::json!({"path": "."}),
+                100,
+            )),
+            Canned::Status(400, "invalid tool schema".into()),
+        ],
+        Duration::ZERO,
+    );
+    fixture.add_session("91bc");
+    fixture.runner.ask("91bc", "Inspect the workspace").unwrap();
+    fixture.wait_for_cards("91bc", 2).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert_eq!(fixture.chat().len(), 2);
+    assert!(fixture.chat().iter().all(|body| !is_compact_body(body)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn overflowing_compaction_input_is_reduced_before_retry() {
+    let fixture = Fixture::new(
+        "compact-overflow-retry",
+        catalog(Some(100000)),
+        vec![
+            Canned::Json(tool_reply(
+                "read_file",
+                serde_json::json!({"path": "large.txt"}),
+                90000,
+            )),
+            Canned::Status(400, "input_too_large".into()),
+            Canned::Json(text_reply("file findings", 20)),
+            Canned::Json(tool_reply(
+                "finish",
+                serde_json::json!({"text": "done", "proof": "checked"}),
+                50,
+            )),
+        ],
+        Duration::ZERO,
+    );
+    let workspace = fixture.add_session("91bc");
+    fs::write(workspace.join("large.txt"), "evidence\n".repeat(200)).unwrap();
+    fixture.runner.ask("91bc", "Keep the task").unwrap();
+    fixture.wait_for_cards("91bc", 2).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    let posts = fixture.chat();
+    assert_eq!(posts.len(), 4);
+    assert!(is_compact_body(&posts[1]));
+    assert!(is_compact_body(&posts[2]));
+    assert!(posts[2]["messages"].to_string().len() < posts[1]["messages"].to_string().len());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn manual_compaction_cannot_rewind_an_active_checkpoint() {
+    let fixture = Fixture::new(
+        "monotonic-checkpoint",
+        catalog(Some(100000)),
+        vec![
+            Canned::Json(tool_reply(
+                "read_file",
+                serde_json::json!({"path": "large.txt"}),
+                90000,
+            )),
+            Canned::Json(text_reply("active file findings", 20)),
+            Canned::Json(tool_reply(
+                "write_file",
+                serde_json::json!({"path": "notes.md", "contents": "hello"}),
+                100,
+            )),
+            Canned::Json(text_reply("done", 50)),
+        ],
+        Duration::ZERO,
+    );
+    let workspace = fixture.add_session("91bc");
+    fixture.prior_history(
+        "91bc",
+        "An older task with enough readable background to summarize accurately",
+    );
+    fs::write(workspace.join("large.txt"), "evidence\n".repeat(200)).unwrap();
+    fixture
+        .runner
+        .ask("91bc", "Read the file and create notes.md")
+        .unwrap();
+    fixture.wait_for_status("91bc", Status::Waiting).await;
+    let posts = fixture.chat().len();
+    fixture.runner.compact("91bc").unwrap();
+    fixture.wait_compacting("91bc", false).await;
+    assert_eq!(fixture.chat().len(), posts);
+    fixture
+        .runner
+        .answer("91bc", kyotoagent::permit::Answer::allow_once())
+        .unwrap();
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert_eq!(
+        fs::read_to_string(workspace.join("notes.md")).unwrap(),
+        "hello"
+    );
+    assert_eq!(
+        fixture
+            .events("91bc")
+            .iter()
+            .filter(|event| event.kind == EventKind::Compact)
+            .count(),
+        1
+    );
 }

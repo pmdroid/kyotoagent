@@ -96,14 +96,14 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
     let mut tools = vec![
         Tool::new(
             "read_file",
-            "Read text, images or PDFs, detected from their bytes. For text, pass line for a 1-based line or offset for a byte offset. For PDFs, format is image by default or text, and pages is a 1-based range such as 1-5. Specify pages for PDFs over 10 pages; read at most 20 pages per call.",
+            "Read text, images or PDFs, detected from their bytes. For text, line and offset both select a 1-based starting line. Supply only one. limit is a line count, default 200; output is also bounded by bytes. For PDFs, format is image by default or text, and pages is a 1-based range such as 1-5. Specify pages for PDFs over 10 pages; read at most 20 pages per call.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
-                    "offset": { "type": "integer" },
-                    "line": { "type": "integer" },
-                    "limit": { "type": "integer" },
+                    "offset": { "type": "integer", "minimum": 1, "description": "1-based starting line, alias for line" },
+                    "line": { "type": "integer", "minimum": 1, "description": "1-based starting line, default 1" },
+                    "limit": { "type": "integer", "minimum": 1, "description": "Maximum lines to return, default 200" },
                     "pages": { "type": "string" },
                     "format": { "type": "string", "enum": ["image", "text"] },
                 },
