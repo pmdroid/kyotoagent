@@ -42,7 +42,7 @@ struct TranscriptScreen: SwiftUI.View {
         .background(Ink.canvas)
         .navigationTitle(bar.title)
         .navigationBarTitleDisplayMode(.inline)
-        .phonePopup(item: cover) { item in
+        .phonePopup(item: cover, detents: coverDetents) { item in
             coverPage(item)
         }
         .onKeyPress(.escape) {
@@ -409,6 +409,13 @@ struct TranscriptScreen: SwiftUI.View {
                 releaseCover()
             }
         )
+    }
+
+    private var coverDetents: Set<PresentationDetent> {
+        if case .answer = shownCover {
+            return [.medium, .large]
+        }
+        return [.large]
     }
 
     private var shownCover: ShownCover? {
