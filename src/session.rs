@@ -122,8 +122,20 @@ pub struct SessionMeta {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolation: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<crate::goal::Goal>,
+    /// Hidden from the live list. The directory and log stay, and a new ask is
+    /// refused until the session is restored.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archived: bool,
+    #[serde(
+        default,
+        rename = "archivedAt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub archived_at: Option<String>,
 }
 
 fn default_show_closeout() -> bool {
@@ -182,7 +194,10 @@ impl SessionMeta {
             closeout_reviewer: false,
             description: None,
             isolation: None,
+            hidden: false,
             goal: None,
+            archived: false,
+            archived_at: None,
         }
     }
 }
@@ -563,6 +578,25 @@ impl Session {
         })
     }
 
+    pub fn set_archived(&self, archived: bool, at: &str) -> Result<(), SessionError> {
+        self.update(|meta| {
+            if meta.archived == archived
+                && (!archived || meta.archived_at.is_some())
+                && (archived || meta.archived_at.is_none())
+            {
+                return false;
+            }
+            meta.archived = archived;
+            meta.archived_at = archived.then(|| {
+                meta.archived_at
+                    .clone()
+                    .filter(|stored| !stored.trim().is_empty())
+                    .unwrap_or_else(|| at.to_string())
+            });
+            true
+        })
+    }
+
     pub fn set_profile(&self, profile: Option<&str>) -> Result<(), SessionError> {
         let profile = profile
             .map(str::trim)
@@ -883,6 +917,45 @@ mod tests {
         .expect("an old meta loads");
         assert!(!meta.enhance);
         assert!(meta.yolo);
+        assert!(!meta.archived);
+        assert!(meta.archived_at.is_none());
+    }
+
+    #[test]
+    fn archive_is_a_flag_and_an_old_meta_is_live() {
+        let dir = temp_dir("archive");
+        let session = Session::at(&dir);
+        session
+            .create(&SessionMeta::new(
+                "91bc",
+                Path::new("/w"),
+                "gpt",
+                "2026-09-29T00:00:00.000Z",
+            ))
+            .expect("the session is created");
+        session
+            .set_archived(true, "2026-10-05T00:00:00.000Z")
+            .expect("archive writes");
+        let meta = session.meta().expect("meta reads back");
+        assert!(meta.archived);
+        assert_eq!(
+            meta.archived_at.as_deref(),
+            Some("2026-10-05T00:00:00.000Z")
+        );
+        session
+            .set_archived(true, "2026-10-06T00:00:00.000Z")
+            .expect("a second archive is a no-op");
+        assert_eq!(
+            session.meta().expect("meta").archived_at.as_deref(),
+            Some("2026-10-05T00:00:00.000Z")
+        );
+        session
+            .set_archived(false, "2026-10-06T00:00:00.000Z")
+            .expect("restore writes");
+        let restored = session.meta().expect("meta");
+        assert!(!restored.archived);
+        assert!(restored.archived_at.is_none());
+        fs::remove_dir_all(&dir).expect("clean up");
     }
 
     #[test]

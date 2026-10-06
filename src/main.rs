@@ -30,6 +30,8 @@ Usage:
   kyotoagent repos
   kyotoagent log [id]
   kyotoagent cancel [id]
+  kyotoagent archive [id]
+  kyotoagent unarchive [id]
   kyotoagent provider
   kyotoagent provider use <id>
   kyotoagent provider add <id> --base-url <url> --model <model> [--api-key-env <name>]
@@ -50,6 +52,8 @@ Commands:
   repos     List registered repositories with their id, name, and path.
   log       Print the event log of a session: the newest in this directory, or an id.
   cancel    Cancel the current turn of a session: the newest in this directory, or an id.
+  archive   Hide a session until it is restored. The log stays.
+  unarchive Restore an archived session.
   provider  Print or change the model server in ~/.kyotoagent/config.toml.
   doctor    Check the socket, the model, and closeout.yaml. Print the system prompt with systemprompt.
   systemprompt  Print the system prompt for the current directory.
@@ -118,6 +122,10 @@ enum Command {
     Log { id: Option<String> },
     /// Cancel the current turn of a session: the newest in this directory, or an id.
     Cancel { id: Option<String> },
+    /// Hide a session until it is restored. The log stays.
+    Archive { id: Option<String> },
+    /// Restore an archived session.
+    Unarchive { id: Option<String> },
     #[command(about = "Open the session list with that session selected.")]
     Attach { id: String },
     #[command(
@@ -247,6 +255,8 @@ async fn run(command: Option<Command>, yolo: bool, url: Option<String>) -> Resul
         Some(Command::Repos) => list_repos(url).await,
         Some(Command::Log { id }) => log(id, url).await,
         Some(Command::Cancel { id }) => cancel(id, url).await,
+        Some(Command::Archive { id }) => set_archive(id, true, url).await,
+        Some(Command::Unarchive { id }) => set_archive(id, false, url).await,
         Some(Command::Provider { command }) => provider(command),
         Some(Command::Doctor) => unreachable!(),
         Some(Command::Systemprompt) => systemprompt(),
@@ -580,9 +590,16 @@ async fn list_sessions(url: Option<String>) -> Result<(), String> {
         let id = row["id"].as_str().unwrap_or("");
         let workspace = row["workspace"].as_str().unwrap_or("");
         let status = row["status"].as_str().unwrap_or("");
+        let status = if row["archived"].as_bool().unwrap_or(false) {
+            "archived"
+        } else {
+            status
+        };
         match row["waiting"].as_str() {
-            Some(waiting) => println!("{id} {workspace} {status} {waiting}"),
-            None => println!("{id} {workspace} {status}"),
+            Some(waiting) if status != "archived" => {
+                println!("{id} {workspace} {status} {waiting}")
+            }
+            _ => println!("{id} {workspace} {status}"),
         }
     }
     Ok(())
@@ -600,6 +617,29 @@ async fn log(id: Option<String>, url: Option<String>) -> Result<(), String> {
         return Err(unexpected(&response, status));
     }
     print!("{response}");
+    Ok(())
+}
+
+/// Hide or restore a session: the one named, or the newest in this directory.
+async fn set_archive(
+    id: Option<String>,
+    archived: bool,
+    url: Option<String>,
+) -> Result<(), String> {
+    let client = api_client(url).await?;
+    let id = session_id(&client, id).await?;
+    let body = serde_json::json!({ "archived": archived }).to_string();
+    let (status, response) = client
+        .request("POST", &format!("/v1/sessions/{id}/archive"), Some(&body))
+        .await?;
+    if status != 204 {
+        return Err(unexpected(&response, status));
+    }
+    if archived {
+        println!("Archived {id}.");
+    } else {
+        println!("Restored {id}.");
+    }
     Ok(())
 }
 

@@ -115,17 +115,28 @@ pub fn list_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -> Option
     if row == hint {
         return None;
     }
+    let room = usize::from(inner.height.saturating_sub(1));
+    let mut skip = super::list_scroll_of(model, area);
     let mut y = inner.y;
     for piece in list_pieces(model) {
         let lines = match piece.hit {
             ListHit::Header(_) => 1,
             ListHit::Session(_) => 3,
         };
-        let next = y.saturating_add(lines);
-        if row >= y && row < next {
+        if skip >= lines {
+            skip -= lines;
+            continue;
+        }
+        let visible = lines - skip;
+        let next = y.saturating_add(visible as u16);
+        if row >= y && row < next && usize::from(row.saturating_sub(inner.y)) < room {
             return Some(piece.hit);
         }
+        if usize::from(next.saturating_sub(inner.y)) >= room {
+            return None;
+        }
         y = next;
+        skip = 0;
     }
     None
 }

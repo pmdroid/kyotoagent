@@ -103,16 +103,16 @@ pub fn apply_pane(app: &mut App, effect: Effect) -> bool {
             true
         }
         Effect::OpenMenu { id, column, row } => {
-            let worktree = app
+            let archived = app
                 .sessions
                 .iter()
-                .find(|row| row.id == id)
-                .is_some_and(|row| row.worktree);
+                .find(|session| session.id == id)
+                .is_some_and(|session| session.archived);
             app.menu = Some(SessionMenu {
                 id,
                 column,
                 row,
-                items: screen::session_menu_items(worktree),
+                items: screen::session_menu_items(archived),
             });
             true
         }
@@ -175,6 +175,7 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
         Effect::SelectSession(id) => {
             select_session(app, id);
         }
+        Effect::ScrollList { up } => scroll_list(app, up, 1),
         Effect::ScrollUp => {
             if app.queue_open {
                 queue::nudge(app, true);
@@ -497,6 +498,8 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
             }
             deletion::decide(app, client);
         }
+        Effect::ArchiveSession => archive_session(app, client, true).await?,
+        Effect::UnarchiveSession => archive_session(app, client, false).await?,
         Effect::OpenModel => {
             open_model_picker(app, client).await;
         }
@@ -526,9 +529,65 @@ pub(super) async fn run_menu(app: &mut App, client: &Client, index: usize) -> Re
         return Ok(());
     };
     app.menu = None;
-    if menu.items.get(index).map(String::as_str) == Some(screen::MENU_CLOSE) {
-        open_delete_confirm(app, client, &menu.id);
+    match menu.items.get(index).map(String::as_str) {
+        Some(screen::MENU_CLOSE) => open_delete_confirm(app, client, &menu.id),
+        Some(screen::MENU_ARCHIVE) => archive_id(app, client, &menu.id, true).await?,
+        Some(screen::MENU_UNARCHIVE) => archive_id(app, client, &menu.id, false).await?,
+        _ => {}
     }
+    Ok(())
+}
+
+pub(super) async fn archive_session(
+    app: &mut App,
+    client: &Client,
+    archived: bool,
+) -> Result<(), String> {
+    if app.selected.is_empty() {
+        return Ok(());
+    }
+    archive_id(app, client, &app.selected.clone(), archived).await
+}
+
+async fn archive_id(
+    app: &mut App,
+    client: &Client,
+    id: &str,
+    archived: bool,
+) -> Result<(), String> {
+    if app
+        .sessions
+        .iter()
+        .find(|row| row.id == id)
+        .is_some_and(|row| row.archived == archived)
+    {
+        return Ok(());
+    }
+    let id = id.to_string();
+    let body = serde_json::json!({ "archived": archived }).to_string();
+    let (status, response) = client
+        .request("POST", &format!("/v1/sessions/{id}/archive"), Some(&body))
+        .await?;
+    if status != 204 {
+        app.notice = Some(error_text(&response, status));
+        return Ok(());
+    }
+    if archived && app.selected == id {
+        select_session(
+            app,
+            next_list_id(
+                &app.sessions
+                    .iter()
+                    .filter(|row| !row.archived && row.id != id)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                &id,
+            )
+            .unwrap_or_default(),
+        );
+    }
+    app.collapsed.remove(screen::ARCHIVED_GROUP);
+    poll(app, client).await?;
     Ok(())
 }
 
@@ -730,6 +789,12 @@ pub(super) async fn run_palette(app: &mut App, client: &Client) {
                 return;
             }
             open_delete_confirm(app, client, &id);
+        }
+        CommandAction::ArchiveSession => {
+            let _ = archive_session(app, client, true).await;
+        }
+        CommandAction::UnarchiveSession => {
+            let _ = archive_session(app, client, false).await;
         }
         CommandAction::OpenQueue => queue::open(app),
         CommandAction::OpenProof => proof::open(app),
@@ -1760,7 +1825,11 @@ pub(super) struct ListRow {
     #[serde(default)]
     isolation: Option<String>,
     #[serde(default)]
+    hidden: bool,
+    #[serde(default)]
     worktree: bool,
+    #[serde(default)]
+    archived: bool,
 }
 
 pub(super) fn into_row(row: ListRow) -> SessionRow {
@@ -1787,7 +1856,9 @@ pub(super) fn into_row(row: ListRow) -> SessionRow {
         project_name: None,
         parent_id: row.parent_id,
         isolation: row.isolation,
+        hidden: row.hidden,
         worktree: row.worktree,
+        archived: row.archived,
     }
 }
 
@@ -1946,18 +2017,17 @@ pub(super) fn newest_for_server(
     remote: bool,
 ) -> Option<String> {
     if remote {
-        sessions
+        return sessions
             .iter()
-            .find(|row| row.workspace == workspace)
-            .map(|row| row.id.clone())
-    } else {
-        newest_for(sessions, workspace)
+            .find(|row| !row.archived && row.workspace == workspace)
+            .map(|row| row.id.clone());
     }
+    newest_for(sessions, workspace)
 }
 
 pub(super) fn newest_for(sessions: &[SessionRow], workspace: &Path) -> Option<String> {
     let current = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
-    sessions.iter().find_map(|row| {
+    sessions.iter().filter(|row| !row.archived).find_map(|row| {
         let path = PathBuf::from(&row.workspace);
         let same = path == current
             || std::fs::canonicalize(&path)

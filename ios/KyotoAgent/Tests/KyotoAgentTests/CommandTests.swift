@@ -42,6 +42,8 @@ final class CommandTests: XCTestCase {
             "Yolo",
             "Profile",
             "Cancel",
+            "Archive session",
+            "Unarchive session",
             "Delete session",
             "Help",
             "/model",
@@ -58,6 +60,8 @@ final class CommandTests: XCTestCase {
             "Yolo",
             "Profile",
             "Cancel",
+            "Archive session",
+            "Unarchive session",
             "Delete session",
             "Help",
         ]

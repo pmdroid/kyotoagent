@@ -82,6 +82,9 @@ struct ServerSwitcher: SwiftUI.View {
                     }
                     .disabled(connections.connecting)
                 }
+                Section("Notifications") {
+                    NavigationLink("Notifications") { NotificationSettings() }
+                }
                 Section("Appearance") {
                     NavigationLink {
                         AppIconPicker()

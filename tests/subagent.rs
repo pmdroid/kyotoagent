@@ -454,8 +454,23 @@ async fn a_child_is_created_with_enhance_off() {
         .meta()
         .expect("child meta");
     assert!(!child.enhance);
+    assert!(child.hidden);
     assert_eq!(child.parent_id.as_deref(), Some("parent"));
     assert!(parent.meta().expect("parent meta").enhance);
+    let shown = fixture
+        .runner
+        .spawn_subagent(
+            "parent",
+            &spawn_args(serde_json::json!({ "run_in_background": true, "visible": true })),
+        )
+        .await;
+    let shown_id = child_id(&shown);
+    assert!(
+        !Session::at(&fixture.root.join(&shown_id))
+            .meta()
+            .expect("shown meta")
+            .hidden
+    );
 }
 
 fn child_id(summary: &str) -> String {

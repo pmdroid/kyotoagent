@@ -51,6 +51,8 @@ nonisolated public protocol HostTransport: Sendable {
 
 nonisolated public enum ServeCall: Equatable, Sendable {
     case pair(PairingClient)
+    case registerDevice(DeviceRegistration)
+    case deleteDevice(String)
     case sessions
     case projects
     case view(String)
@@ -58,6 +60,7 @@ nonisolated public enum ServeCall: Equatable, Sendable {
     case cancel(String)
     case create(workspace: String, worktree: Bool, profile: String?)
     case delete(String, deleteWorkspace: Bool = false)
+    case archive(String, archived: Bool)
     case answer(session: String, eventId: String, choice: String, text: String?)
     case file(id: String, path: String)
     case artifacts(String)
@@ -156,6 +159,20 @@ nonisolated public struct ServeClient: Sendable {
         self.token = token
     }
 
+    nonisolated public func registerDevice(_ device: DeviceRegistration) async throws {
+        let response = try await send(.registerDevice(device))
+        guard (200...299).contains(response.status) else {
+            throw HostError.status(response.status, responseText(response.body))
+        }
+    }
+
+    nonisolated public func deleteDevice(_ id: String) async throws {
+        let response = try await send(.deleteDevice(id))
+        guard (200...299).contains(response.status) else {
+            throw HostError.status(response.status, responseText(response.body))
+        }
+    }
+
     nonisolated public func sessions() async throws -> [Session] {
         try await decodeList(.sessions)
     }
@@ -211,6 +228,10 @@ nonisolated public struct ServeClient: Sendable {
 
     nonisolated public func deleteSession(_ id: String, deleteWorkspace: Bool = false) async throws {
         try await expectEmpty(.delete(id, deleteWorkspace: deleteWorkspace))
+    }
+
+    nonisolated public func setArchived(_ id: String, archived: Bool) async throws {
+        try await expectEmpty(.archive(id, archived: archived))
     }
 
     private func decodeList(_ call: ServeCall) async throws -> [Session] {
@@ -375,6 +396,14 @@ nonisolated public func serveRequest(baseURL: URL, call: ServeCall) -> URLReques
         path = "/v1/pair"
         method = "POST"
         body = try? JSONEncoder().encode(identity)
+    case .registerDevice(let device):
+        path = "/v1/devices"
+        method = "PUT"
+        body = try? JSONEncoder().encode(device)
+    case .deleteDevice(let id):
+        path = "/v1/devices"
+        method = "DELETE"
+        body = try? JSONEncoder().encode(DeviceDeletion(id: id))
     case .sessions:
         path = "/v1/sessions"
     case .projects:
@@ -401,6 +430,10 @@ nonisolated public func serveRequest(baseURL: URL, call: ServeCall) -> URLReques
     case .delete(let id, let deleteWorkspace):
         path = "/v1/sessions/" + id + (deleteWorkspace ? "?delete_workspace=true" : "")
         method = "DELETE"
+    case .archive(let id, let archived):
+        path = "/v1/sessions/" + id + "/archive"
+        method = "POST"
+        body = try? JSONEncoder().encode(ArchivePayload(archived: archived))
     case .answer(let session, let eventId, let choice, let text):
         path = "/v1/sessions/" + session + "/answers"
         method = "POST"
@@ -451,6 +484,10 @@ nonisolated struct MessagePayload: Encodable {
 
 nonisolated struct YoloPayload: Encodable {
     var yolo: Bool
+}
+
+nonisolated struct ArchivePayload: Encodable {
+    var archived: Bool
 }
 
 nonisolated struct ProfilePayload: Encodable {

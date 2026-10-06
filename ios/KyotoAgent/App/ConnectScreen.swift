@@ -22,6 +22,12 @@ struct RootView: SwiftUI.View {
         .onChange(of: model.selection) { _, selection in
             column = selection == nil ? .sidebar : transcriptColumn
         }
+        .onChange(of: connections.notificationRevision) { _, _ in
+            column = transcriptColumn
+        }
+        .onChange(of: visibleSessionID, initial: true) { _, id in
+            connections.visibleSessionID = id
+        }
         .onAppear {
             if model.selection != nil {
                 column = transcriptColumn
@@ -111,6 +117,10 @@ struct RootView: SwiftUI.View {
         )
     }
 
+    private var visibleSessionID: String? {
+        model.connected && (widthClass == .regular || showTranscript) ? model.selection : nil
+    }
+
     private var showTranscript: Bool {
         model.selection != nil && column != .sidebar
     }
@@ -159,6 +169,7 @@ struct ConnectScreen: SwiftUI.View {
     @Environment(ServerConnections.self) private var connections
     @State private var scanning = false
     @State private var choosingIcon = false
+    @State private var showingNotifications = false
 
     var body: some SwiftUI.View {
         VStack(alignment: .leading, spacing: 22) {
@@ -194,11 +205,16 @@ struct ConnectScreen: SwiftUI.View {
             }
             Button("App icon", systemImage: "app.badge") { choosingIcon = true }
                 .frame(minHeight: 44)
+            Button("Notifications", systemImage: "bell") { showingNotifications = true }
+                .frame(minHeight: 44)
             Spacer()
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Ink.canvas)
+        .sheet(isPresented: $showingNotifications) {
+            NavigationStack { NotificationSettings() }
+        }
         .sheet(isPresented: $choosingIcon) {
             NavigationStack { AppIconPicker() }
                 .presentationDragIndicator(.visible)

@@ -110,6 +110,7 @@ const YOLO_RAINBOW: [Color; 7] = [
 
 pub const PRODUCT: &str = "Kyoto Agent";
 pub const OTHER_PROJECT: &str = "other";
+pub const ARCHIVED_GROUP: &str = "archived";
 
 /// The first four characters of a session id, as the list shows it.
 pub fn short_id(id: &str) -> String {
@@ -267,7 +268,9 @@ pub struct SessionRow {
     pub project_name: Option<String>,
     pub parent_id: Option<String>,
     pub isolation: Option<String>,
+    pub hidden: bool,
     pub worktree: bool,
+    pub archived: bool,
 }
 
 impl SessionRow {
@@ -289,6 +292,9 @@ impl SessionRow {
 
     /// The status as the list shows it. A waiting row also names its card.
     pub fn status_text(&self) -> String {
+        if self.archived {
+            return "archived".to_string();
+        }
         match (self.status, self.waiting) {
             (Status::Idle, _) => Status::Idle.label().to_string(),
             (Status::Working, _) => Status::Working.label().to_string(),
@@ -557,14 +563,23 @@ pub enum Overlay {
 }
 
 pub const MENU_CLOSE: &str = "Delete session";
+pub const MENU_ARCHIVE: &str = "Archive session";
+pub const MENU_UNARCHIVE: &str = "Unarchive session";
 pub const MENU_REMOVE_WORKTREE: &str = "Remove worktree";
 pub const DELETE_PROMPT: &str = "Delete this session?";
 pub const DELETE_DIRECTORY: &str = "That directory will be removed.";
 pub const DELETE_YES: &str = "Delete";
 pub const DELETE_NO: &str = "Cancel";
 
-pub fn session_menu_items(_worktree: bool) -> Vec<String> {
-    vec![MENU_CLOSE.to_string()]
+pub fn session_menu_items(archived: bool) -> Vec<String> {
+    vec![
+        if archived {
+            MENU_UNARCHIVE.to_string()
+        } else {
+            MENU_ARCHIVE.to_string()
+        },
+        MENU_CLOSE.to_string(),
+    ]
 }
 
 pub fn delete_labels(
@@ -717,6 +732,7 @@ pub struct ScreenModel {
     pub select: Option<TextSelect>,
     pub collapsed: BTreeSet<String>,
     pub list_header: Option<String>,
+    pub list_scroll: usize,
     pub context_percent: Option<u32>,
 }
 
@@ -779,6 +795,7 @@ impl Default for ScreenModel {
             select: None,
             collapsed: BTreeSet::new(),
             list_header: None,
+            list_scroll: 0,
             context_percent: None,
         }
     }
@@ -1564,6 +1581,63 @@ pub fn closeout_row_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -
 
 pub fn closeout_scroll_max(model: &ScreenModel, area: Rect) -> usize {
     pane_scroll_max(model, area, RightPane::Closeout)
+}
+
+pub fn list_line_count(model: &ScreenModel) -> usize {
+    list_pieces(model)
+        .into_iter()
+        .map(|piece| match piece.hit {
+            ListHit::Header(_) => 1,
+            ListHit::Session(_) => 3,
+        })
+        .sum()
+}
+
+pub fn list_body_height(model: &ScreenModel, area: Rect) -> usize {
+    let list = split_of(model, area).list;
+    if !model.left_open || list.width <= RAIL_WIDTH {
+        return 0;
+    }
+    let inner = Block::bordered().inner(list);
+    usize::from(inner.height.saturating_sub(1))
+}
+
+pub fn list_scroll_max(model: &ScreenModel, area: Rect) -> usize {
+    list_line_count(model).saturating_sub(list_body_height(model, area))
+}
+
+pub fn list_scroll_of(model: &ScreenModel, area: Rect) -> usize {
+    model.list_scroll.min(list_scroll_max(model, area))
+}
+
+pub fn list_scroll_for(model: &ScreenModel, area: Rect, scroll: usize) -> usize {
+    let max = list_scroll_max(model, area);
+    let mut scroll = scroll.min(max);
+    let height = list_body_height(model, area);
+    if height == 0 {
+        return scroll;
+    }
+    let mut cursor = 0usize;
+    for piece in list_pieces(model) {
+        let lines = match piece.hit {
+            ListHit::Header(_) => 1,
+            ListHit::Session(_) => 3,
+        };
+        let wanted = match &piece.hit {
+            ListHit::Header(key) => model.list_header.as_deref() == Some(key.as_str()),
+            ListHit::Session(id) => model.list_header.is_none() && model.selected == *id,
+        };
+        if wanted {
+            if cursor < scroll {
+                scroll = cursor;
+            } else if cursor + lines > scroll + height {
+                scroll = cursor + lines - height;
+            }
+            break;
+        }
+        cursor += lines;
+    }
+    scroll.min(max)
 }
 
 pub fn pane_scroll_max(model: &ScreenModel, area: Rect, pane: RightPane) -> usize {

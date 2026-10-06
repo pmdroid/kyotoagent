@@ -37,7 +37,9 @@ pub(super) fn sessions(app: &App) -> Vec<SessionRow> {
                     let mut row = row.clone();
                     row.id = key(server, &row.id);
                     row.parent_id = row.parent_id.map(|id| key(server, &id));
-                    row.project = Some(group_key(server, row.project.as_deref()));
+                    if !row.archived {
+                        row.project = Some(group_key(server, row.project.as_deref()));
+                    }
                     row
                 })
                 .collect::<Vec<_>>()

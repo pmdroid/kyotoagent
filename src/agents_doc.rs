@@ -16,7 +16,7 @@ pub fn load_in(workspace: &Path, home: &Path) -> String {
     let mut parts = Vec::new();
     if !home.as_os_str().is_empty() {
         for folder in [".kyotoagent", ".agents"] {
-            if let Some(text) = read_regular(&home.join(folder).join("AGENTS.md")) {
+            if let Some(text) = read_inside(home, &home.join(folder).join("AGENTS.md")) {
                 parts.push(text);
             }
         }
@@ -102,11 +102,7 @@ fn exists(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
 
-fn read_regular(path: &Path) -> Option<String> {
-    let meta = fs::symlink_metadata(path).ok()?;
-    if !meta.is_file() {
-        return None;
-    }
+fn read_text(path: &Path) -> Option<String> {
     let mut file = fs::File::open(path).ok()?;
     let mut text = String::new();
     std::io::Read::read_to_string(&mut file, &mut text).ok()?;
@@ -119,7 +115,7 @@ fn read_regular(path: &Path) -> Option<String> {
 
 fn read_inside(root: &Path, path: &Path) -> Option<String> {
     let meta = fs::symlink_metadata(path).ok()?;
-    if !meta.is_file() {
+    if !meta.file_type().is_symlink() && !meta.is_file() {
         return None;
     }
     let resolved = fs::canonicalize(path).ok()?;
@@ -127,7 +123,11 @@ fn read_inside(root: &Path, path: &Path) -> Option<String> {
     if !resolved.starts_with(&root_real) {
         return None;
     }
-    read_regular(&resolved)
+    let meta = fs::symlink_metadata(&resolved).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    read_text(&resolved)
 }
 
 fn join_capped(parts: &[String]) -> String {
@@ -382,8 +382,7 @@ mod tests {
         std::os::unix::fs::symlink(workspace.join("notes.md"), workspace.join("AGENTS.md"))
             .expect("the link is made");
         let text = load_in(&workspace, &scratch.path("home"));
-        assert!(!text.contains("pnpm test"), "{text}");
-        assert!(text.is_empty(), "{text}");
+        assert!(text.contains("pnpm test"), "{text}");
     }
 
     #[test]
@@ -524,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn a_kyotoagent_symlink_inside_the_project_is_skipped() {
+    fn a_kyotoagent_symlink_inside_the_project_is_read() {
         let scratch = Scratch::new("kyoto-link-in");
         let workspace = scratch.path("repo");
         git_root(&workspace);
@@ -536,8 +535,7 @@ mod tests {
         )
         .expect("the link is made");
         let text = load_in(&workspace, &scratch.path("home"));
-        assert!(!text.contains("pnpm test"), "{text}");
-        assert!(text.is_empty(), "{text}");
+        assert!(text.contains("pnpm test"), "{text}");
     }
 
     #[test]
@@ -558,7 +556,23 @@ mod tests {
     }
 
     #[test]
-    fn a_home_symlink_adds_nothing() {
+    fn a_home_symlink_inside_home_is_read() {
+        let scratch = Scratch::new("home-link-in");
+        let home = scratch.path("home");
+        write(&home.join("notes.md"), "from home notes\n");
+        for folder in [".kyotoagent", ".agents"] {
+            fs::create_dir_all(home.join(folder)).expect("the home folder exists");
+            std::os::unix::fs::symlink(home.join("notes.md"), home.join(folder).join("AGENTS.md"))
+                .expect("the link is made");
+        }
+        let workspace = scratch.path("repo");
+        git_root(&workspace);
+        let text = load_in(&workspace, &home);
+        assert_eq!(text.matches("from home notes").count(), 2, "{text}");
+    }
+
+    #[test]
+    fn a_home_symlink_that_leaves_home_is_skipped() {
         let scratch = Scratch::new("home-link");
         let home = scratch.path("home");
         write(&scratch.path("outside.md"), "secret outside\n");
@@ -574,6 +588,30 @@ mod tests {
         git_root(&workspace);
         let text = load_in(&workspace, &home);
         assert!(!text.contains("secret outside"), "{text}");
+        assert!(text.is_empty(), "{text}");
+    }
+
+    #[test]
+    fn a_relative_symlink_inside_the_project_is_read() {
+        let scratch = Scratch::new("link-rel");
+        let workspace = scratch.path("repo");
+        git_root(&workspace);
+        write(&workspace.join("notes.md"), "relative rule\n");
+        std::os::unix::fs::symlink("notes.md", workspace.join("AGENTS.md"))
+            .expect("the link is made");
+        let text = load_in(&workspace, &scratch.path("home"));
+        assert!(text.contains("relative rule"), "{text}");
+    }
+
+    #[test]
+    fn a_symlink_to_a_directory_is_skipped() {
+        let scratch = Scratch::new("link-dir");
+        let workspace = scratch.path("repo");
+        git_root(&workspace);
+        fs::create_dir_all(workspace.join("notes")).expect("the notes dir exists");
+        std::os::unix::fs::symlink(workspace.join("notes"), workspace.join("AGENTS.md"))
+            .expect("the link is made");
+        let text = load_in(&workspace, &scratch.path("home"));
         assert!(text.is_empty(), "{text}");
     }
 

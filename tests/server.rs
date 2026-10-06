@@ -2902,6 +2902,67 @@ async fn the_first_ask_titles_with_the_default_model() {
 }
 
 #[tokio::test]
+async fn archive_hides_the_session_and_unarchive_restores_it() {
+    let fixture = Fixture::new("archive-session", write_then_finish()).await;
+    let id = fixture.add_session("notes").await;
+    let dir = fixture.root.join("sessions").join(&id);
+    let (status, _) = fixture.client.message(&id, "Create notes.md.").await;
+    assert_eq!(status, 202);
+    fixture.client.wait_for_status(&id, "waiting").await;
+
+    let (status, response) = fixture
+        .client
+        .request("POST", &format!("/v1/sessions/{id}/archive"), None)
+        .await;
+    assert_eq!(status, 204, "{response}");
+    assert!(dir.join("meta.json").is_file(), "the log stays");
+    let row = fixture
+        .client
+        .list()
+        .await
+        .into_iter()
+        .find(|row| row["id"] == id)
+        .expect("the session stays listed");
+    assert_eq!(row["archived"], true);
+    assert!(row["archivedAt"].as_str().is_some());
+
+    let (status, response) = fixture.client.message(&id, "Again.").await;
+    assert_eq!(
+        status, 409,
+        "an archived session refuses a new ask: {response}"
+    );
+
+    let (status, response) = fixture
+        .client
+        .request(
+            "POST",
+            &format!("/v1/sessions/{id}/archive"),
+            Some(r#"{"archived":false}"#),
+        )
+        .await;
+    assert_eq!(status, 204, "{response}");
+    let row = fixture
+        .client
+        .list()
+        .await
+        .into_iter()
+        .find(|row| row["id"] == id)
+        .expect("the session is listed");
+    assert_eq!(row["archived"], serde_json::Value::Null);
+    let (status, response) = fixture.client.message(&id, "Again.").await;
+    assert_eq!(
+        status, 202,
+        "a restored session takes a new ask: {response}"
+    );
+
+    let (status, response) = fixture
+        .client
+        .request("POST", "/v1/sessions/missing/archive", None)
+        .await;
+    assert_eq!(status, 404, "{response}");
+}
+
+#[tokio::test]
 async fn delete_session_is_204_and_an_unknown_id_is_404() {
     let fixture = Fixture::new("delete-session", write_then_finish()).await;
     let id = fixture.add_session("notes").await;
@@ -2972,6 +3033,70 @@ async fn delete_worktree_is_409_unless_isolation_is_worktree() {
         .find(|row| row["id"] == parent)
         .expect("the parent stays listed");
     assert_eq!(row["workspace"], parent_row["workspace"]);
+}
+
+#[tokio::test]
+async fn deleting_a_shared_child_keeps_the_parent_worktree() {
+    let fixture = Fixture::new("shared-child-delete", Vec::new()).await;
+    let repo = fixture.root.join("repo");
+    git_repo(&repo);
+    let body = serde_json::json!({
+        "workspace": repo.to_str().expect("a path"),
+        "worktree": true
+    })
+    .to_string();
+    let (status, response) = fixture
+        .client
+        .request("POST", "/v1/sessions", Some(&body))
+        .await;
+    assert_eq!(status, 201, "{response}");
+    let parent: Value = serde_json::from_str(&response).expect("parent json");
+    let parent_id = parent["id"].as_str().expect("parent id").to_string();
+    let parent_workspace = parent["workspace"].as_str().expect("parent workspace");
+    fs::write(
+        std::path::Path::new(parent_workspace).join("parent-only.txt"),
+        "parent work\n",
+    )
+    .expect("parent file");
+    let child = fixture.client.create_session(parent_workspace).await;
+    kyotoagent::session::Session::at(&fixture.root.join("sessions").join(&child))
+        .update(|meta| {
+            meta.parent_id = Some(parent_id.clone());
+            meta.isolation = Some("none".into());
+            true
+        })
+        .expect("child meta");
+    let rows = fixture.client.list().await;
+    let child_row = rows
+        .iter()
+        .find(|row| row["id"] == child)
+        .expect("the child is listed");
+    assert!(child_row.get("worktree").is_none(), "{child_row}");
+    let (status, response) = fixture
+        .client
+        .request("GET", &format!("/v1/sessions/{child}/workspace"), None)
+        .await;
+    assert_eq!(status, 200, "{response}");
+    let workspace: Value = serde_json::from_str(&response).expect("workspace json");
+    assert_eq!(workspace["managed"], false, "{response}");
+    let (status, response) = fixture
+        .client
+        .request(
+            "DELETE",
+            &format!("/v1/sessions/{child}?delete_workspace=true&confirm_dirty=true"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 409, "{response}");
+    assert!(response.contains("Only a managed worktree can be deleted."));
+    assert!(std::path::Path::new(parent_workspace).exists());
+    assert_eq!(
+        fs::read_to_string(std::path::Path::new(parent_workspace).join("parent-only.txt"))
+            .expect("parent file"),
+        "parent work\n"
+    );
+    assert!(fixture.root.join("sessions").join(&child).exists());
+    assert!(fixture.root.join("sessions").join(&parent_id).exists());
 }
 
 #[tokio::test]

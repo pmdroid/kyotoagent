@@ -88,13 +88,12 @@ pub(super) async fn fetch(context: &PollContext, client: &Client) -> Result<Poll
             row
         })
         .collect();
-    let selected = if sessions.iter().any(|row| row.id == context.selected) {
-        context.selected.clone()
-    } else {
-        newest_for_server(&sessions, workspace, context.server.is_some())
-            .or_else(|| sessions.first().map(|row| row.id.clone()))
-            .unwrap_or_default()
-    };
+    let selected = live_selection(
+        &sessions,
+        &context.selected,
+        workspace,
+        context.server.is_some(),
+    );
     let mut yolo_started = false;
     if context.start_yolo && !selected.is_empty() {
         if !sessions.iter().any(|row| row.id == selected && row.yolo) {
@@ -188,9 +187,7 @@ pub(super) fn apply_poll(app: &mut App, data: PollData) {
         app.menu = None;
     }
     if !app.sessions.iter().any(|row| row.id == app.selected) {
-        let id = newest_for_server(&app.sessions, &app.workspace, app.server.is_some())
-            .or_else(|| app.sessions.first().map(|row| row.id.clone()))
-            .unwrap_or_default();
+        let id = live_selection(&app.sessions, "", &app.workspace, app.server.is_some());
         if id != app.selected {
             select_session(app, id);
         }
@@ -384,7 +381,11 @@ pub(super) fn apply_poll(app: &mut App, data: PollData) {
 pub async fn poll(app: &mut App, client: &Client) -> Result<(), String> {
     app.poll_revision = app.poll_revision.wrapping_add(1);
     let context = PollContext::new(app);
-    let data = fetch(&context, client).await?;
+    let request = context.clone();
+    let client = client.clone();
+    let data = tokio::spawn(async move { fetch(&request, &client).await })
+        .await
+        .map_err(|_| "Session refresh stopped.".to_string())??;
     if context.matches(app) {
         apply_poll(app, data);
     }
@@ -476,7 +477,7 @@ pub(super) fn remember_sessions(app: &mut App) {
     let mut next = BTreeMap::new();
     for row in &app.sessions {
         if let Some(known) = &previous {
-            if row.id != app.selected {
+            if !row.archived && row.id != app.selected {
                 if let Some(phrase) =
                     notice_for(known.get(&row.id).copied(), row.status, row.waiting)
                 {
@@ -487,6 +488,28 @@ pub(super) fn remember_sessions(app: &mut App) {
         next.insert(row.id.clone(), (row.status, row.waiting));
     }
     app.known_status = Some(next);
+}
+
+fn live_selection(
+    sessions: &[SessionRow],
+    selected: &str,
+    workspace: &Path,
+    remote: bool,
+) -> String {
+    if sessions
+        .iter()
+        .any(|row| row.id == selected && !row.archived)
+    {
+        return selected.to_string();
+    }
+    if let Some(id) = newest_for_server(sessions, workspace, remote) {
+        return id;
+    }
+    sessions
+        .iter()
+        .find(|row| !row.archived)
+        .map(|row| row.id.clone())
+        .unwrap_or_default()
 }
 
 pub(super) fn notice_for(

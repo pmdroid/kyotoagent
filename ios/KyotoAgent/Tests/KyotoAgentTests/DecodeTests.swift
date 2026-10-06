@@ -47,6 +47,7 @@ final class DecodeTests: XCTestCase {
         XCTAssertEqual(sessions[0].waiting, "permission")
         XCTAssertEqual(sessions[0].parentId, "a11a0001")
         XCTAssertEqual(sessions[0].isolation, "worktree")
+        XCTAssertFalse(sessions[0].hidden)
         XCTAssertTrue(sessions[0].worktree)
         XCTAssertFalse(sessions[1].worktree)
         XCTAssertNotNil(sessions[0].pullUrl)
@@ -237,7 +238,8 @@ final class DecodeTests: XCTestCase {
                 XCTAssertFalse(text.contains("UIViewController"), url.path)
             }
             XCTAssertFalse(text.replacingOccurrences(of: modelConfirmSentence, with: "").contains("config.toml"), url.path)
-            XCTAssertFalse(text.contains("Authorization"), url.path)
+            XCTAssertFalse(text.contains("Bearer "), url.path)
+            XCTAssertFalse(text.contains("setValue") && text.contains("Authorization"), url.path)
         }
         XCTAssertTrue(sawApp)
         let project = try String(contentsOf: projectFile(), encoding: .utf8)

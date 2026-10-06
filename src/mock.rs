@@ -99,7 +99,9 @@ fn row(id: &str, dir: &str, status: Status, waiting: Option<Wait>) -> SessionRow
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
+        archived: false,
     }
 }
 

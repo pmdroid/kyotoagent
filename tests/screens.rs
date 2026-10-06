@@ -419,19 +419,23 @@ fn the_help_frame_matches_its_golden() {
     assert!(rows.iter().all(|row| row.name != "preflight"));
     assert!(rows.iter().any(|row| row.name == "/compact"), "{rows:?}");
     assert!(rows.iter().any(|row| row.name == "/enhance"));
+    assert!(rows
+        .iter()
+        .any(|row| row.name == "New session" && row.keys == "Ctrl-T"));
+    assert!(rows
+        .iter()
+        .any(|row| row.name == "Sessions" && row.keys == "Ctrl-B"));
+    assert!(rows
+        .iter()
+        .any(|row| row.name == "Panes" && row.keys == "Ctrl-G"));
     let mut model = mock::idle();
     model.bottom.clear();
-    model.overlay = Some(Overlay::Help { rows, scroll: 0 });
+    model.overlay = Some(Overlay::Help { rows, scroll: 2 });
     let drawn = draw(&model);
-    assert!(drawn.contains("New session"), "{drawn}");
-    assert!(drawn.contains("Ctrl-T"), "{drawn}");
-    assert!(drawn.contains("Ctrl-B"), "{drawn}");
-    assert!(drawn.contains("Ctrl-G"), "{drawn}");
-    assert!(drawn.contains("Sessions"), "{drawn}");
-    assert!(drawn.contains("Panes"), "{drawn}");
-
     assert!(drawn.contains("Profile"), "{drawn}");
     assert!(drawn.contains("Server"), "{drawn}");
+    assert!(drawn.contains("Archive session"), "{drawn}");
+    assert!(drawn.contains("Unarchive session"), "{drawn}");
     assert!(drawn.contains("Delete session"), "{drawn}");
     assert!(drawn.contains("Enhance"), "{drawn}");
     assert!(drawn.contains("rewrite a short prompt"), "{drawn}");

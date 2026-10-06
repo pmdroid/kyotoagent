@@ -799,7 +799,9 @@ fn esc_on_a_question_overlay_closes_it_and_a_bare_esc_does_not_cancel() {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
+        archived: false,
     }];
     app.overlay = true;
     app.cards = vec![Card::question("Which?", &[("a", false), ("b", false)])];
@@ -833,6 +835,27 @@ fn esc_on_a_question_overlay_closes_it_and_a_bare_esc_does_not_cancel() {
         Some(Effect::CloseOverlay)
     );
     assert_eq!(key(ctrl('x'), Mode::Working, true), Some(Effect::Cancel));
+}
+
+#[test]
+fn a_session_menu_offers_archive_and_an_archived_row_offers_restore() {
+    assert_eq!(
+        screen::session_menu_items(false),
+        vec![
+            screen::MENU_ARCHIVE.to_string(),
+            screen::MENU_CLOSE.to_string()
+        ]
+    );
+    assert_eq!(
+        screen::session_menu_items(true),
+        vec![
+            screen::MENU_UNARCHIVE.to_string(),
+            screen::MENU_CLOSE.to_string()
+        ]
+    );
+    let rows = command_catalog(&[]);
+    assert!(rows.iter().any(|row| row.line.name == "Archive session"));
+    assert!(rows.iter().any(|row| row.line.name == "Unarchive session"));
 }
 
 #[test]
@@ -875,7 +898,9 @@ fn blank_row() -> SessionRow {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
+        archived: false,
     }
 }
 
@@ -964,7 +989,9 @@ fn waiting_question(text: &str) -> App {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
+        archived: false,
     });
     app.cards.push(Card::question(
         "Which way?",
@@ -1203,7 +1230,9 @@ fn a_waiting_permission_does_not_auto_open() {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
+        archived: false,
     });
     app.cards
         .push(Card::permission("Replace notes.md", None, &["+hello"]));
@@ -1239,7 +1268,9 @@ fn a_waiting_row_is_permission_mode() {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
+        archived: false,
     });
     assert_eq!(mode(&app), Mode::Permission);
     app.notice = Some("Layout saved".into());
@@ -1607,7 +1638,9 @@ fn idle_proof_app(card: Card) -> App {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
+        archived: false,
     });
     app.cards.push(card);
     app
@@ -1759,7 +1792,9 @@ fn idle_with_skills() -> App {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
+        archived: false,
     });
     app.skills = vec![
         SkillEntry {
@@ -3173,6 +3208,50 @@ fn left_collapses_a_selected_header_and_right_expands_it() {
     assert!(apply_pane(&mut app, Effect::ExpandHeader));
     assert!(!app.collapsed.contains("kyotoagent"));
     assert!(list_column(&screen_model(&app)).contains("Main task"));
+}
+
+#[tokio::test]
+async fn wheel_over_a_full_session_list_scrolls_it() {
+    let mut app = App::new(PathBuf::from("/w"), PathBuf::from("/home/u"), "id00".into());
+    app.area = Rect::new(0, 0, 76, 24);
+    let seed = crate::mock::idle().sessions;
+    app.sessions = (0..12)
+        .map(|index| {
+            let mut row = seed[0].clone();
+            row.id = format!("id{index:02}");
+            row.title = Some(format!("session {index:02}"));
+            row
+        })
+        .collect();
+    let list = screen::split_of(&screen_model(&app), app.area).list;
+    let column = list.x + 2;
+    let row = list.y + 2;
+    app.pointer = Some((column, row));
+    assert_eq!(
+        mouse(
+            wheel(MouseEventKind::ScrollDown, column, row),
+            &screen_model(&app),
+            app.area
+        ),
+        Some(Effect::ScrollList { up: false })
+    );
+    let client = Client::at(PathBuf::from("/tmp/kyotoagent-no-socket"));
+    apply(&mut app, &client, Effect::ScrollList { up: false })
+        .await
+        .unwrap();
+    assert!(app.list_scroll > 0);
+    let hidden = list_column(&screen_model(&app));
+    assert!(
+        !hidden.contains("session 00"),
+        "the first row stayed on screen:\n{hidden}"
+    );
+    apply(&mut app, &client, Effect::ScrollList { up: true })
+        .await
+        .unwrap();
+    assert_eq!(app.list_scroll, 0);
+    select_session(&mut app, "id11".into());
+    assert!(app.list_scroll > 0);
+    assert!(list_column(&screen_model(&app)).contains("session 11"));
 }
 
 #[test]

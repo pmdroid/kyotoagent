@@ -106,15 +106,16 @@ pub(super) fn render_list(model: &ScreenModel, area: Rect, frame: &mut Frame) {
             Span::raw("  "),
             Span::styled("commands", theme::hint()),
         ]);
-        let content = lines.len().min(filled);
-        let mut body = lines;
+        let scroll = model.list_scroll.min(lines.len().saturating_sub(filled));
+        let content = lines.len().saturating_sub(scroll).min(filled);
+        let mut body: Vec<Line<'static>> = lines.into_iter().skip(scroll).take(filled).collect();
+        let shown_bands: Vec<bool> = bands.into_iter().skip(scroll).take(filled).collect();
         while body.len() < filled {
             body.push(Line::from(""));
         }
-        body.truncate(filled);
         body.push(hints);
         for (index, line) in body.iter_mut().enumerate() {
-            if index >= content || !bands.get(index).copied().unwrap_or(false) {
+            if index >= content || !shown_bands.get(index).copied().unwrap_or(false) {
                 continue;
             }
             for span in line.spans.iter_mut() {
@@ -136,8 +137,14 @@ pub(super) struct ListPiece {
 }
 
 pub(super) fn list_pieces(model: &ScreenModel) -> Vec<ListPiece> {
+    let shown: Vec<SessionRow> = model
+        .sessions
+        .iter()
+        .filter(|row| !row.hidden)
+        .cloned()
+        .collect();
     if !sessions_grouped(model) {
-        return nest_rows(&model.sessions)
+        return nest_rows(&shown)
             .into_iter()
             .map(|row| ListPiece {
                 hit: ListHit::Session(row.id.clone()),
@@ -145,15 +152,17 @@ pub(super) fn list_pieces(model: &ScreenModel) -> Vec<ListPiece> {
             .collect();
     }
     let mut keys: Vec<_> = model.projects.iter().map(|row| row.id.clone()).collect();
-    for row in &model.sessions {
+    for row in &shown {
         let key = project_key(row).unwrap_or_else(|| OTHER_PROJECT.to_string());
         if !keys.contains(&key) {
             keys.push(key);
         }
     }
-    if let Some(index) = keys.iter().position(|key| key == OTHER_PROJECT) {
-        let key = keys.remove(index);
-        keys.push(key);
+    for key in [OTHER_PROJECT, ARCHIVED_GROUP] {
+        if let Some(index) = keys.iter().position(|stored| stored == key) {
+            let key = keys.remove(index);
+            keys.push(key);
+        }
     }
     let mut pieces = Vec::new();
     for key in keys {
@@ -163,8 +172,7 @@ pub(super) fn list_pieces(model: &ScreenModel) -> Vec<ListPiece> {
         if model.collapsed.contains(&key) {
             continue;
         }
-        let group: Vec<&SessionRow> = model
-            .sessions
+        let group: Vec<&SessionRow> = shown
             .iter()
             .filter(|row| project_key(row).unwrap_or_else(|| OTHER_PROJECT.to_string()) == key)
             .collect();
@@ -215,6 +223,9 @@ pub(super) fn sessions_grouped(model: &ScreenModel) -> bool {
 }
 
 pub(super) fn project_key(row: &SessionRow) -> Option<String> {
+    if row.archived {
+        return Some(ARCHIVED_GROUP.to_string());
+    }
     row.project
         .as_deref()
         .map(str::trim)
@@ -228,6 +239,9 @@ pub(super) fn header_label(model: &ScreenModel, key: &str) -> String {
     }
     if key == OTHER_PROJECT {
         return OTHER_PROJECT.to_string();
+    }
+    if key == ARCHIVED_GROUP {
+        return ARCHIVED_GROUP.to_string();
     }
     model
         .sessions
@@ -281,7 +295,7 @@ pub(super) fn session_name_line(
     let mut spans = Vec::new();
     let mut room = width;
     push_cols(&mut spans, mark, name_style, &mut room);
-    if let Some((glyph, color)) = list_mark(row.status) {
+    if let Some((glyph, color)) = session_mark(row) {
         let mut icon = Style::default().fg(color);
         if is_selected {
             icon = icon.add_modifier(Modifier::BOLD);
@@ -304,6 +318,13 @@ pub(super) fn list_mark(status: Status) -> Option<(&'static str, Color)> {
     }
 }
 
+pub(super) fn session_mark(row: &SessionRow) -> Option<(&'static str, Color)> {
+    if row.archived {
+        return Some(("\u{25cb}", theme::muted()));
+    }
+    list_mark(row.status)
+}
+
 pub(super) fn push_cols(
     spans: &mut Vec<Span<'static>>,
     text: &str,
@@ -318,5 +339,32 @@ pub(super) fn push_cols(
     *room = room.saturating_sub(used);
     if !text.is_empty() {
         spans.push(Span::styled(text, style));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hidden_child_is_left_out_of_the_list_and_a_visible_child_stays() {
+        let mut model = crate::mock::children();
+        model.sessions.last_mut().unwrap().hidden = true;
+        let mut shown = model.sessions.last().unwrap().clone();
+        shown.id = "visible1".into();
+        shown.hidden = false;
+        shown.title = Some("Watch this".into());
+        model.sessions.push(shown);
+        let pieces = list_pieces(&model);
+        let ids: Vec<&str> = pieces
+            .iter()
+            .filter_map(|piece| match &piece.hit {
+                ListHit::Session(id) => Some(id.as_str()),
+                ListHit::Header(_) => None,
+            })
+            .collect();
+        assert!(!ids.contains(&"c0ffee00"), "{ids:?}");
+        assert!(ids.contains(&"visible1"), "{ids:?}");
+        assert!(ids.contains(&"91bc7a1d"), "{ids:?}");
     }
 }

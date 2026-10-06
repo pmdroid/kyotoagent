@@ -24,6 +24,8 @@ choice of socket or `--url` / `KYOTOAGENT_URL`.
 | `kyotoagent sessions` | Lists the sessions, one plain-text row each |
 | `kyotoagent log [id]` | Prints the event log of a session |
 | `kyotoagent cancel [id]` | Cancels the current turn of a session |
+| `kyotoagent archive [id]` | Hides a session until it is restored. The log stays |
+| `kyotoagent unarchive [id]` | Restores an archived session |
 | `kyotoagent provider` | Prints the current model server |
 | `kyotoagent provider use <id>` | Selects a table in the file |
 | `kyotoagent provider add <id> --base-url <url> --model <model> [--api-key-env <name>]` | Inserts a table and selects it |
@@ -43,7 +45,7 @@ never printed.
   and the signed token from `kyotoagent pair`.
 - Bare `kyotoagent` still uses the unix socket.
 
-`new`, `repos`, `sessions`, `log`, `cancel`, and `attach` follow the same choice.
+`new`, `repos`, `sessions`, `log`, `cancel`, `archive`, `unarchive`, and `attach` follow the same choice.
 
 `kyotoagent` with no arguments opens the newest session for the current directory.
 `kyotoagent log` and `kyotoagent cancel` name the newest session in the current

@@ -25,6 +25,8 @@
 //! - `POST /v1/sessions/:id/profile` sets or clears the live session profile.
 //! - `DELETE /v1/sessions/:id` stops the turn, removes a worktree child, and
 //!   deletes the session directory.
+//! - `POST /v1/sessions/:id/archive` stops the turn and hides the session.
+//!   `POST` with `{ "archived": false }` restores it. The directory stays.
 //! - `DELETE /v1/sessions/:id/worktree` removes the git worktree and keeps the
 //!   session.
 
@@ -55,6 +57,7 @@ mod https;
 pub mod local;
 pub mod login;
 mod proof;
+mod push;
 
 use crate::config::Config;
 use crate::events::{now, open_enhance, Decision, EventKind};
@@ -231,6 +234,7 @@ pub struct Server {
     listen: Option<Listen>,
     https: Arc<https::Runtime>,
     config_edit: Arc<std::sync::Mutex<()>>,
+    push: Arc<push::Push>,
     logins: Arc<login::Logins>,
 }
 
@@ -248,6 +252,7 @@ impl Server {
         let server = Server {
             root: root.to_path_buf(),
             runner,
+            push: Arc::new(push::Push::new(root, config.push.as_ref()).map_err(ServerError::Tls)?),
             listen,
             https: Arc::new(https::Runtime::default()),
             config_edit: Arc::new(std::sync::Mutex::new(())),
@@ -321,6 +326,7 @@ impl Server {
             println!("Kyoto Agent listening on https://{addr}");
         }
         let _ = std::io::stdout().flush();
+        let _push = self.push.start();
         let router = self.router();
         let https_router = https::authenticated(router.clone(), &self.root)?;
         let (sender, mut incoming) = tokio::sync::mpsc::channel(1);
@@ -359,12 +365,17 @@ impl Server {
     fn router(&self) -> Router {
         let state = AppState {
             root: self.root.clone(),
+            push: Arc::clone(&self.push),
             runner: Arc::clone(&self.runner),
             config_edit: Arc::clone(&self.config_edit),
             logins: Arc::clone(&self.logins),
             https: Arc::clone(&self.https),
         };
         Router::new()
+            .route(
+                "/v1/devices",
+                axum::routing::put(push::register).delete(push::unregister),
+            )
             .route("/v1/https", get(https::status).post(https::enable))
             .route("/v1/share", post(https::share))
             .route(
@@ -401,6 +412,7 @@ impl Server {
             .route("/v1/sessions/{id}/cancel", post(cancel))
             .route("/v1/sessions/{id}/workspace", get(workspace_status))
             .route("/v1/sessions/{id}/worktree", delete(delete_worktree))
+            .route("/v1/sessions/{id}/archive", post(set_archive))
             .route("/v1/sessions/{id}", delete(delete_session))
             .route("/v1/sessions/{id}/yolo", post(set_yolo))
             .route("/v1/sessions/{id}/enhance", post(set_enhance))
@@ -426,11 +438,13 @@ struct AppState {
     root: PathBuf,
     runner: Arc<Runner>,
     config_edit: Arc<std::sync::Mutex<()>>,
+    push: Arc<push::Push>,
     logins: Arc<login::Logins>,
     https: Arc<https::Runtime>,
 }
 
 /// A body the server could not use, with the status the client gets.
+#[derive(Debug)]
 struct ApiError {
     status: StatusCode,
     message: String,
@@ -656,7 +670,13 @@ struct SessionRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     isolation: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hidden: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     worktree: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    archived: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archived_at: Option<String>,
     allow: AllowList,
 }
 
@@ -895,7 +915,10 @@ async fn list_sessions(State(state): State<AppState>) -> Result<impl IntoRespons
                 project,
                 parent_id: meta.parent_id,
                 isolation: meta.isolation,
+                hidden: meta.hidden,
                 worktree,
+                archived: meta.archived,
+                archived_at: meta.archived_at,
                 allow: meta.allow,
             })
         })
@@ -1139,6 +1162,7 @@ async fn message(
             Ok((StatusCode::ACCEPTED, Json(serde_json::json!({}))))
         }
         Err(TurnError::NoSession) => Err(ApiError::not_found()),
+        Err(TurnError::Archived) => Err(ApiError::conflict("the session is archived")),
         Err(TurnError::Busy) => Err(ApiError::conflict("the session is already working")),
         Err(TurnError::QueueFull) => Err(ApiError::conflict("the queue is full")),
         Err(TurnError::Goal(message)) => Err(ApiError::bad_request(message)),
@@ -1308,6 +1332,51 @@ fn remove_workspace(root: &Path, meta: &SessionMeta, confirm_dirty: bool) -> Res
     drop_worktree(root, meta, confirm_dirty)
 }
 
+#[derive(Deserialize)]
+struct ArchiveRequest {
+    #[serde(default = "default_archive")]
+    archived: bool,
+}
+
+fn default_archive() -> bool {
+    true
+}
+
+/// Stop the turn and hide the session, or restore it. The directory stays.
+/// An empty body archives. `{ "archived": false }` restores.
+async fn set_archive(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    body: axum::body::Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    let archived = if body.is_empty() {
+        true
+    } else {
+        serde_json::from_slice::<ArchiveRequest>(&body)
+            .map_err(|source| ApiError::bad_request(source.to_string()))?
+            .archived
+    };
+    let dir = session_dir(&state.root, &id);
+    let session = Session::at(&dir);
+    if session.meta().is_err() {
+        return Err(ApiError::not_found());
+    }
+    if archived {
+        state.runner.retire(&id).await;
+    }
+    session
+        .set_archived(archived, &now())
+        .map_err(|source| ApiError::server(source.to_string()))?;
+    if !archived {
+        state
+            .runner
+            .add_session(&session)
+            .map_err(|source| ApiError::server(source.to_string()))?;
+        state.runner.resume(&id);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn delete_session(
     State(state): State<AppState>,
     Query(options): Query<DeleteOptions>,
@@ -1369,6 +1438,9 @@ fn parent_workspace(root: &Path, meta: &SessionMeta) -> Option<String> {
 }
 
 fn removes_worktree(root: &Path, meta: &SessionMeta) -> bool {
+    if meta.parent_id.is_some() {
+        return meta.isolation.as_deref() == Some("worktree");
+    }
     meta.isolation.as_deref() == Some("worktree") || under_worktrees(root, &meta.workspace)
 }
 
@@ -1748,7 +1820,10 @@ mod ios_fixtures {
                 project: Some("kyotoagent".into()),
                 parent_id: Some("a11a0001".into()),
                 isolation: Some("worktree".into()),
+                hidden: false,
                 worktree: true,
+                archived: false,
+                archived_at: None,
                 allow: child_allow,
             },
             SessionRow {
@@ -1771,7 +1846,10 @@ mod ios_fixtures {
                 project: Some("kyotoagent".into()),
                 parent_id: None,
                 isolation: None,
+                hidden: false,
                 worktree: false,
+                archived: false,
+                archived_at: None,
                 allow: AllowList::default(),
             },
         ]
