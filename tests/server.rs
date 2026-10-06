@@ -2963,6 +2963,29 @@ async fn archive_hides_the_session_and_unarchive_restores_it() {
 }
 
 #[tokio::test]
+async fn archive_accepts_the_session_path_an_older_phone_posts() {
+    let fixture = Fixture::new("archive-session-path", Vec::new()).await;
+    let id = fixture.add_session("notes").await;
+    let (status, response) = fixture
+        .client
+        .request(
+            "POST",
+            &format!("/v1/sessions/{id}"),
+            Some(r#"{"archived":true}"#),
+        )
+        .await;
+    assert_eq!(status, 204, "{response}");
+    let row = fixture
+        .client
+        .list()
+        .await
+        .into_iter()
+        .find(|row| row["id"] == id)
+        .expect("the session stays listed");
+    assert_eq!(row["archived"], true);
+}
+
+#[tokio::test]
 async fn delete_session_is_204_and_an_unknown_id_is_404() {
     let fixture = Fixture::new("delete-session", write_then_finish()).await;
     let id = fixture.add_session("notes").await;

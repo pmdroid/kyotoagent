@@ -61,6 +61,7 @@ nonisolated public enum ServeCall: Equatable, Sendable {
     case create(workspace: String, worktree: Bool, profile: String?)
     case delete(String, deleteWorkspace: Bool = false)
     case archive(String, archived: Bool)
+    case archiveSession(String, archived: Bool)
     case answer(session: String, eventId: String, choice: String, text: String?)
     case file(id: String, path: String)
     case artifacts(String)
@@ -231,7 +232,18 @@ nonisolated public struct ServeClient: Sendable {
     }
 
     nonisolated public func setArchived(_ id: String, archived: Bool) async throws {
-        try await expectEmpty(.archive(id, archived: archived))
+        let response = try await send(.archive(id, archived: archived))
+        if response.status == 204 {
+            return
+        }
+        if response.status == 404 {
+            let response = try await send(.archiveSession(id, archived: archived))
+            if response.status == 204 {
+                return
+            }
+            throw HostError.status(response.status, responseText(response.body))
+        }
+        throw HostError.status(response.status, responseText(response.body))
     }
 
     private func decodeList(_ call: ServeCall) async throws -> [Session] {
@@ -432,6 +444,10 @@ nonisolated public func serveRequest(baseURL: URL, call: ServeCall) -> URLReques
         method = "DELETE"
     case .archive(let id, let archived):
         path = "/v1/sessions/" + id + "/archive"
+        method = "POST"
+        body = try? JSONEncoder().encode(ArchivePayload(archived: archived))
+    case .archiveSession(let id, let archived):
+        path = "/v1/sessions/" + id
         method = "POST"
         body = try? JSONEncoder().encode(ArchivePayload(archived: archived))
     case .answer(let session, let eventId, let choice, let text):

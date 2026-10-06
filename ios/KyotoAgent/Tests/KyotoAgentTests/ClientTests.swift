@@ -611,10 +611,42 @@ final class ClientTests: XCTestCase {
         await model.connect()
         model.open("a11a0001")
         await model.setArchived("a11a0001", archived: true)
+        XCTAssertNil(model.notice)
         XCTAssertNil(model.selection)
         let row = try XCTUnwrap(model.sessions.first { $0.id == "a11a0001" })
         XCTAssertTrue(row.archived)
         XCTAssertEqual(sessionLine(row, depth: 0).badge, "archived")
+    }
+
+    func testArchiveFallsBackWhenTheArchiveRouteIsMissing() async throws {
+        let gate = Gate()
+        let sessions = try fixtureData("sessions.json")
+        let state = Flag()
+        gate.handler = { request in
+            if request.httpMethod == "POST", request.url?.path == "/v1/sessions/a11a0001/archive" {
+                return HostResponse(status: 404, body: Data())
+            }
+            if request.httpMethod == "POST", request.url?.path == "/v1/sessions/a11a0001" {
+                state.on = true
+                let body = try JSONDecoder().decode([String: Bool].self, from: request.httpBody ?? Data())
+                XCTAssertEqual(body["archived"], true)
+                return HostResponse(status: 204, body: Data())
+            }
+            if state.on {
+                var rows = try JSONDecoder().decode([Session].self, from: sessions)
+                if let index = rows.firstIndex(where: { $0.id == "a11a0001" }) {
+                    rows[index].archived = true
+                }
+                return HostResponse(status: 200, body: try JSONEncoder().encode(rows))
+            }
+            return HostResponse(status: 200, body: sessions)
+        }
+        let model = try model(store: MemoryBaseURL(), gate: gate)
+        model.baseURLText = sampleBase()
+        await model.connect()
+        await model.setArchived("a11a0001", archived: true)
+        XCTAssertNil(model.notice)
+        XCTAssertTrue(try XCTUnwrap(model.sessions.first { $0.id == "a11a0001" }).archived)
     }
 
     func testDeleteAsksBeforeItRemovesTheSession() async throws {

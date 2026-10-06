@@ -413,7 +413,10 @@ impl Server {
             .route("/v1/sessions/{id}/workspace", get(workspace_status))
             .route("/v1/sessions/{id}/worktree", delete(delete_worktree))
             .route("/v1/sessions/{id}/archive", post(set_archive))
-            .route("/v1/sessions/{id}", delete(delete_session))
+            .route(
+                "/v1/sessions/{id}",
+                post(set_archive).delete(delete_session),
+            )
             .route("/v1/sessions/{id}/yolo", post(set_yolo))
             .route("/v1/sessions/{id}/enhance", post(set_enhance))
             .route("/v1/sessions/{id}/closeout", post(set_closeout_show))
@@ -1344,6 +1347,7 @@ fn default_archive() -> bool {
 
 /// Stop the turn and hide the session, or restore it. The directory stays.
 /// An empty body archives. `{ "archived": false }` restores.
+/// `POST /v1/sessions/:id` is the same call: an older phone posts there.
 async fn set_archive(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
