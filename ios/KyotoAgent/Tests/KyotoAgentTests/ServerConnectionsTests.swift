@@ -67,7 +67,7 @@ final class ServerConnectionsTests: XCTestCase {
         let store = MemoryBaseURL()
         let legacy = MemoryBaseURL(value: "https://first.example")
         let connections = makeConnections(store: store, legacy: legacy)
-        XCTAssertEqual(connections.servers.first?.id, "legacy")
+        XCTAssertEqual(connections.servers.first?.id, SavedServer.legacyID)
         XCTAssertEqual(connections.model.baseURLText, "https://first.example")
         await connections.connect("https://second.example")
         let restored = makeConnections(store: store, legacy: legacy)
@@ -133,7 +133,7 @@ final class ServerConnectionsTests: XCTestCase {
         await connections.connect("https://second.example")
         let active = try XCTUnwrap(connections.activeID)
         let model = connections.model
-        connections.remove("legacy")
+        connections.remove(SavedServer.legacyID)
         XCTAssertTrue(connections.model === model)
         XCTAssertEqual(connections.activeID, active)
         connections.remove(active)
@@ -175,12 +175,12 @@ final class ServerConnectionsTests: XCTestCase {
     func testFailedRenameAndRemoveKeepSavedServerAndActiveModel() async throws {
         let connections = makeConnections(store: FailingServerStore(), legacy: MemoryBaseURL(value: "https://first.example"))
         let model = connections.model
-        connections.rename("legacy", name: "Work")
+        connections.rename(SavedServer.legacyID, name: "Work")
         XCTAssertNil(connections.servers.first?.name)
         XCTAssertNotNil(connections.failure)
-        connections.remove("legacy")
+        connections.remove(SavedServer.legacyID)
         XCTAssertEqual(connections.servers.count, 1)
-        XCTAssertEqual(connections.activeID, "legacy")
+        XCTAssertEqual(connections.activeID, SavedServer.legacyID)
         XCTAssertTrue(connections.model === model)
     }
 
@@ -473,6 +473,40 @@ final class ServerConnectionsTests: XCTestCase {
         XCTAssertEqual(connections.model.baseURLText, renewed)
         XCTAssertEqual(connections.model.selection, sessionID)
         XCTAssertEqual(connections.model.draft, "Keep the current draft")
+    }
+
+    func testLegacyServerIDMigratesToUUIDWithoutLosingSavedConnection() throws {
+        let store = MemoryBaseURL(value: "{\"servers\":[{\"id\":\"legacy\",\"connection\":\"https://first.example\"}],\"activeID\":\"legacy\"}")
+        let connections = makeConnections(store: store)
+        XCTAssertEqual(connections.activeID, SavedServer.legacyID)
+        XCTAssertNotNil(UUID(uuidString: try XCTUnwrap(connections.servers.first?.id)))
+        XCTAssertEqual(connections.servers.first?.connection, "https://first.example")
+        XCTAssertEqual(makeConnections(store: store).activeID, SavedServer.legacyID)
+    }
+
+    func testNotificationColdStartRoutesToSavedServerAndFetchesView() async throws {
+        let store = MemoryBaseURL()
+        let saved = makeConnections(store: store)
+        await saved.connect("https://first.example")
+        let firstID = try XCTUnwrap(saved.activeID)
+        await saved.connect("https://second.example")
+        let gate = goodGate()
+        let restored = makeConnections(store: store, gate: gate)
+        let route = try XCTUnwrap(NotificationRoute(payload: ["serverId": firstID, "sessionId": "a11a0001", "url": "https://attacker.example"]))
+        let opened = await restored.openNotification(route)
+        XCTAssertTrue(opened)
+        XCTAssertEqual(restored.activeID, firstID)
+        XCTAssertEqual(restored.model.selection, "a11a0001")
+        XCTAssertNotNil(restored.model.transcript.view)
+        XCTAssertTrue(gate.paths.contains("/v1/sessions/a11a0001/view"))
+        let missing = try XCTUnwrap(NotificationRoute(payload: ["serverId": "removed", "sessionId": "a11a0001"]))
+        let rejected = await restored.openNotification(missing)
+        XCTAssertFalse(rejected)
+        XCTAssertEqual(restored.activeID, firstID)
+        let deleted = try XCTUnwrap(NotificationRoute(payload: ["serverId": firstID, "sessionId": "deleted"]))
+        let deletedOpened = await restored.openNotification(deleted)
+        XCTAssertFalse(deletedOpened)
+        XCTAssertEqual(restored.model.selection, "a11a0001")
     }
 
     private func makeConnections(

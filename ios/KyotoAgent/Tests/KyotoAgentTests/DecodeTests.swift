@@ -237,7 +237,8 @@ final class DecodeTests: XCTestCase {
                 XCTAssertFalse(text.contains("UIViewController"), url.path)
             }
             XCTAssertFalse(text.replacingOccurrences(of: modelConfirmSentence, with: "").contains("config.toml"), url.path)
-            XCTAssertFalse(text.contains("Authorization"), url.path)
+            XCTAssertFalse(text.contains("Bearer "), url.path)
+            XCTAssertFalse(text.contains("setValue") && text.contains("Authorization"), url.path)
         }
         XCTAssertTrue(sawApp)
         let project = try String(contentsOf: projectFile(), encoding: .utf8)

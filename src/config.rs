@@ -147,6 +147,8 @@ struct File {
     #[serde(default)]
     listen_key: Option<String>,
     #[serde(default)]
+    push: Option<PushConfig>,
+    #[serde(default)]
     title_model: Option<String>,
     #[serde(default)]
     yolo: Option<bool>,
@@ -193,6 +195,7 @@ struct WebFile {
 /// that is a `[providers]` table or the top-level fields of a legacy file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
+    pub push: Option<PushConfig>,
     pub layout: Option<Layout>,
     /// The id of the selected `[providers]` table, when the file has one.
     pub provider: Option<String>,
@@ -304,6 +307,7 @@ impl Default for Config {
     /// a turn then ends with the one-sentence result the chat client gives.
     fn default() -> Config {
         Config {
+            push: None,
             layout: None,
             provider: None,
             base_url: "https://openrouter.ai/api/v1".to_string(),
@@ -436,6 +440,7 @@ impl Config {
             listen: file.listen,
             listen_cert: file.listen_cert,
             listen_key: file.listen_key,
+            push: file.push,
             title_model: file.title_model,
             yolo: file.yolo.unwrap_or(false),
             enhance: file.enhance.unwrap_or(false),
@@ -2479,4 +2484,17 @@ closeout = "fallback.yaml"
         let config = Config::from_toml(template).unwrap();
         assert!(config.closeout_for(Path::new("/repo"), None).is_err());
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PushConfig {
+    pub team_id: String,
+    pub key_id: String,
+    pub private_key: PathBuf,
+    #[serde(default = "default_push_topic")]
+    pub topic: String,
+}
+
+fn default_push_topic() -> String {
+    "sh.pascal.kyotoagent".into()
 }

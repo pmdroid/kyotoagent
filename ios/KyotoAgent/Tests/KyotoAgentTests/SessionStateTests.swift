@@ -147,8 +147,10 @@ final class SessionStateTests: XCTestCase {
                 guard url.pathExtension == "swift" else { continue }
                 saw = true
                 let text = try String(contentsOf: url, encoding: .utf8)
-                XCTAssertFalse(text.contains("UNUserNotificationCenter"), url.path)
-                XCTAssertFalse(text.contains("UserNotifications"), url.path)
+                if url.lastPathComponent != "NotificationCoordinator.swift" {
+                    XCTAssertFalse(text.contains("UNUserNotificationCenter"), url.path)
+                    XCTAssertFalse(text.contains("UserNotifications"), url.path)
+                }
                 XCTAssertFalse(text.contains("BGTaskScheduler"), url.path)
             }
             XCTAssertTrue(saw, root.path)
@@ -787,7 +789,35 @@ private func packageRoot() -> URL {
     iosRoot().appendingPathComponent("KyotoAgent")
 }
 
-actor DelayedSessionResponse: HostTransport {
+nonisolated struct DelayedSessionResponse: HostTransport {
+    private let state: DelayedSessionResponseState
+
+    init(gate: Gate, suffix: String) {
+        state = DelayedSessionResponseState(gate: gate, suffix: suffix)
+    }
+
+    var requests: Int {
+        get async { await state.requests }
+    }
+
+    var authorizations: [String?] {
+        get async { await state.authorizations }
+    }
+
+    func send(_ request: URLRequest) async throws -> HostResponse {
+        try await state.receive(request)
+    }
+
+    func waitForRequests(_ count: Int) async {
+        await state.waitForRequests(count)
+    }
+
+    func finishNext(_ response: HostResponse) async {
+        await state.finishNext(response)
+    }
+}
+
+private actor DelayedSessionResponseState {
     let gate: Gate
     let suffix: String
     var requests = 0
@@ -800,11 +830,7 @@ actor DelayedSessionResponse: HostTransport {
         self.suffix = suffix
     }
 
-    nonisolated func send(_ request: URLRequest) async throws -> HostResponse {
-        try await receive(request)
-    }
-
-    private func receive(_ request: URLRequest) async throws -> HostResponse {
+    func receive(_ request: URLRequest) async throws -> HostResponse {
         guard request.url?.path.hasSuffix(suffix) == true else {
             return try await gate.send(request)
         }

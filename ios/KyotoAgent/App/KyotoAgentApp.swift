@@ -2,6 +2,9 @@ import SwiftUI
 
 @main
 struct KyotoAgentApp: App {
+    @UIApplicationDelegateAdaptor(NotificationAppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var notifications = NotificationCoordinator.shared
     @State private var connections = ServerConnections(
         store: KeychainBaseURL(account: "servers"),
         legacy: KeychainBaseURL(),
@@ -18,10 +21,17 @@ struct KyotoAgentApp: App {
                     if let icon = UIApplication.shared.alternateIconName, ["SimpleIcon", "GoldenIcon"].contains(icon) {
                         try? await UIApplication.shared.setAlternateIconName(nil)
                     }
+                    await notifications.attach(connections)
                     await connections.connectOnLaunch()
                 }
                 .sheet(isPresented: $connections.showingServers) {
                     ServerSwitcher().environment(connections)
+                }
+                .sheet(isPresented: $notifications.showingSettings) {
+                    NavigationStack { NotificationSettings() }
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { Swift.Task { await notifications.refresh() } }
                 }
                 .onOpenURL { url in
                     guard url.scheme == "kyotoagent", PairingConnection(url.absoluteString) != nil else { return }
@@ -37,10 +47,10 @@ struct KyotoAgentApp: App {
 
 @MainActor
 func makePhoneModel(_ server: SavedServer) -> AppModel {
-    let root = server.id == "legacy"
+    let root = server.id == SavedServer.legacyID
         ? phoneSupportRoot()
         : phoneSupportRoot().appendingPathComponent("servers").appendingPathComponent(server.id)
-    let defaults = server.id == "legacy"
+    let defaults = server.id == SavedServer.legacyID
         ? UserDefaults.standard
         : UserDefaults(suiteName: "sh.pascal.kyotoagent.server." + server.id)!
     let views = ViewCache(directory: root.appendingPathComponent("views", isDirectory: true))
