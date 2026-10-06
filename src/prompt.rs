@@ -40,6 +40,7 @@ impl Default for SkillEntry {
 }
 
 const UNKNOWN_CATALOG_CHARS: usize = 8_000;
+const WORK_INSTRUCTIONS: &str = include_str!("prompts/work.md");
 
 fn catalog_shell(body: &str) -> String {
     let mut out = String::from("<skills_instructions>\n## Skills\n");
@@ -257,6 +258,8 @@ pub fn prompt_parts(
     prefix.push_str("You are Kyoto Agent, a coding agent working in ");
     prefix.push_str(workspace);
     prefix.push_str(".\n\n");
+    prefix.push_str(WORK_INSTRUCTIONS);
+    prefix.push('\n');
     prefix.push_str(&agents_block(agents));
 
     let skills_block = skills_catalog(skills, context_length);
@@ -308,6 +311,8 @@ pub fn subagent_prompt(
     text.push_str(
         "If a decision is missing, call `finish` anyway. Put what you did in `text`, and name the decision you needed. Leave `proof` empty when it would only repeat `text`.\n\n",
     );
+    text.push_str(WORK_INSTRUCTIONS);
+    text.push('\n');
     text.push_str(&agents_block(agents));
     text.push_str(&skills_catalog(skills, context_length));
     text.push_str(&closeout_block(closeout, true));
@@ -702,7 +707,6 @@ mod tests {
     fn an_empty_agents_string_omits_the_section() {
         let prompt = system_prompt("/w", &[], None, "", None);
         assert!(!prompt.contains("Project instructions"), "{prompt}");
-        assert!(!prompt.contains("AGENTS.md"), "{prompt}");
     }
 
     #[test]
