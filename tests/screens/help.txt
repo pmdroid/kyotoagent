@@ -1,6 +1,6 @@
  ☰  Kyoto Agent                                     3 sessions · 0 waiting ▦
 ╭ sessions ──────────────────╮╭ ~/work/kyotoagent ─────────────────────────╮
-│all running questions archiv││╭──────────────────────────────────────────x│
+│all run ask done old        ││╭──────────────────────────────────────────x│
 │▸ ✓ kyotoagent              │││  Effort  open the effort list            ││
 │  idle                      │││  Profile  open the profile list          ││
 │                            │││  Server  manage saved servers            ││
@@ -16,7 +16,7 @@
 │                            │││  Unarchive session  restore an archived s││
 │                            │││  Ctrl-W  Delete session  delete the selec││
 │                            │││  Ctrl-B  Sessions  show or hide the sessi││
-│                            │││  Ctrl-F  Filter sessions  cycle running, ││
+│                            │││  Ctrl-F  Filter sessions  cycle all, run,││
 │ctrl-n/p  ctrl-k  commands  ││╰──────────────────────────────────────────╯│
 ╰────────────────────────────╯╰────────────────────────────────────────────╯
 ╭ Message ─────────────────────────────────────────────────────────────────╮

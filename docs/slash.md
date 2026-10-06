@@ -14,5 +14,5 @@ editUrl: https://github.com/pmdroid/kyotoagent/edit/main/docs/slash.md
 
 Archive and unarchive are command-palette rows, not slash commands. The session
 list filter shows all live sessions, running sessions, sessions waiting on a
-question, or archived sessions. All keeps an archived session in an `archived`
+question, finished sessions, or archived sessions. The labels are all, run, ask, done, and old. All keeps an archived session in an `archived`
 group at the bottom of the list.

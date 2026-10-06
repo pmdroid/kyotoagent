@@ -58,8 +58,9 @@ evidence is not lost to a short card.
 `run`, `get_closeout`, `run_closeout`, `ask`, `archive_session`, `finish`, and `use_skill`.
 
 `archive_session` only archives. It hides the named session, or this session
-when no id is passed. Archiving another session also stops its turn. The
-directory and the log stay. The tool cannot restore or delete a session.
+when no id is passed, and every subagent of that session. Archiving another
+session also stops its turn. The directories and the logs stay. The tool cannot
+restore or delete a session.
 
 - A read, a search, or a list inside the workspace runs immediately.
 - A write, a command, or an outside read waits on the gate, and the session reads

@@ -237,7 +237,7 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "archive_session",
-            "Archive a session. Pass id, or omit it to archive this session. This only archives. It cannot restore or delete a session.",
+            "Archive a session and its subagents. Pass id, or omit it to archive this session. This only archives. It cannot restore or delete a session.",
             serde_json::json!({
                 "type": "object",
                 "properties": {

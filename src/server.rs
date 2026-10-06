@@ -25,8 +25,9 @@
 //! - `POST /v1/sessions/:id/profile` sets or clears the live session profile.
 //! - `DELETE /v1/sessions/:id` stops the turn, removes a worktree child, and
 //!   deletes the session directory.
-//! - `POST /v1/sessions/:id/archive` stops the turn and hides the session.
-//!   `POST` with `{ "archived": false }` restores it. The directory stays.
+//! - `POST /v1/sessions/:id/archive` stops the turn and hides the session and
+//!   its subagents. `POST` with `{ "archived": false }` restores them. The
+//!   directories stay.
 //! - `DELETE /v1/sessions/:id/worktree` removes the git worktree and keeps the
 //!   session.
 
@@ -1343,7 +1344,8 @@ fn default_archive() -> bool {
 }
 
 /// Stop the turn and hide the session, or restore it. The directory stays.
-/// An empty body archives. `{ "archived": false }` restores.
+/// An empty body archives. `{ "archived": false }` restores. The same flag
+/// applies to every subagent of that session.
 async fn set_archive(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
@@ -1357,24 +1359,45 @@ async fn set_archive(
             .archived
     };
     let dir = session_dir(&state.root, &id);
-    let session = Session::at(&dir);
-    if session.meta().is_err() {
+    if Session::at(&dir).meta().is_err() {
         return Err(ApiError::not_found());
     }
-    if archived {
-        state.runner.retire(&id).await;
-    }
-    session
-        .set_archived(archived, &now())
-        .map_err(|source| ApiError::server(source.to_string()))?;
-    if !archived {
-        state
-            .runner
-            .add_session(&session)
+    let stamp = now();
+    for target in archive_family(&state.root, &id) {
+        let session = Session::at(&session_dir(&state.root, &target));
+        if archived {
+            state.runner.retire(&target).await;
+        }
+        session
+            .set_archived(archived, &stamp)
             .map_err(|source| ApiError::server(source.to_string()))?;
-        state.runner.resume(&id);
+        if !archived {
+            state
+                .runner
+                .add_session(&session)
+                .map_err(|source| ApiError::server(source.to_string()))?;
+            state.runner.resume(&target);
+        }
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn archive_family(root: &Path, id: &str) -> Vec<String> {
+    let mut family = vec![id.to_string()];
+    let mut index = 0;
+    while index < family.len() {
+        let parent = family[index].clone();
+        index += 1;
+        for dir in session_dirs(root) {
+            let Ok(meta) = Session::at(&dir).meta() else {
+                continue;
+            };
+            if meta.parent_id.as_deref() == Some(parent.as_str()) && !family.contains(&meta.id) {
+                family.push(meta.id);
+            }
+        }
+    }
+    family
 }
 
 async fn delete_session(

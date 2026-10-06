@@ -118,23 +118,26 @@ pub enum ListFilter {
     All,
     Running,
     Questions,
+    Finished,
     Archived,
 }
 
 impl ListFilter {
-    pub const ORDER: [ListFilter; 4] = [
+    pub const ORDER: [ListFilter; 5] = [
         ListFilter::All,
         ListFilter::Running,
         ListFilter::Questions,
+        ListFilter::Finished,
         ListFilter::Archived,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             ListFilter::All => "all",
-            ListFilter::Running => "running",
-            ListFilter::Questions => "questions",
-            ListFilter::Archived => "archived",
+            ListFilter::Running => "run",
+            ListFilter::Questions => "ask",
+            ListFilter::Finished => "done",
+            ListFilter::Archived => "old",
         }
     }
 
@@ -154,6 +157,7 @@ pub fn row_matches_filter(row: &SessionRow, filter: ListFilter) -> bool {
         ListFilter::Questions => {
             !row.archived && row.status == Status::Waiting && row.waiting == Some(Wait::Question)
         }
+        ListFilter::Finished => !row.archived && row.status == Status::Idle,
         ListFilter::Archived => row.archived,
     }
 }

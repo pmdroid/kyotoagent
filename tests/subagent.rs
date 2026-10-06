@@ -1413,6 +1413,33 @@ async fn kill_task_closes_a_finished_child_and_refuses_resume() {
 }
 
 #[tokio::test]
+async fn archive_session_hides_the_parent_and_its_subagents() {
+    let fixture = Fixture::new(
+        "archive-family",
+        vec![Canned::Json(text_reply("Noted."))],
+        vec![Canned::Json(finish_reply("child result", "child proof"))],
+    );
+    fixture.add_session("parent");
+    fixture.add_session("other");
+    let child = child_id(
+        &fixture
+            .runner
+            .spawn_subagent("parent", &spawn_args(serde_json::json!({})))
+            .await,
+    );
+    fixture.wait_status(&child, Status::Idle).await;
+    let archived = fixture.runner.archive_session("parent", "parent").await;
+    assert!(archived.contains("parent"), "{archived}");
+    assert!(archived.contains(&child), "{archived}");
+    assert!(!archived.contains("other"), "{archived}");
+    assert_eq!(fixture.runner.archived("parent"), Some(true));
+    assert_eq!(fixture.runner.archived(&child), Some(true));
+    assert_eq!(fixture.runner.archived("other"), Some(false));
+    assert!(fixture.runner.view("parent").is_ok());
+    assert!(fixture.runner.view(&child).is_ok());
+}
+
+#[tokio::test]
 async fn kill_task_drops_a_worktree_and_leaves_the_parent() {
     let fixture = Fixture::new(
         "close-tree",

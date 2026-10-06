@@ -599,7 +599,7 @@ fn command_catalog(_skills: &[SkillEntry]) -> Vec<CatalogRow> {
         catalog_row(
             "Filter sessions",
             "Ctrl-F",
-            "cycle running, questions, and archived",
+            "cycle all, run, ask, done, and old",
             CommandAction::CycleListFilter,
         ),
         catalog_row(

@@ -381,6 +381,7 @@ final class SessionStateTests: XCTestCase {
         XCTAssertEqual(filteredSessions(rows, filter: .all).map(\.id), ["run1", "ask1", "perm1", "idle1"])
         XCTAssertEqual(filteredSessions(rows, filter: .running).map(\.id), ["run1"])
         XCTAssertEqual(filteredSessions(rows, filter: .questions).map(\.id), ["ask1"])
+        XCTAssertEqual(filteredSessions(rows, filter: .finished).map(\.id), ["idle1"])
         XCTAssertEqual(filteredSessions(rows, filter: .archived).map(\.id), ["old1"])
         XCTAssertEqual(SessionListFilter.all.next(), .running)
         XCTAssertEqual(SessionListFilter.archived.next(), .all)

@@ -1,6 +1,6 @@
  ☰  Kyoto Agent                                     3 sessions · 0 waiting ▦
 ╭ sessions ──────────────────╮╭ ~/work/kyotoagent╮╭ closeout ──────────────x
-│all running questions archiv││                  ││Closeout checks are     │
+│all run ask done old        ││                  ││Closeout checks are     │
 │▸ ✓ kyotoagent              ││▎ RESULT          ││required                │
 │  idle                      │││ The readme      ││· test  command  missing│
 │                            │││ now names       ││Required for this turn  │

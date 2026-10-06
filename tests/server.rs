@@ -2963,6 +2963,53 @@ async fn archive_hides_the_session_and_unarchive_restores_it() {
 }
 
 #[tokio::test]
+async fn archive_hides_the_session_and_its_subagents() {
+    let fixture = Fixture::new("archive-family", Vec::new()).await;
+    let parent = fixture.add_session("notes").await;
+    let child = fixture.add_session("child").await;
+    let grandchild = fixture.add_session("grandchild").await;
+    let other = fixture.add_session("other").await;
+    for (id, parent_id) in [(&child, &parent), (&grandchild, &child)] {
+        kyotoagent::session::Session::at(&fixture.root.join("sessions").join(id))
+            .update(|meta| {
+                meta.parent_id = Some(parent_id.clone());
+                true
+            })
+            .expect("child meta");
+    }
+    let (status, response) = fixture
+        .client
+        .request("POST", &format!("/v1/sessions/{parent}/archive"), None)
+        .await;
+    assert_eq!(status, 204, "{response}");
+    let rows = fixture.client.list().await;
+    let archived = |id: &str| {
+        rows.iter()
+            .find(|row| row["id"] == id)
+            .and_then(|row| row["archived"].as_bool())
+            .unwrap_or(false)
+    };
+    assert!(archived(&parent), "{rows:?}");
+    assert!(archived(&child), "{rows:?}");
+    assert!(archived(&grandchild), "{rows:?}");
+    assert!(!archived(&other), "{rows:?}");
+    let (status, response) = fixture
+        .client
+        .request(
+            "POST",
+            &format!("/v1/sessions/{parent}/archive"),
+            Some(r#"{"archived":false}"#),
+        )
+        .await;
+    assert_eq!(status, 204, "{response}");
+    let rows = fixture.client.list().await;
+    for id in [&parent, &child, &grandchild, &other] {
+        let row = rows.iter().find(|row| row["id"] == *id).expect("listed");
+        assert!(row.get("archived").is_none(), "{row}");
+    }
+}
+
+#[tokio::test]
 async fn delete_session_is_204_and_an_unknown_id_is_404() {
     let fixture = Fixture::new("delete-session", write_then_finish()).await;
     let id = fixture.add_session("notes").await;

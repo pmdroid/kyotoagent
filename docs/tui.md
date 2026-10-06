@@ -13,7 +13,7 @@ results, and proof, and spends its space on looking deliberate.
 | --- | --- |
 | Ctrl-C | Detaches |
 | Ctrl-N / Ctrl-P | Move the session list |
-| Ctrl-F | Cycle the session filter: all, running, questions, archived |
+| Ctrl-F | Cycle the session filter: all, run, ask, done, old |
 | Ctrl-T | Lists the folders from config, then asks this directory or a git worktree |
 | Ctrl-X | Stops the turn |
 | Ctrl-Y | Toggles yolo |

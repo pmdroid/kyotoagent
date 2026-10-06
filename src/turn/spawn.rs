@@ -171,18 +171,69 @@ impl Runner {
         let Some(state) = self.session_state(id) else {
             return "no such session".to_string();
         };
-        match state.session.meta() {
-            Ok(meta) if meta.archived => return format!("archived {id}"),
-            Ok(_) => {}
-            Err(error) => return error.to_string(),
+        if let Err(error) = state.session.meta() {
+            return error.to_string();
         }
-        if caller != id {
-            self.retire(id).await;
+        let stamp = now();
+        let mut archived = Vec::new();
+        for target in self.archive_family(id) {
+            let Some(state) = self.session_state(&target) else {
+                continue;
+            };
+            match state.session.meta() {
+                Ok(meta) if meta.archived => {}
+                Ok(_) => {
+                    if caller != target {
+                        self.retire(&target).await;
+                    }
+                    if let Err(error) = state.session.set_archived(true, &stamp) {
+                        return error.to_string();
+                    }
+                }
+                Err(error) => return error.to_string(),
+            }
+            archived.push(target);
         }
-        match state.session.set_archived(true, &now()) {
-            Ok(()) => format!("archived {id}"),
-            Err(error) => error.to_string(),
+        if archived.is_empty() {
+            return "no such session".to_string();
         }
+        format!("archived {}", archived.join(" "))
+    }
+
+    pub fn archived(&self, id: &str) -> Option<bool> {
+        self.session_state(id)?
+            .session
+            .meta()
+            .ok()
+            .map(|meta| meta.archived)
+    }
+
+    fn archive_family(&self, id: &str) -> Vec<String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .expect("the session map is not poisoned")
+            .clone();
+        let mut family = vec![id.to_string()];
+        let mut index = 0;
+        while index < family.len() {
+            let parent = family[index].clone();
+            index += 1;
+            let mut children: Vec<String> = sessions
+                .iter()
+                .filter_map(|(child, state)| {
+                    let meta = state.session.meta().ok()?;
+                    (meta.parent_id.as_deref() == Some(parent.as_str())).then_some(child.clone())
+                })
+                .collect();
+            children.sort();
+            for child in children {
+                if !family.contains(&child) {
+                    family.push(child);
+                }
+            }
+        }
+        family
     }
 
     pub async fn kill_task(&self, session_id: &str, id: &str) -> String {

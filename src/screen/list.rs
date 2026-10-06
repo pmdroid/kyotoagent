@@ -448,9 +448,16 @@ mod tests {
         assert!(running.contains(&"91bc7a1d".to_string()), "{running:?}");
         assert!(!running.iter().any(|id| id == "ask1" || id == "old1"));
         assert_eq!(ids(ListFilter::Questions), vec!["ask1".to_string()]);
+        assert!(ids(ListFilter::Finished).contains(&"3f2ae04c".to_string()));
+        assert!(!ids(ListFilter::Finished)
+            .iter()
+            .any(|id| id == "91bc7a1d" || id == "ask1" || id == "old1"));
         assert_eq!(ids(ListFilter::Archived), vec!["old1".to_string()]);
         assert_eq!(filter_at(0), Some(ListFilter::All));
         assert_eq!(filter_at(4), Some(ListFilter::Running));
+        assert_eq!(filter_at(8), Some(ListFilter::Questions));
+        assert_eq!(filter_at(12), Some(ListFilter::Finished));
+        assert_eq!(filter_at(17), Some(ListFilter::Archived));
         assert_eq!(ListFilter::Archived.next(), ListFilter::All);
     }
 }

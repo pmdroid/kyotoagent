@@ -1,6 +1,6 @@
  ☰  Kyoto Agent                                     0 sessions · 0 waiting ▦
 ╭ sessions ──────────────────╮╭ Kyoto Agent ───────────────────────────────╮
-│all running questions archiv││                                            │
+│all run ask done old        ││                                            │
 │                            ││                                            │
 │                            ││                                            │
 │                            ││                                            │

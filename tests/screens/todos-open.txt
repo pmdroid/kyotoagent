@@ -1,6 +1,6 @@
  ☰  Kyoto Agent                                     3 sessions · 0 waiting ▦
 ╭ sessions ──────────────────╮╭ ~/work/acpbot ───╮╭ todos ─────────────────x
-│all running questions archiv││                  ││████░░░░░░░░ 1/3  2 left│
+│all run ask done old        ││                  ││████░░░░░░░░ 1/3  2 left│
 │  ✓ kyotoagent              ││             ASK ▎││✓ Read the crate        │
 │  idle                      ││         What is ▎││▸ Write the todo tool   │
 │                            ││             the ▎││in_progress             │

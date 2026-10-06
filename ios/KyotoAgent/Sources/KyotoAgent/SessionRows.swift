@@ -41,6 +41,7 @@ nonisolated public enum SessionListFilter: String, CaseIterable, Equatable, Send
     case all
     case running
     case questions
+    case finished
     case archived
 
     public var id: String { rawValue }
@@ -50,11 +51,13 @@ nonisolated public enum SessionListFilter: String, CaseIterable, Equatable, Send
         case .all:
             return "All"
         case .running:
-            return "Running"
+            return "Run"
         case .questions:
-            return "Questions"
+            return "Ask"
+        case .finished:
+            return "Done"
         case .archived:
-            return "Archived"
+            return "Old"
         }
     }
 
@@ -73,6 +76,8 @@ nonisolated public func sessionMatches(_ session: Session, filter: SessionListFi
         return !session.archived && session.status == .working
     case .questions:
         return !session.archived && session.status == .waiting && session.waiting == "question"
+    case .finished:
+        return !session.archived && session.status == .idle
     case .archived:
         return session.archived
     }
