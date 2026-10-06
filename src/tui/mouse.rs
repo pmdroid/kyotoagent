@@ -193,6 +193,12 @@ pub(super) fn press_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -
         match screen::list_at(model, area, column, row) {
             Some(screen::ListHit::Session(id)) => Some(Effect::SelectSession(id)),
             Some(screen::ListHit::Header(id)) => Some(Effect::ToggleHeader(id)),
+            Some(screen::ListHit::Filter) => {
+                let list = screen::split_of(model, area).list;
+                let inner = ratatui::widgets::Block::bordered().inner(list);
+                let column = usize::from(column.saturating_sub(inner.x));
+                screen::filter_at(column).map(Effect::SetListFilter)
+            }
             None => None,
         }
     }

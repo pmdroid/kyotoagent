@@ -1,14 +1,14 @@
  ☰  Kyoto Agent  enhance                            3 sessions · 0 waiting ▦
 ╭ sessions ──────────────────╮╭ ~/work/kyotoagent ─────────────────────────╮
-│▸ ✓ kyotoagent              ││                                            │
-│  idle                      ││▎ ENHANCE                                   │
-│                            │││ ship it                                   │
-│  ✓ acpbot                  │││ Do the thing carefully.                   │
+│all running questions archiv││                                            │
+│▸ ✓ kyotoagent              ││▎ ENHANCE                                   │
+│  idle                      │││ ship it                                   │
+│                            │││ Do the thing carefully.                   │
+│  ✓ acpbot                  ││                                            │
 │  idle                      ││                                            │
-│                            ││                                            │
-│  ✓ notes                   ││╭──────────────────────────────────────────x│
-│  idle                      │││ship it                                   ││
-│                            │││Do the thing carefully.                   ││
+│                            ││╭──────────────────────────────────────────x│
+│  ✓ notes                   │││ship it                                   ││
+│  idle                      │││Do the thing carefully.                   ││
 │                            │││                                          ││
 │                            │││u use  e edit  x discard                  ││
 │                            ││╰──────────────────────────────────────────╯│

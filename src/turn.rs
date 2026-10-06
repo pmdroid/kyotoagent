@@ -75,6 +75,7 @@ pub fn known_tool_names() -> &'static [&'static str] {
         "check_task",
         "kill_task",
         "spawn_subagent",
+        "archive_session",
         "schedule",
         "cancel_schedule",
         "get_closeout",
@@ -232,6 +233,16 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
                     "visible": { "type": "boolean" },
                 },
                 "required": ["prompt", "description"],
+            }),
+        ),
+        Tool::new(
+            "archive_session",
+            "Archive a session. Pass id, or omit it to archive this session. This only archives. It cannot restore or delete a session.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                },
             }),
         ),
         Tool::new(
@@ -682,6 +693,7 @@ impl Flight {
             "run" | "start_task" | "check_task" | "kill_task" => "Running",
             "run_closeout" => "Verifying",
             "spawn_subagent" => "Delegating",
+            "archive_session" => "Archiving",
             "schedule" | "cancel_schedule" => "Scheduling",
             "todo" => "Organizing",
             "ask" => "Waiting",
@@ -1945,6 +1957,7 @@ mod tests {
             ("check_task", "Running"),
             ("kill_task", "Running"),
             ("spawn_subagent", "Delegating"),
+            ("archive_session", "Archiving"),
             ("schedule", "Scheduling"),
             ("cancel_schedule", "Scheduling"),
             ("get_closeout", "Reading"),

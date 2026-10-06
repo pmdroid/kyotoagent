@@ -115,12 +115,20 @@ pub fn list_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -> Option
     if row == hint {
         return None;
     }
-    let room = usize::from(inner.height.saturating_sub(1));
+    let filter = inner.height > 1;
+    let room = usize::from(inner.height.saturating_sub(1 + u16::from(filter)));
     let mut skip = super::list_scroll_of(model, area);
     let mut y = inner.y;
+    if filter {
+        if row == y {
+            return Some(ListHit::Filter);
+        }
+        y = y.saturating_add(1);
+    }
+    let body = y;
     for piece in list_pieces(model) {
         let lines = match piece.hit {
-            ListHit::Header(_) => 1,
+            ListHit::Filter | ListHit::Header(_) => 1,
             ListHit::Session(_) => 3,
         };
         if skip >= lines {
@@ -129,10 +137,10 @@ pub fn list_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -> Option
         }
         let visible = lines - skip;
         let next = y.saturating_add(visible as u16);
-        if row >= y && row < next && usize::from(row.saturating_sub(inner.y)) < room {
+        if row >= y && row < next && usize::from(row.saturating_sub(body)) < room {
             return Some(piece.hit);
         }
-        if usize::from(next.saturating_sub(inner.y)) >= room {
+        if usize::from(next.saturating_sub(body)) >= room {
             return None;
         }
         y = next;

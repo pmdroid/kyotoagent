@@ -1,17 +1,17 @@
  ☰  Kyoto Agent                                     3 sessions · 0 waiting ▦
 ╭ sessions ──────────────────╮╭ ~/work/kyotoagent ─────────────────────────╮
-│▾ kyotoagent                ││                                            │
-│▸ ✓ kyotoagent              ││▎ RESULT                                    │
-│  idle                      │││ The readme now names the                  │
-│                            │││ binary under the heading                  │
-│▾ acpbot                    │││ Kyoto Agent.                              │
-│  ✓ acpbot                  ││                                            │
-│  idle                      ││▎ PROOF                                     │
-│                            │││ cargo test passed on the                  │
-│▾ other                     │││ readme heading.                           │
+│all running questions archiv││                                            │
+│▾ kyotoagent                ││▎ RESULT                                    │
+│▸ ✓ kyotoagent              │││ The readme now names the                  │
+│  idle                      │││ binary under the heading                  │
+│                            │││ Kyoto Agent.                              │
+│▾ acpbot                    ││                                            │
+│  ✓ acpbot                  ││▎ PROOF                                     │
+│  idle                      │││ cargo test passed on the                  │
+│                            │││ readme heading.                           │
+│▾ other                     ││                                            │
 │  ✓ notes                   ││                                            │
 │  idle                      ││                                            │
-│                            ││                                            │
 │                            ││                                            │
 │                            ││                                            │
 │                            ││                                            │

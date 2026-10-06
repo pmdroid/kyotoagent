@@ -33,6 +33,15 @@ pub(super) async fn session_tool(
             }
         }
         "spawn_subagent" => runner.spawn_subagent(&parent_id, args).await,
+        "archive_session" => {
+            let id = string_arg(args, "id").unwrap_or_default();
+            let target = if id.is_empty() {
+                parent_id.as_str()
+            } else {
+                id.as_str()
+            };
+            runner.archive_session(&parent_id, target).await
+        }
         _ => return None,
     };
     Some(plain(summary))

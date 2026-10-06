@@ -167,6 +167,24 @@ impl Runner {
         serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string())
     }
 
+    pub async fn archive_session(&self, caller: &str, id: &str) -> String {
+        let Some(state) = self.session_state(id) else {
+            return "no such session".to_string();
+        };
+        match state.session.meta() {
+            Ok(meta) if meta.archived => return format!("archived {id}"),
+            Ok(_) => {}
+            Err(error) => return error.to_string(),
+        }
+        if caller != id {
+            self.retire(id).await;
+        }
+        match state.session.set_archived(true, &now()) {
+            Ok(()) => format!("archived {id}"),
+            Err(error) => error.to_string(),
+        }
+    }
+
     pub async fn kill_task(&self, session_id: &str, id: &str) -> String {
         if let Some(state) = self.session_state(session_id) {
             if state.tools.tasks().check(id).is_ok() {

@@ -8,6 +8,7 @@ struct SessionColumn: SwiftUI.View {
     @State private var showNew = false
 
     var body: some SwiftUI.View {
+        @Bindable var connections = connections
         VStack(spacing: 0) {
             if let notice = model.notice, !notice.isEmpty {
                 Text(notice)
@@ -19,6 +20,17 @@ struct SessionColumn: SwiftUI.View {
                     .accessibilityIdentifier("session-notice")
             }
             List {
+                Section {
+                    Picker("Filter", selection: $connections.sessionFilter) {
+                        ForEach(SessionListFilter.allCases) { filter in
+                            Text(filter.label).tag(filter)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("session-filter")
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
                 ForEach(connections.projectGroups) { group in
                     Section {
                         ForEach(group.nodes) { node in

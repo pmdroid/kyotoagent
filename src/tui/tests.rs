@@ -403,6 +403,26 @@ fn ctrl_b_toggles_the_session_list_and_ctrl_g_toggles_the_panes() {
 }
 
 #[test]
+fn ctrl_f_cycles_the_session_filter() {
+    assert_eq!(
+        key(ctrl('f'), Mode::Idle, false),
+        Some(Effect::CycleListFilter)
+    );
+    let mut app = App::new(PathBuf::from("/w"), PathBuf::from("/home/u"), "91bc".into());
+    assert!(apply_pane(&mut app, Effect::CycleListFilter));
+    assert_eq!(app.list_filter, screen::ListFilter::Running);
+    assert!(apply_pane(
+        &mut app,
+        Effect::SetListFilter(screen::ListFilter::Archived)
+    ));
+    assert_eq!(app.list_filter, screen::ListFilter::Archived);
+    let rows = command_catalog(&[]);
+    assert!(rows
+        .iter()
+        .any(|row| row.line.name == "Filter sessions" && row.line.keys == "Ctrl-F"));
+}
+
+#[test]
 fn ctrl_n_and_ctrl_p_change_session() {
     assert_eq!(
         key(ctrl('n'), Mode::Working, false),
@@ -3149,7 +3169,7 @@ fn clicking_a_project_header_hides_and_shows_its_rows() {
     let area = Rect::new(0, 0, 76, 24);
     let list = screen::split_of(&model, area).list;
     let column = list.x + 2;
-    let row = list.y + 1;
+    let row = list.y + 2;
     assert_eq!(
         mouse(click(column, row), &model, area),
         Some(Effect::ToggleHeader("kyotoagent".into()))

@@ -102,6 +102,16 @@ pub fn apply_pane(app: &mut App, effect: Effect) -> bool {
             }
             true
         }
+        Effect::SetListFilter(filter) => {
+            app.list_filter = filter;
+            app.list_scroll = 0;
+            true
+        }
+        Effect::CycleListFilter => {
+            app.list_filter = app.list_filter.next();
+            app.list_scroll = 0;
+            true
+        }
         Effect::OpenMenu { id, column, row } => {
             let archived = app
                 .sessions
@@ -519,7 +529,9 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
         | Effect::CopyText(_, _)
         | Effect::ToggleHeader(_)
         | Effect::CollapseHeader
-        | Effect::ExpandHeader => unreachable!("pane effects return from apply_pane"),
+        | Effect::ExpandHeader
+        | Effect::SetListFilter(_)
+        | Effect::CycleListFilter => unreachable!("pane effects return from apply_pane"),
     }
     Ok(true)
 }
@@ -774,6 +786,9 @@ pub(super) async fn run_palette(app: &mut App, client: &Client) {
         }
         CommandAction::ToggleLeft => {
             apply_pane(app, Effect::ToggleLeft);
+        }
+        CommandAction::CycleListFilter => {
+            apply_pane(app, Effect::CycleListFilter);
         }
         CommandAction::ToggleRight => {
             apply_pane(app, Effect::ToggleRight);

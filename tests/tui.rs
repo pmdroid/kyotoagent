@@ -1583,7 +1583,7 @@ fn session_at_hits_each_three_row_block_on_the_mock_list() {
     let x = inner.x + 2;
     let ids = ["91bc7a1d", "3f2ae04c", "ab1029f6"];
     for (index, id) in ids.iter().enumerate() {
-        let top = inner.y + (index as u16) * 3;
+        let top = inner.y + 1 + (index as u16) * 3;
         for row in [top, top + 1, top + 2] {
             assert_eq!(
                 kyotoagent::screen::session_at(&model, area, x, row).as_deref(),
@@ -1598,10 +1598,10 @@ fn session_at_hits_each_three_row_block_on_the_mock_list() {
         }
     }
     assert_eq!(
-        mouse(list_click(x, inner.y), &model, area),
+        mouse(list_click(x, inner.y + 1), &model, area),
         Some(Effect::SelectSession("91bc7a1d".into()))
     );
-    let empty_y = inner.y + 9;
+    let empty_y = inner.y + 10;
     assert_eq!(
         kyotoagent::screen::session_at(&model, area, x, empty_y),
         None
@@ -1630,7 +1630,7 @@ fn a_right_click_on_a_session_opens_close_and_a_worktree_row_adds_remove() {
     let area = Rect::new(0, 0, 76, 24);
     let inner = list_inner(&model, area);
     let x = inner.x + 2;
-    let y = inner.y;
+    let y = inner.y + 1;
     assert_eq!(
         mouse(right_click(x, y), &model, area),
         Some(Effect::OpenMenu {
