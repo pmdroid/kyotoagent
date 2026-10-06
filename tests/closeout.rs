@@ -235,6 +235,10 @@ async fn task_retry_exhaustion_survives_another_session_and_cannot_be_cleared_by
             check(),
             check(),
             write("second.txt"),
+            Canned::Json(tool_call_reply(vec![(
+                "get_closeout",
+                serde_json::json!({}),
+            )])),
             check(),
         ],
     );
@@ -272,6 +276,10 @@ async fn task_retry_exhaustion_survives_another_session_and_cannot_be_cleared_by
         .as_str()
         .unwrap()
         .contains("is exhausted"));
+    let outputs = tool_outputs(&fixture.log("92bc"), "get_closeout");
+    let report: serde_json::Value = serde_json::from_str(&outputs[0]).unwrap();
+    assert_eq!(report["pending"], serde_json::json!([]));
+    assert_eq!(report["required"][0]["status"], "exhausted");
     fixture.answer_question("92bc", "stop");
     fixture.wait_for_status("92bc", Status::Idle).await;
     assert_eq!(fixture.closeout_runs("92bc"), 0);
@@ -790,6 +798,163 @@ fn tool_outputs(log: &str, tool: &str) -> Vec<String> {
                 .to_string()
         })
         .collect()
+}
+
+#[tokio::test]
+async fn get_closeout_tracks_paths_passes_and_later_edits() {
+    let calls = vec![
+        ("get_closeout", serde_json::json!({})),
+        (
+            "write_file",
+            serde_json::json!({"path":"src/lib.rs","contents":"first"}),
+        ),
+        ("get_closeout", serde_json::json!({})),
+        ("run_closeout", serde_json::json!({"id":"test"})),
+        ("get_closeout", serde_json::json!({})),
+        (
+            "write_file",
+            serde_json::json!({"path":"src/lib.rs","contents":"second"}),
+        ),
+        ("get_closeout", serde_json::json!({})),
+        ("finish", serde_json::json!({"text":"Done"})),
+        ("run_closeout", serde_json::json!({"id":"test"})),
+        ("get_closeout", serde_json::json!({})),
+        ("finish", serde_json::json!({"text":"Done"})),
+    ];
+    let fixture = Fixture::new(
+        "get-closeout-paths",
+        calls
+            .into_iter()
+            .map(|call| Canned::Json(tool_call_reply(vec![call])))
+            .collect(),
+    );
+    let workspace = fixture.add_session("91bc");
+    fs::create_dir_all(workspace.join(".agents")).unwrap();
+    fs::create_dir_all(workspace.join("src")).unwrap();
+    fs::write(workspace.join(".agents/closeout.yaml"), "specVersion: '0.1'\nsetup:\n  - id: prepare\n    exec: ['true']\n    timeoutSeconds: 5\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: ['true']\n    timeoutSeconds: 5\n    paths: ['src/**']\n  - id: docs\n    kind: command\n    gate: beforePR\n    exec: ['false']\n    timeoutSeconds: 5\n    paths: ['docs/**']\n").unwrap();
+    fixture.hide_closeout("91bc");
+    fixture.ask(
+        "91bc",
+        "Discover and run the required checks after editing source",
+    );
+    for _ in 0..5 {
+        fixture.respond("91bc", Answer::allow_once()).await;
+    }
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    let log = fixture.log("91bc");
+    let reports: Vec<serde_json::Value> = tool_outputs(&log, "get_closeout")
+        .iter()
+        .map(|output| serde_json::from_str(output).expect("closeout returns JSON"))
+        .collect();
+    assert_eq!(reports.len(), 5);
+    assert_eq!(reports[0]["required"], serde_json::json!([]));
+    assert_eq!(reports[0]["pending"], serde_json::json!([]));
+    assert_eq!(
+        reports[1]["pending"],
+        serde_json::json!(["prepare", "test"])
+    );
+    assert_eq!(reports[1]["required"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        reports[1]["required"][1]["matched_paths"],
+        serde_json::json!(["src/lib.rs"])
+    );
+    assert_eq!(reports[1]["required"][1]["status"], "missing");
+    assert!(reports[1]["required"][1]["remaining_attempts"].is_null());
+    assert_eq!(reports[2]["pending"], serde_json::json!([]));
+    assert_eq!(reports[2]["required"][1]["status"], "passed");
+    assert_eq!(reports[3]["pending"], serde_json::json!(["test"]));
+    assert_eq!(reports[3]["required"][0]["status"], "passed");
+    assert_eq!(reports[3]["required"][1]["status"], "stale");
+    assert_eq!(
+        reports[3]["required"][1]["matched_paths"],
+        serde_json::json!(["src/lib.rs"])
+    );
+    assert_eq!(reports[4]["pending"], serde_json::json!([]));
+    assert!(reports.iter().all(|report| report["blocked"].is_null()));
+    assert!(tool_outputs(&log, "finish")[0].contains("Check test is missing"));
+    assert_eq!(fixture.closeout_runs("91bc"), 3);
+}
+
+#[tokio::test]
+async fn get_closeout_without_a_policy_has_no_requirements() {
+    let fixture = Fixture::new(
+        "get-closeout-empty",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "get_closeout",
+                serde_json::json!({}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"Done"}),
+            )])),
+        ],
+    );
+    fixture.add_session("91bc");
+    fixture.ask("91bc", "Discover closeout checks");
+    fixture.wait_for_turn_to_start("91bc").await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    let outputs = tool_outputs(&fixture.log("91bc"), "get_closeout");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&outputs[0]).unwrap(),
+        serde_json::json!({"required":[],"pending":[],"blocked":null})
+    );
+}
+
+#[tokio::test]
+async fn get_closeout_reports_failed_and_exhausted_retries_without_running_checks() {
+    let calls = vec![
+        (
+            "write_file",
+            serde_json::json!({"path":"changed.txt","contents":"first"}),
+        ),
+        ("run_closeout", serde_json::json!({"id":"test"})),
+        ("get_closeout", serde_json::json!({})),
+        ("run_closeout", serde_json::json!({"id":"test"})),
+        ("get_closeout", serde_json::json!({})),
+        (
+            "ask",
+            serde_json::json!({"text":"The check is exhausted","choices":["stop"]}),
+        ),
+    ];
+    let fixture = Fixture::new(
+        "get-closeout-retries",
+        calls
+            .into_iter()
+            .map(|call| Canned::Json(tool_call_reply(vec![call])))
+            .collect(),
+    );
+    let workspace = fixture.add_session("91bc");
+    fs::create_dir_all(workspace.join(".agents")).unwrap();
+    fs::write(workspace.join(".agents/closeout.yaml"), "specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 2\n  scope: task\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: ['false']\n    timeoutSeconds: 5\n").unwrap();
+    Session::at(&fixture.root.join("session-91bc"))
+        .update(|meta| {
+            meta.task_id = Some("get-closeout-retries".into());
+            true
+        })
+        .unwrap();
+    fixture.ask("91bc", "Discover retries after each failure");
+    for _ in 0..3 {
+        fixture.respond("91bc", Answer::allow_once()).await;
+    }
+    fixture.wait_for_waiting_question("91bc").await;
+    let reports: Vec<serde_json::Value> = tool_outputs(&fixture.log("91bc"), "get_closeout")
+        .iter()
+        .map(|output| serde_json::from_str(output).unwrap())
+        .collect();
+    assert_eq!(reports[0]["pending"], serde_json::json!(["test"]));
+    assert_eq!(reports[0]["required"][0]["status"], "failed");
+    assert_eq!(reports[0]["required"][0]["remaining_attempts"], 1);
+    assert_eq!(reports[1]["pending"], serde_json::json!([]));
+    assert_eq!(reports[1]["required"][0]["status"], "exhausted");
+    assert_eq!(reports[1]["required"][0]["remaining_attempts"], 0);
+    assert!(reports[1]["blocked"]
+        .as_str()
+        .unwrap()
+        .contains("exhausted"));
+    assert_eq!(fixture.closeout_runs("91bc"), 2);
+    fixture.runner.cancel("91bc");
+    fixture.wait_for_status("91bc", Status::Idle).await;
 }
 
 #[tokio::test]
@@ -1583,13 +1748,17 @@ async fn an_agents_closeout_file_still_blocks_finish() {
 }
 
 #[tokio::test]
-async fn project_closeout_fallback_is_visible_in_the_prompt_and_gates_shell_changes() {
+async fn get_closeout_discovers_project_fallback_requirements_after_shell_changes() {
     let fixture = Fixture::configured(
         "project-fallback",
         vec![
             Canned::Json(tool_call_reply(vec![(
                 "run",
                 serde_json::json!({"argv": ["sh", "-c", "mkdir src; printf changed > src/lib.rs"]}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "get_closeout",
+                serde_json::json!({}),
             )])),
             Canned::Json(tool_call_reply(vec![(
                 "finish",
@@ -1625,10 +1794,18 @@ closeout = "fallback.yaml"
     assert!(rows[0].required);
     assert_eq!(rows[1].status, view::CloseoutStatus::NotRequired);
     assert!(!rows[1].required);
-    assert!(fixture
-        .prompts()
-        .iter()
-        .any(|prompt| prompt.contains("Run the configured check")));
+    let outputs = tool_outputs(&fixture.log("91bc"), "get_closeout");
+    let report: serde_json::Value = serde_json::from_str(&outputs[0]).unwrap();
+    assert_eq!(report["pending"], serde_json::json!(["test"]));
+    assert_eq!(report["required"][0]["hint"], "Run the configured check");
+    assert_eq!(
+        report["required"][0]["matched_paths"],
+        serde_json::json!(["src/lib.rs"])
+    );
+    let prompt: serde_json::Value = serde_json::from_str(&fixture.prompts()[0]).unwrap();
+    let system = prompt["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("get_closeout"));
+    assert!(!system.contains("Run the configured check"));
     fixture.answer("91bc", Answer::allow_once());
     fixture.wait_for_status("91bc", Status::Idle).await;
     let rows = fixture.view("91bc").closeout;

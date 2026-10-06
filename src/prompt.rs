@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prompt_lists_each_pinned_closeout_id_and_hint() {
+    fn the_prompt_discovers_closeout_requirements_through_the_tool() {
         let file = crate::closeout::CloseoutFile {
             imports: Vec::new(),
             reviews: std::collections::HashMap::new(),
@@ -551,14 +551,14 @@ mod tests {
             executions: Default::default(),
             items: vec![
                 crate::closeout::CloseoutItem {
-                    id: "test".into(),
+                    id: "pinned-test-id".into(),
                     kind: crate::closeout::CloseoutKind::Command,
                     run: "cargo test".into(),
                     hint: "Fix the failing test".into(),
                     paths: vec![],
                 },
                 crate::closeout::CloseoutItem {
-                    id: "lint".into(),
+                    id: "pinned-lint-id".into(),
                     kind: crate::closeout::CloseoutKind::Command,
                     run: "cargo clippy".into(),
                     hint: "Fix the lint".into(),
@@ -571,13 +571,11 @@ mod tests {
             policy_files: Default::default(),
         };
         let prompt = system_prompt("/w", &[], Some(&file), "", None);
-        assert!(prompt.contains("test"), "the id: {prompt}");
-        assert!(
-            prompt.contains("Fix the failing test"),
-            "the hint: {prompt}"
-        );
-        assert!(prompt.contains("lint"), "the second id: {prompt}");
-        assert!(prompt.contains("Fix the lint"), "the second hint: {prompt}");
+        assert!(!prompt.contains("pinned-test-id"), "{prompt}");
+        assert!(!prompt.contains("pinned-lint-id"), "{prompt}");
+        assert!(!prompt.contains("Fix the failing test"), "{prompt}");
+        assert!(!prompt.contains("Fix the lint"), "{prompt}");
+        assert!(prompt.contains("`get_closeout`"), "{prompt}");
         assert!(
             prompt.contains("`run_closeout`"),
             "the instruction: {prompt}"
@@ -760,7 +758,8 @@ mod tests {
         assert!(prompt.contains("The workspace is /w."), "{prompt}");
         assert!(prompt.contains("pnpm test"), "{prompt}");
         assert!(prompt.contains("review"), "{prompt}");
-        assert!(prompt.contains("Fix the failing test"), "{prompt}");
+        assert!(!prompt.contains("Fix the failing test"), "{prompt}");
+        assert!(prompt.contains("`get_closeout`"), "{prompt}");
         assert!(prompt.contains("You work for the parent agent"), "{prompt}");
         assert!(
             prompt.contains(
