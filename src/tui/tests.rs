@@ -3203,6 +3203,50 @@ fn left_collapses_a_selected_header_and_right_expands_it() {
     assert!(list_column(&screen_model(&app)).contains("Main task"));
 }
 
+#[tokio::test]
+async fn wheel_over_a_full_session_list_scrolls_it() {
+    let mut app = App::new(PathBuf::from("/w"), PathBuf::from("/home/u"), "id00".into());
+    app.area = Rect::new(0, 0, 76, 24);
+    let seed = crate::mock::idle().sessions;
+    app.sessions = (0..12)
+        .map(|index| {
+            let mut row = seed[0].clone();
+            row.id = format!("id{index:02}");
+            row.title = Some(format!("session {index:02}"));
+            row
+        })
+        .collect();
+    let list = screen::split_of(&screen_model(&app), app.area).list;
+    let column = list.x + 2;
+    let row = list.y + 2;
+    app.pointer = Some((column, row));
+    assert_eq!(
+        mouse(
+            wheel(MouseEventKind::ScrollDown, column, row),
+            &screen_model(&app),
+            app.area
+        ),
+        Some(Effect::ScrollList { up: false })
+    );
+    let client = Client::at(PathBuf::from("/tmp/kyotoagent-no-socket"));
+    apply(&mut app, &client, Effect::ScrollList { up: false })
+        .await
+        .unwrap();
+    assert!(app.list_scroll > 0);
+    let hidden = list_column(&screen_model(&app));
+    assert!(
+        !hidden.contains("session 00"),
+        "the first row stayed on screen:\n{hidden}"
+    );
+    apply(&mut app, &client, Effect::ScrollList { up: true })
+        .await
+        .unwrap();
+    assert_eq!(app.list_scroll, 0);
+    select_session(&mut app, "id11".into());
+    assert!(app.list_scroll > 0);
+    assert!(list_column(&screen_model(&app)).contains("session 11"));
+}
+
 #[test]
 fn selecting_a_session_in_a_collapsed_group_expands_it() {
     let mut app = App::new(

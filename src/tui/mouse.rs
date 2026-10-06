@@ -30,6 +30,15 @@ pub fn mouse(event: MouseEvent, model: &ScreenModel, area: Rect) -> Option<Effec
             None => release_select(model, area, event.column, event.row),
         },
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            let list = screen::split_of(model, area).list;
+            if list.contains(Position {
+                x: event.column,
+                y: event.row,
+            }) {
+                return Some(Effect::ScrollList {
+                    up: matches!(event.kind, MouseEventKind::ScrollUp),
+                });
+            }
             if screen::right_pane_at(model, area, event.column, event.row).is_some() {
                 return Some(match event.kind {
                     MouseEventKind::ScrollUp => Effect::ScrollUp,

@@ -175,6 +175,7 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
         Effect::SelectSession(id) => {
             select_session(app, id);
         }
+        Effect::ScrollList { up } => scroll_list(app, up, 1),
         Effect::ScrollUp => {
             if app.queue_open {
                 queue::nudge(app, true);

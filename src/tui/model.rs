@@ -79,6 +79,21 @@ pub(super) fn closeout_page(app: &App) -> usize {
         .into()
 }
 
+pub(super) fn reveal_list(app: &mut App) {
+    let model = screen_model(app);
+    app.list_scroll = screen::list_scroll_for(&model, app.area, app.list_scroll);
+}
+
+pub(super) fn scroll_list(app: &mut App, up: bool, step: usize) {
+    let model = screen_model(app);
+    let max = screen::list_scroll_max(&model, app.area);
+    app.list_scroll = if up {
+        app.list_scroll.saturating_sub(step)
+    } else {
+        app.list_scroll.saturating_add(step).min(max)
+    };
+}
+
 pub(super) fn scroll_closeout(app: &mut App, up: bool, step: usize) -> bool {
     let Some((column, row)) = app.pointer else {
         return false;
@@ -182,6 +197,7 @@ pub(super) fn select_session(app: &mut App, id: String) {
     }
     app.scroll = 0;
     app.follow = true;
+    reveal_list(app);
     app.notice = None;
     app.retry_status = None;
     app.question_text.clear();
@@ -368,6 +384,7 @@ pub fn screen_model(app: &App) -> ScreenModel {
         select: app.select,
         collapsed: app.collapsed.clone(),
         list_header: app.list_header.clone(),
+        list_scroll: app.list_scroll,
     }
 }
 
