@@ -634,7 +634,8 @@ async fn a_single_new_ask_without_older_history_is_not_summarized() {
         Duration::ZERO,
     );
     fixture.add_session("91bc");
-    let request = "x".repeat(100000);
+    let fixed_tokens = fixture.view("91bc").context.unwrap().used;
+    let request = "x".repeat(((30_000 - fixed_tokens) * 4) as usize);
     fixture.runner.ask("91bc", &request).unwrap();
     fixture.wait_for_cards("91bc", 2).await;
     fixture.wait_for_status("91bc", Status::Idle).await;
