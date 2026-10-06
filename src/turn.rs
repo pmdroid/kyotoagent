@@ -322,7 +322,7 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "use_skill",
-            "Load a skill's instructions by name.",
+            "Load a skill's instructions by name. Before task work, compare the request with the available skill descriptions and load clearly matching skills without waiting for a slash command. Follow the loaded instructions. Reconsider matching skills when moving to verification or shipping.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
