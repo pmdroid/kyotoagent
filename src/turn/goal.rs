@@ -170,7 +170,15 @@ pub(super) async fn verify_goal(
     let mut definitions: Vec<Tool> = tool_definitions_for(&turn.config, true, profile.as_deref())
         .into_iter()
         .filter(|tool| {
-            ["read_file", "list_dir", "grep", "run", "run_closeout"].contains(&tool.name.as_str())
+            [
+                "read_file",
+                "list_dir",
+                "grep",
+                "run",
+                "get_closeout",
+                "run_closeout",
+            ]
+            .contains(&tool.name.as_str())
         })
         .collect();
     definitions.push(Tool::new("finish", "Report whether independent executable evidence proves the goal.", serde_json::json!({

@@ -545,6 +545,13 @@ pub(super) async fn execute_tool(
                 failure: None,
             }
         }
+        "get_closeout" => {
+            refresh_closeout(tools, turn_id, closeout, &[])?;
+            if let Some(error) = sync_retry(turn, closeout, cancel).await {
+                return Ok(failed(error));
+            }
+            plain(closeout.report().to_string())
+        }
         "run_closeout" => {
             let id = string_arg(args, "id").unwrap_or_default();
             let model = string_arg(args, "model");

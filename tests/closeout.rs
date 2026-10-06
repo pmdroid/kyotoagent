@@ -2063,6 +2063,10 @@ async fn imported_review_uses_a_fresh_read_only_session_and_retains_its_findings
             serde_json::json!({"path":"changed.txt", "contents":"candidate"}),
         )])),
         Canned::Json(tool_call_reply(vec![(
+            "get_closeout",
+            serde_json::json!({}),
+        )])),
+        Canned::Json(tool_call_reply(vec![(
             "run_closeout",
             serde_json::json!({"id":"quality/review", "model":"test/model"}),
         )])),
@@ -2106,6 +2110,11 @@ async fn imported_review_uses_a_fresh_read_only_session_and_retains_its_findings
     fixture.respond("91bc", Answer::allow_once()).await;
     fixture.respond("91bc", Answer::allow_once()).await;
     fixture.wait_for_status("91bc", Status::Idle).await;
+    let outputs = tool_outputs(&fixture.log("91bc"), "get_closeout");
+    let report: serde_json::Value = serde_json::from_str(&outputs[0]).unwrap();
+    assert_eq!(report["pending"], serde_json::json!(["quality/review"]));
+    assert_eq!(report["required"][0]["different_model"], true);
+    assert_eq!(report["required"][0]["kind"], "review");
     assert_eq!(
         fs::read_to_string(workspace.join("changed.txt")).unwrap(),
         "candidate"

@@ -77,6 +77,7 @@ pub fn known_tool_names() -> &'static [&'static str] {
         "spawn_subagent",
         "schedule",
         "cancel_schedule",
+        "get_closeout",
         "run_closeout",
         "ask",
         "finish",
@@ -252,6 +253,15 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
                 "type": "object",
                 "properties": { "id": { "type": "string" } },
                 "required": ["id"],
+            }),
+        ),
+        Tool::new(
+            "get_closeout",
+            "Refresh workspace changes and return the required closeout checks with hints, matched paths, statuses, remaining failed attempts and different_model requirements. pending lists the IDs to run in order with run_closeout. blocked explains exhausted retries. Call after edits and before finishing; later edits can invalidate passed checks. This tool does not run checks. A null remaining_attempts means unlimited retries.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
             }),
         ),
         Tool::new(
@@ -667,7 +677,7 @@ impl Flight {
     fn tool_action(&self, tool: &str) {
         let action = match tool {
             "grep" | "list_dir" | "web_search" => "Searching",
-            "read_file" | "web_fetch" | "use_skill" => "Reading",
+            "read_file" | "web_fetch" | "use_skill" | "get_closeout" => "Reading",
             "write_file" | "search_replace" => "Editing",
             "run" | "start_task" | "check_task" | "kill_task" => "Running",
             "run_closeout" => "Verifying",
@@ -1909,6 +1919,7 @@ mod tests {
         let child = names(true);
         assert!(child.iter().any(|name| name == "finish"));
         assert!(child.iter().any(|name| name == "read_file"));
+        assert!(child.iter().any(|name| name == "get_closeout"));
         assert!(!child.iter().any(|name| name == "ask"));
         assert!(!child.iter().any(|name| name == "spawn_subagent"));
         let parent = names(false);
@@ -1916,6 +1927,7 @@ mod tests {
         assert!(parent.iter().any(|name| name == "spawn_subagent"));
         assert!(parent.iter().any(|name| name == "finish"));
         assert!(parent.iter().any(|name| name == "read_file"));
+        assert!(parent.iter().any(|name| name == "get_closeout"));
     }
 
     #[test]
@@ -1935,6 +1947,7 @@ mod tests {
             ("spawn_subagent", "Delegating"),
             ("schedule", "Scheduling"),
             ("cancel_schedule", "Scheduling"),
+            ("get_closeout", "Reading"),
             ("run_closeout", "Verifying"),
             ("ask", "Waiting"),
             ("finish", "Finishing"),
