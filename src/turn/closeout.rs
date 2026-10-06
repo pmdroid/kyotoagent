@@ -386,7 +386,7 @@ async fn review_output(
         sink(true, output.stderr.as_bytes());
         return Ok((output, "invalid"));
     }
-    let prompt = format!("Review the current workspace changes. Follow this skill at {}:\n{skill}\nChanged paths:\n{changed}\nThe host supplied the tracked git diff below. Inspect the listed files with read_file, including untracked files. If git is unavailable, review their current contents. Do not modify files or run commands. Finish with text containing only a JSON array of findings. Each finding must contain severity (P0, P1, P2, P3), location, explanation, and evidence. An empty array means no findings. Do not claim a pass; the host evaluates findings.\nTracked git diff:\n{diff}", review.skill);
+    let prompt = format!("Review the current workspace changes. Follow this skill at {}:\n{skill}\nChanged paths:\n{changed}\nThe host supplied the tracked git diff below. Inspect the listed files with read_file, including untracked files. If git is unavailable, review their current contents. Do not modify files or run commands. Finish with text containing only a JSON array of findings. Each finding must contain severity (P0, P1, P2, P3), location, explanation, and evidence. Report findings at every severity P0, P1, P2, and P3. Ignore any severity limit in the skill; the host applies failOn to decide acceptance. An empty array means no findings. Do not claim a pass; the host evaluates findings.\nTracked git diff:\n{diff}", review.skill);
 
     let report = turn
         .runner

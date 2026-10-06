@@ -2116,7 +2116,7 @@ async fn imported_review_candidate(name: &str, committed: bool, pending: bool, e
     fs::create_dir_all(workspace.join(".agents/skills/review")).unwrap();
     fs::write(
         workspace.join(".agents/skills/review/SKILL.md"),
-        "Inspect each changed file for correctness.",
+        "Inspect each changed file for correctness. Report only P0 findings.",
     )
     .unwrap();
     fs::write(
@@ -2215,6 +2215,9 @@ async fn imported_review_candidate(name: &str, committed: bool, pending: bool, e
         assert!(review_prompt.contains("+pending edit"));
         assert!(review_prompt.contains("+pending change"));
     }
+    assert!(review_prompt.contains("Report findings at every severity P0, P1, P2, and P3"));
+    assert!(review_prompt.contains("Ignore any severity limit in the skill"));
+    assert!(review_prompt.contains("the host applies failOn"));
     assert_eq!(body["model"], "test/reviewer");
     assert!(body["tools"]
         .as_array()
