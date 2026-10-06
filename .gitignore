@@ -1,5 +1,6 @@
 /target
 /build
+__pycache__/
 
 # The docs site in site/ carries its own .gitignore for dist/ and node_modules/.
 
