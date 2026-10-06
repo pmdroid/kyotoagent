@@ -17,8 +17,8 @@ model client, the turn loop, and the server that ties them together:
   `sessions`, `log`, `cancel`, `archive`, `unarchive`, `provider`, `doctor`, and
   `systemprompt`.
 - `src/doctor.rs` is `kyotoagent doctor`: the socket, the selected model catalog,
-  and the workspace closeout file. `kyotoagent systemprompt` prints the system
-  prompt.
+  the workspace closeout file, and a warning when the skill catalog would be
+  truncated. `kyotoagent systemprompt` prints the system prompt.
 - `src/auth.rs` handles provider authentication and stores credentials under
   `~/.kyotoagent`.
 - `src/tui.rs` is the live screen: it polls the socket or `--url` / `KYOTOAGENT_URL`,
