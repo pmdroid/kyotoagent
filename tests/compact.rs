@@ -1225,3 +1225,147 @@ async fn a_message_during_compact_is_queued_and_runs_when_compact_finishes() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_turn_compacts_completed_tools_repeatedly() {
+    let fixture = Fixture::new(
+        "first-turn-repeated",
+        catalog(Some(100000)),
+        vec![
+            Canned::Json(tool_reply(
+                "read_file",
+                serde_json::json!({"path": "large.txt"}),
+                90000,
+            )),
+            Canned::Json(text_reply("first file findings", 20)),
+            Canned::Json(tool_reply(
+                "read_file",
+                serde_json::json!({"path": "large.txt"}),
+                90000,
+            )),
+            Canned::Json(text_reply("second file findings", 20)),
+            Canned::Json(tool_reply(
+                "finish",
+                serde_json::json!({"text": "done", "proof": "checked"}),
+                50,
+            )),
+        ],
+        Duration::ZERO,
+    );
+    let workspace = fixture.add_session("91bc");
+    fs::write(workspace.join("large.txt"), "file evidence ".repeat(1000)).unwrap();
+    fixture
+        .runner
+        .ask("91bc", "Keep my original requirements")
+        .unwrap();
+    fixture.wait_for_cards("91bc", 2).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    let posts = fixture.chat();
+    assert_eq!(posts.iter().filter(|body| is_compact_body(body)).count(), 2);
+    for body in posts.iter().filter(|body| !is_compact_body(body)).skip(1) {
+        assert!(user_contents(body)
+            .iter()
+            .any(|text| text.contains("Keep my original requirements")));
+        assert!(body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|message| message["role"] != "tool"));
+    }
+    assert_eq!(
+        fixture
+            .events("91bc")
+            .iter()
+            .filter(|event| event.kind == EventKind::Compact)
+            .count(),
+        2
+    );
+    assert!(fixture
+        .events("91bc")
+        .iter()
+        .any(|event| event.kind == EventKind::ToolResult
+            && event.body["output"]
+                .as_str()
+                .is_some_and(|text| text.contains("file evidence"))));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_read_offsets_and_limits_select_lines() {
+    let fixture = Fixture::new(
+        "model-line-offset",
+        catalog(Some(100000)),
+        vec![
+            Canned::Json(tool_reply(
+                "read_file",
+                serde_json::json!({"path": "source.txt", "offset": 1360, "limit": 30}),
+                100,
+            )),
+            Canned::Json(tool_reply(
+                "finish",
+                serde_json::json!({"text": "done", "proof": "checked"}),
+                100,
+            )),
+        ],
+        Duration::ZERO,
+    );
+    let workspace = fixture.add_session("91bc");
+    fs::write(
+        workspace.join("source.txt"),
+        (1..=2000)
+            .map(|line| format!("source line {line}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    fixture
+        .runner
+        .ask("91bc", "Read the requested range")
+        .unwrap();
+    fixture.wait_for_cards("91bc", 2).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    let output = fixture
+        .events("91bc")
+        .into_iter()
+        .find(|event| event.kind == EventKind::ToolResult && event.body["tool"] == "read_file")
+        .unwrap();
+    let text = output.body["output"].as_str().unwrap();
+    assert!(text.contains("1360→source line 1360"), "{text}");
+    assert!(text.contains("1389→source line 1389"), "{text}");
+    assert!(!text.contains("source line 1390"), "{text}");
+    assert!(text.contains("line 1390"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_overflow_compacts_and_resubmits_once() {
+    let fixture = Fixture::new(
+        "overflow-recovery",
+        catalog(Some(100000)),
+        vec![
+            Canned::Json(tool_reply("read_file", serde_json::json!({"path": "large.txt"}), 100)),
+            Canned::Status(400, serde_json::json!({"error": "[input_too_large] The prompt is too long for this model's context window"}).to_string()),
+            Canned::Json(text_reply("file findings", 20)),
+            Canned::Json(tool_reply("finish", serde_json::json!({"text": "recovered", "proof": "checked"}), 50)),
+        ],
+        Duration::ZERO,
+    );
+    let workspace = fixture.add_session("91bc");
+    fs::write(workspace.join("large.txt"), "file evidence ".repeat(1000)).unwrap();
+    fixture.runner.ask("91bc", "Keep the task").unwrap();
+    fixture.wait_for_cards("91bc", 2).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    let posts = fixture.chat();
+    assert_eq!(posts.len(), 4);
+    assert!(is_compact_body(&posts[2]));
+    assert!(user_contents(&posts[3])
+        .iter()
+        .any(|text| text.contains("Keep the task")));
+    assert!(posts[3]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|message| message["role"] != "tool"));
+    assert!(fixture
+        .view("91bc")
+        .cards
+        .iter()
+        .any(|card| card.body["text"] == "recovered"));
+}
