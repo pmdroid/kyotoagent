@@ -202,6 +202,7 @@ fn a_waiting_row_names_its_card() {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
         archived: false,
     };

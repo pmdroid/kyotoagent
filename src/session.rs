@@ -122,6 +122,8 @@ pub struct SessionMeta {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolation: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<crate::goal::Goal>,
     /// Hidden from the live list. The directory and log stay, and a new ask is
@@ -192,6 +194,7 @@ impl SessionMeta {
             closeout_reviewer: false,
             description: None,
             isolation: None,
+            hidden: false,
             goal: None,
             archived: false,
             archived_at: None,

@@ -82,6 +82,7 @@ impl Runner {
         meta.description = Some(input.description.clone());
         meta.title = Some(input.description.clone());
         meta.isolation = Some(input.isolation.label().to_string());
+        meta.hidden = !input.visible;
         meta.yolo = parent.yolo;
         meta.enhance = false;
         meta.show_closeout = parent.show_closeout;

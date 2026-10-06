@@ -217,7 +217,7 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "spawn_subagent",
-            "Start a child session on this serve. isolation is none or worktree. cwd and worktree together are refused.",
+            "Start a child session on this serve. A child is hidden from the session list unless visible is true. isolation is none or worktree. cwd and worktree together are refused. Call kill_task with the id when the child is done.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -228,6 +228,7 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
                     "resume_from": { "type": "string" },
                     "cwd": { "type": "string" },
                     "model": { "type": "string" },
+                    "visible": { "type": "boolean" },
                 },
                 "required": ["prompt", "description"],
             }),

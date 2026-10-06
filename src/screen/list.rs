@@ -137,8 +137,14 @@ pub(super) struct ListPiece {
 }
 
 pub(super) fn list_pieces(model: &ScreenModel) -> Vec<ListPiece> {
+    let shown: Vec<SessionRow> = model
+        .sessions
+        .iter()
+        .filter(|row| !row.hidden)
+        .cloned()
+        .collect();
     if !sessions_grouped(model) {
-        return nest_rows(&model.sessions)
+        return nest_rows(&shown)
             .into_iter()
             .map(|row| ListPiece {
                 hit: ListHit::Session(row.id.clone()),
@@ -146,7 +152,7 @@ pub(super) fn list_pieces(model: &ScreenModel) -> Vec<ListPiece> {
             .collect();
     }
     let mut keys: Vec<_> = model.projects.iter().map(|row| row.id.clone()).collect();
-    for row in &model.sessions {
+    for row in &shown {
         let key = project_key(row).unwrap_or_else(|| OTHER_PROJECT.to_string());
         if !keys.contains(&key) {
             keys.push(key);
@@ -166,8 +172,7 @@ pub(super) fn list_pieces(model: &ScreenModel) -> Vec<ListPiece> {
         if model.collapsed.contains(&key) {
             continue;
         }
-        let group: Vec<&SessionRow> = model
-            .sessions
+        let group: Vec<&SessionRow> = shown
             .iter()
             .filter(|row| project_key(row).unwrap_or_else(|| OTHER_PROJECT.to_string()) == key)
             .collect();
@@ -334,5 +339,32 @@ pub(super) fn push_cols(
     *room = room.saturating_sub(used);
     if !text.is_empty() {
         spans.push(Span::styled(text, style));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hidden_child_is_left_out_of_the_list_and_a_visible_child_stays() {
+        let mut model = crate::mock::children();
+        model.sessions.last_mut().unwrap().hidden = true;
+        let mut shown = model.sessions.last().unwrap().clone();
+        shown.id = "visible1".into();
+        shown.hidden = false;
+        shown.title = Some("Watch this".into());
+        model.sessions.push(shown);
+        let pieces = list_pieces(&model);
+        let ids: Vec<&str> = pieces
+            .iter()
+            .filter_map(|piece| match &piece.hit {
+                ListHit::Session(id) => Some(id.as_str()),
+                ListHit::Header(_) => None,
+            })
+            .collect();
+        assert!(!ids.contains(&"c0ffee00"), "{ids:?}");
+        assert!(ids.contains(&"visible1"), "{ids:?}");
+        assert!(ids.contains(&"91bc7a1d"), "{ids:?}");
     }
 }

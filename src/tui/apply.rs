@@ -1825,6 +1825,8 @@ pub(super) struct ListRow {
     #[serde(default)]
     isolation: Option<String>,
     #[serde(default)]
+    hidden: bool,
+    #[serde(default)]
     worktree: bool,
     #[serde(default)]
     archived: bool,
@@ -1854,6 +1856,7 @@ pub(super) fn into_row(row: ListRow) -> SessionRow {
         project_name: None,
         parent_id: row.parent_id,
         isolation: row.isolation,
+        hidden: row.hidden,
         worktree: row.worktree,
         archived: row.archived,
     }

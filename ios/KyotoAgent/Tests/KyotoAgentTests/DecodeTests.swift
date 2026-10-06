@@ -47,6 +47,7 @@ final class DecodeTests: XCTestCase {
         XCTAssertEqual(sessions[0].waiting, "permission")
         XCTAssertEqual(sessions[0].parentId, "a11a0001")
         XCTAssertEqual(sessions[0].isolation, "worktree")
+        XCTAssertFalse(sessions[0].hidden)
         XCTAssertTrue(sessions[0].worktree)
         XCTAssertFalse(sessions[1].worktree)
         XCTAssertNotNil(sessions[0].pullUrl)

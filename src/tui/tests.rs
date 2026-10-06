@@ -799,6 +799,7 @@ fn esc_on_a_question_overlay_closes_it_and_a_bare_esc_does_not_cancel() {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
         archived: false,
     }];
@@ -897,6 +898,7 @@ fn blank_row() -> SessionRow {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
         archived: false,
     }
@@ -987,6 +989,7 @@ fn waiting_question(text: &str) -> App {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
         archived: false,
     });
@@ -1227,6 +1230,7 @@ fn a_waiting_permission_does_not_auto_open() {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
         archived: false,
     });
@@ -1264,6 +1268,7 @@ fn a_waiting_row_is_permission_mode() {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
         archived: false,
     });
@@ -1633,6 +1638,7 @@ fn idle_proof_app(card: Card) -> App {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
         archived: false,
     });
@@ -1786,6 +1792,7 @@ fn idle_with_skills() -> App {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
         archived: false,
     });

@@ -27,6 +27,8 @@ results, and proof, and spends its space on looking deliberate.
 
 Typing in the prompt is the ask, or a free-text question answer.
 
+A subagent is hidden from the session list unless the parent sets `visible` true. The parent removes it with `kill_task` when the work is done. A hidden child still runs, and its result comes back to the parent.
+
 ## Providers
 
 Press Ctrl-K and choose **Providers** to authenticate on the selected server.

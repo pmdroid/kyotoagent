@@ -1351,6 +1351,7 @@ fn idle_proof_app() -> App {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
         archived: false,
     });
@@ -2584,6 +2585,7 @@ fn tall_session() -> App {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
         archived: false,
     });
@@ -2794,6 +2796,7 @@ async fn selecting_another_session_turns_follow_on() {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
         archived: false,
     });
@@ -2832,6 +2835,7 @@ async fn clicking_a_session_selects_it_and_turns_follow_on() {
         project_name: None,
         parent_id: None,
         isolation: None,
+        hidden: false,
         worktree: false,
         archived: false,
     });
