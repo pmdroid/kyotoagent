@@ -106,6 +106,8 @@ fn proof_event() -> Event {
             text: "cargo test passed.".into(),
             wrote: vec!["README.md".into()],
             status: "failed".into(),
+            head: String::new(),
+            workspace_fingerprint: String::new(),
             diff_stat: "README.md | 1 +".into(),
             note: "The readme names the binary; the lint item did not pass.".into(),
             failures: vec![ProofFailure {

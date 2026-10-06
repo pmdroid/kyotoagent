@@ -178,6 +178,18 @@ impl Card {
                     pane_width.saturating_sub(RAIL.chars().count()),
                 ));
                 self.clip_preview(&mut body);
+                if let Card::Proof { items, .. } = self {
+                    for item in items
+                        .iter()
+                        .filter(|item| item.outcome == Outcome::PassedEarlier)
+                    {
+                        body.extend(wrapped(
+                            &format!("✓ {} (earlier)", item.id),
+                            text_width,
+                            Style::default().fg(theme::good()),
+                        ));
+                    }
+                }
             }
             Card::Artifact {
                 file,

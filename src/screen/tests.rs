@@ -1431,6 +1431,29 @@ fn a_turn_that_ran_no_items_lists_none_rather_than_hiding_the_list() {
 }
 
 #[test]
+fn a_proof_renders_carried_checks_on_the_card_and_overlay() {
+    let outcome = Outcome::from_label("passed_earlier").unwrap();
+    let card = Card::proof("checked", &[("docs", ItemKind::Command, outcome)]);
+    assert!(card
+        .lines(60)
+        .iter()
+        .any(|line| line.to_string().contains("✓ docs (earlier)")));
+    let Card::Proof { items, .. } = card else {
+        panic!("expected proof")
+    };
+    let lines = overlay_lines(
+        &Overlay::Proof {
+            text: "checked".into(),
+            items,
+        },
+        60,
+    );
+    assert!(lines
+        .iter()
+        .any(|line| line.to_string().contains("✓ docs (earlier)")));
+}
+
+#[test]
 fn a_proof_lists_every_item_that_ran_with_its_kind_and_outcome() {
     let card = Card::proof(
         "cargo test passed.",

@@ -19,10 +19,10 @@ use serde_json::Value;
 
 use crate::compact::ContextUsage;
 use crate::events::{
-    parse_millis, AskBody, CloseoutChangedBody, CloseoutRunBody, EnhanceAnswerBody, EnhanceBody,
-    EnhanceChoice, Event, EventKind, PermissionAnswerBody, PermissionBody, ProofBody,
-    QuestionAnswerBody, QuestionBody, ResultBody, ScheduleBody, ScheduleCancelBody, TaskDoneBody,
-    TaskStartBody, TaskStatus, TodoItem, TodosBody, ToolCallBody, ToolResultBody,
+    parse_millis, AskBody, CloseoutRunBody, EnhanceAnswerBody, EnhanceBody, EnhanceChoice, Event,
+    EventKind, PermissionAnswerBody, PermissionBody, ProofBody, QuestionAnswerBody, QuestionBody,
+    ResultBody, ScheduleBody, ScheduleCancelBody, TaskDoneBody, TaskStartBody, TaskStatus,
+    TodoItem, TodosBody, ToolCallBody, ToolResultBody,
 };
 use crate::prompt::SkillEntry;
 use crate::schedule::remaining_minutes;
@@ -271,12 +271,9 @@ pub(crate) fn closeout_rows_for(
     if file.items.is_empty() && file.setup.is_empty() {
         return Vec::new();
     }
-    let events = events
-        .iter()
-        .rposition(|event| event.kind == EventKind::UserAsk)
-        .map_or(events, |start| &events[start..]);
     let mut state = crate::closeout::CloseoutState::default();
     state.file = Some(file.clone());
+    state.replay(events);
     let mut latest: std::collections::HashMap<String, CloseoutRunBody> =
         std::collections::HashMap::new();
     let mut logs: std::collections::HashMap<String, (u32, Vec<u8>, Vec<u8>)> =
@@ -284,22 +281,6 @@ pub(crate) fn closeout_rows_for(
     let mut inflight: Option<String> = None;
     for event in events {
         match event.kind {
-            EventKind::CloseoutChanged => {
-                if let Ok(body) = event.body_as::<CloseoutChangedBody>() {
-                    for path in body.paths {
-                        state.record_write(&path);
-                    }
-                }
-            }
-            EventKind::Proof => {
-                if let Ok(body) = event.body_as::<ProofBody>() {
-                    for path in body.wrote {
-                        if !state.written_paths.contains(&path) {
-                            state.written_paths.push(path);
-                        }
-                    }
-                }
-            }
             EventKind::ToolCall => {
                 let Ok(body) = event.body_as::<ToolCallBody>() else {
                     continue;
@@ -316,7 +297,6 @@ pub(crate) fn closeout_rows_for(
                 if let Ok(body) = event.body_as::<crate::events::CloseoutStartedBody>() {
                     logs.insert(body.id.clone(), (body.attempt, Vec::new(), Vec::new()));
                     latest.remove(&body.id);
-                    state.item_mut(&body.id).passed = false;
                     inflight = Some(body.id);
                 }
             }
@@ -340,8 +320,6 @@ pub(crate) fn closeout_rows_for(
                 if inflight.as_deref() == Some(body.id.as_str()) {
                     inflight = None;
                 }
-                state.item_mut(&body.id).passed =
-                    body.passed.unwrap_or(body.exit == 0 && !body.timed_out);
                 latest.insert(body.id.clone(), body);
             }
             EventKind::ToolResult => {
@@ -695,7 +673,12 @@ fn result_body(event: &Event) -> Option<Value> {
 
 fn proof_body(event: &Event) -> Option<Value> {
     let proof: ProofBody = event.body_as().ok()?;
-    if proof.text.trim().is_empty() {
+    if proof.text.trim().is_empty()
+        && !proof
+            .items
+            .iter()
+            .any(|item| item.outcome == "passed_earlier")
+    {
         return None;
     }
     let mut body = serde_json::json!({ "text": proof.text });
@@ -1213,7 +1196,47 @@ mod tests {
     }
 
     #[test]
-    fn closeout_requirements_follow_touched_paths_and_reset_on_the_next_ask() {
+    fn carried_passes_open_a_proof_card_without_model_proof_text() {
+        let events = vec![event(
+            "e1",
+            EventKind::Proof,
+            serde_json::json!({
+                "items": [{"id": "docs", "kind": "command", "outcome": "passed_earlier"}]
+            }),
+        )];
+        let shown = cards(&events);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].kind, CardKind::Proof);
+        assert_eq!(shown[0].body["items"][0]["outcome"], "passed_earlier");
+    }
+
+    #[test]
+    fn closeout_passed_docs_remain_required_after_another_ask() {
+        let file: crate::closeout::CloseoutFile = serde_yaml::from_str(
+            "version: 1\nitems:\n  - id: docs\n    kind: command\n    run: 'true'\n    hint: docs\n    paths: [docs/**]\n",
+        ).unwrap();
+        let events = vec![
+            ask("e1", "Edit docs"),
+            event(
+                "e2",
+                EventKind::CloseoutChanged,
+                serde_json::json!({"paths": ["docs/x.md"]}),
+            ),
+            event(
+                "e3",
+                EventKind::CloseoutRun,
+                serde_json::json!({"id": "docs", "attempt": 1, "exit": 0, "tail": "ok"}),
+            ),
+            ask("e4", "Open the draft PR"),
+        ];
+        let rows = closeout_rows_for(Some(file), &events, true);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].required);
+        assert_eq!(rows[0].status, CloseoutStatus::Passed);
+    }
+
+    #[test]
+    fn closeout_requirements_follow_touched_paths_across_asks() {
         let dir = std::env::temp_dir().join(format!(
             "kyotoagent-view-closeout-paths-{}",
             std::process::id()
@@ -1250,19 +1273,26 @@ mod tests {
         );
         events.push(event(
             "e4",
+            EventKind::CloseoutRun,
+            serde_json::json!({"id": "all", "attempt": 1, "exit": 0, "tail": "ok"}),
+        ));
+        events.push(ask("e5", "Explain the changes"));
+        let rows = closeout_rows(&dir, &events, true);
+        assert!(rows[1..].iter().all(|row| row.required));
+        assert!(rows[1..]
+            .iter()
+            .all(|row| row.status == CloseoutStatus::Passed));
+        assert!(rows[1..].iter().all(|row| row.runs.len() == 1));
+        events.push(event(
+            "e6",
             EventKind::CloseoutChanged,
             serde_json::json!({"paths": ["docs/guide.md"]}),
         ));
         let rows = closeout_rows(&dir, &events, true);
-        assert_eq!(rows[1].status, CloseoutStatus::Missing);
-        assert_eq!(rows[1].runs.len(), 1);
-        events.push(ask("e5", "Explain the changes"));
-        let rows = closeout_rows(&dir, &events, true);
-        assert!(rows.iter().all(|row| !row.required));
-        assert!(rows
+        assert!(rows[1..].iter().all(|row| row.required));
+        assert!(rows[1..]
             .iter()
-            .all(|row| row.status == CloseoutStatus::NotRequired));
-        assert!(rows.iter().all(|row| row.runs.is_empty()));
+            .all(|row| row.status == CloseoutStatus::Missing));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

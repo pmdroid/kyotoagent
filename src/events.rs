@@ -407,6 +407,14 @@ pub struct ProofBody {
     /// How the turn ended, such as `passed` or `failed`.
     #[serde(default)]
     pub status: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub head: String,
+    #[serde(
+        default,
+        rename = "workspaceFingerprint",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub workspace_fingerprint: String,
     /// The diffstat, as one line.
     #[serde(rename = "diffStat", default)]
     pub diff_stat: String,
@@ -954,6 +962,8 @@ mod tests {
                 text: String::new(),
                 wrote: vec!["README.md".into()],
                 status: "M README.md".into(),
+                head: String::new(),
+                workspace_fingerprint: String::new(),
                 diff_stat: "README.md | 1 +".into(),
                 note: String::new(),
                 failures: vec![ProofFailure {

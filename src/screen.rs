@@ -464,13 +464,14 @@ impl ItemKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Passed,
+    PassedEarlier,
     Failed,
 }
 
 impl Outcome {
     pub fn marker(self) -> &'static str {
         match self {
-            Outcome::Passed => "\u{2713}",
+            Outcome::Passed | Outcome::PassedEarlier => "\u{2713}",
             Outcome::Failed => "\u{2717}",
         }
     }
@@ -478,13 +479,14 @@ impl Outcome {
     pub fn label(self) -> &'static str {
         match self {
             Outcome::Passed => "passed",
+            Outcome::PassedEarlier => "passed (earlier)",
             Outcome::Failed => "failed",
         }
     }
 
     pub fn color(self) -> Color {
         match self {
-            Outcome::Passed => theme::good(),
+            Outcome::Passed | Outcome::PassedEarlier => theme::good(),
             Outcome::Failed => theme::bad(),
         }
     }
@@ -492,6 +494,7 @@ impl Outcome {
     pub fn from_label(label: &str) -> Option<Outcome> {
         match label {
             "passed" => Some(Outcome::Passed),
+            "passed_earlier" => Some(Outcome::PassedEarlier),
             "failed" => Some(Outcome::Failed),
             _ => None,
         }

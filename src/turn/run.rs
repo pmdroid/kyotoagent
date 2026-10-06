@@ -13,6 +13,7 @@ pub(super) async fn run_turn(
     let system_prompt = turn.system_prompt();
     let text = turn.text.as_str();
     let workspace = tools.workspace().to_path_buf();
+    let prior_events = session.events()?;
 
     // The ask opens the turn: a user_ask event and the working status.
     let ask = Event::new(
@@ -54,7 +55,9 @@ pub(super) async fn run_turn(
                     files: Vec::new(),
                     text: String::new(),
                     wrote: Vec::new(),
-                    status: git_output(&workspace, &["status", "--short"]),
+                    head: git_output(&workspace, &["rev-parse", "HEAD"]),
+                    workspace_fingerprint: current_workspace_fingerprint(&workspace),
+                    status: git_output(&workspace, &["status", "--porcelain"]),
                     diff_stat: git_output(&workspace, &["diff", "--stat"]),
                     note: String::new(),
                     failures: Vec::new(),
@@ -65,6 +68,55 @@ pub(super) async fn run_turn(
             return Ok(());
         }
     };
+
+    closeout.replay(&prior_events);
+    if let Some(proof) = prior_events
+        .iter()
+        .rev()
+        .filter(|event| event.kind == EventKind::Proof)
+        .find_map(|event| event.body_as::<ProofBody>().ok())
+    {
+        if !proof.workspace_fingerprint.is_empty()
+            && proof.workspace_fingerprint != current_workspace_fingerprint(&workspace)
+        {
+            let mut paths: Vec<String> =
+                git_output(&workspace, &["diff", "--name-only", "-z", &proof.head])
+                    .split('\0')
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            paths.extend(
+                git_output(
+                    &workspace,
+                    &[
+                        "ls-files",
+                        "-z",
+                        "--modified",
+                        "--deleted",
+                        "--others",
+                        "--exclude-standard",
+                    ],
+                )
+                .split('\0')
+                .filter(|path| !path.is_empty())
+                .map(str::to_string),
+            );
+            paths.sort();
+            paths.dedup();
+            if paths.is_empty() {
+                paths.push(".".into());
+            }
+            for path in &paths {
+                closeout.record_write(path);
+            }
+            append_with_body(
+                session,
+                turn_id,
+                EventKind::CloseoutChanged,
+                &crate::events::CloseoutChangedBody { paths },
+            )?;
+        }
+    }
 
     let initial_events = session.event_snapshot()?.1;
     let mut transcript =
@@ -475,16 +527,26 @@ pub(super) async fn run_turn(
         files: proof_files,
         text: proof_text,
         wrote: writes,
-        status: git_output(&workspace, &["status", "--short"]),
+        head: git_output(&workspace, &["rev-parse", "HEAD"]),
+        workspace_fingerprint: current_workspace_fingerprint(&workspace),
+        status: git_output(&workspace, &["status", "--porcelain"]),
         diff_stat: git_output(&workspace, &["diff", "--stat"]),
         note,
         failures,
-        items: closeout.proof_items,
+        items: closeout.proof_items_with_carried_passes(),
     };
     append_proof(session, turn_id, &proof)?;
     maybe_prefire(turn).await;
 
     Ok(())
+}
+
+fn current_workspace_fingerprint(workspace: &Path) -> String {
+    crate::closeout::workspace_fingerprint(
+        workspace,
+        &git_output(workspace, &["rev-parse", "HEAD"]),
+        &git_output(workspace, &["status", "--porcelain"]),
+    )
 }
 
 async fn completion_blocker(

@@ -1667,6 +1667,20 @@ fn idle_proof_app(card: Card) -> App {
 }
 
 #[test]
+fn a_proof_projects_a_carried_pass_with_an_earlier_label() {
+    let screen = to_screen_card(&proof_view(serde_json::json!([
+        {"id": "docs", "kind": "command", "outcome": "passed_earlier"}
+    ])))
+    .unwrap();
+    let Card::Proof { items, .. } = screen else {
+        panic!("expected proof")
+    };
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].outcome.marker(), "✓");
+    assert_eq!(items[0].outcome.label(), "passed (earlier)");
+}
+
+#[test]
 fn a_proof_projects_each_closeout_item_onto_the_card() {
     let screen = to_screen_card(&proof_view(serde_json::json!([
         {"id": "test", "kind": "command", "outcome": "passed"},

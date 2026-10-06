@@ -91,7 +91,8 @@ nonisolated func transcriptCardText(_ body: CardBody) -> [TranscriptPart] {
     case .proof(let proof):
         var parts: [TranscriptPart] = [.markdown(transcriptBlocks(proof.text))]
         for item in proof.items {
-            parts.append(.plain(item.id + " · " + item.outcome, .proofItem))
+            let outcome = item.outcome == "passed_earlier" ? "✓ (earlier)" : item.outcome
+            parts.append(.plain(item.id + " · " + outcome, .proofItem))
         }
         return parts
     case .enhance(let enhance):
