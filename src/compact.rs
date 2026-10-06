@@ -177,6 +177,28 @@ pub fn projected_messages(system: &str, events: &[Event], workspace: &str) -> Ve
                         &recent_images(prior),
                     ),
                 });
+                if let Some(ask) = prior
+                    .iter()
+                    .rev()
+                    .find(|event| event.kind == EventKind::UserAsk)
+                {
+                    if !events_after(events, &body.through_event_id)
+                        .iter()
+                        .any(|event| event.kind == EventKind::UserAsk)
+                        && !events.iter().any(|event| {
+                            event.turn_id == ask.turn_id && event.kind == EventKind::Result
+                        })
+                    {
+                        if let Ok(ask) = ask.body_as::<AskBody>() {
+                            out.push(Message::User {
+                                content: crate::chat::UserContent::with_images(
+                                    ask_content(&ask, false, workspace),
+                                    &ask.images,
+                                ),
+                            });
+                        }
+                    }
+                }
                 project_slice(
                     events_after(events, &body.through_event_id),
                     &mut out,
@@ -352,17 +374,58 @@ fn recent_images(events: &[Event]) -> Vec<crate::attachment::ImageAttachment> {
         .unwrap_or_default()
 }
 
-const DUMP_LIMIT: usize = 64 * 1024;
+pub(crate) const DUMP_LIMIT: usize = 32 * 1024;
 
-fn cap_dump(text: &str) -> String {
-    if text.len() <= DUMP_LIMIT {
+pub(crate) fn cap_dump(text: &str) -> String {
+    truncate_dump(text, DUMP_LIMIT)
+}
+
+pub(crate) fn truncate_dump(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
         return text.to_string();
     }
-    let mut end = DUMP_LIMIT;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
+    let marker = "\n[output omitted]\n";
+    let budget = limit.saturating_sub(marker.len() + "\ntruncated".len());
+    let mut head = budget / 2;
+    let mut tail = text.len().saturating_sub(budget - head);
+    while head > 0 && !text.is_char_boundary(head) {
+        head -= 1;
     }
-    format!("{}\ntruncated", &text[..end])
+    while tail < text.len() && !text.is_char_boundary(tail) {
+        tail += 1;
+    }
+    format!("{}{marker}{}\ntruncated", &text[..head], &text[tail..])
+}
+
+pub(crate) fn fit_compact_messages(messages: &mut [Message], window: u64) {
+    let overhead = messages
+        .iter()
+        .map(|message| match message {
+            Message::User { content } => {
+                content
+                    .estimated_bytes()
+                    .saturating_sub(content.as_str().len() as u64)
+                    / 4
+            }
+            other => one_message_bytes(other) / 4,
+        })
+        .sum::<u64>();
+    let budget =
+        usize::try_from(window.saturating_sub(overhead).saturating_mul(2)).unwrap_or(usize::MAX);
+    for message in messages {
+        if let Message::User { content } = message {
+            match content {
+                crate::chat::UserContent::Text(text) => *text = truncate_dump(text, budget),
+                crate::chat::UserContent::Parts(parts) => {
+                    for part in parts {
+                        if let crate::chat::UserPart::Text { text } = part {
+                            *text = truncate_dump(text, budget);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn neutralize(text: &str, close: &str) -> String {
@@ -513,6 +576,18 @@ pub fn last_event_id(events: &[Event]) -> Option<String> {
 mod tests {
     use super::*;
     use crate::events::Event;
+
+    #[test]
+    fn live_tool_results_keep_bounded_utf8_head_and_tail() {
+        let text = format!("start:{}:exit=1", "日".repeat(40000));
+        let Message::Tool { content, .. } = Message::tool_result("call", &text) else {
+            panic!("tool message")
+        };
+        assert!(content.len() <= DUMP_LIMIT);
+        assert!(content.starts_with("start:"));
+        assert!(content.contains(":exit=1"));
+        assert!(content.contains("output omitted"));
+    }
 
     fn event(id: &str, kind: EventKind, body: serde_json::Value) -> Event {
         Event::new(id, "2026-09-29T00:00:00.000Z", "t1", kind)
@@ -1022,10 +1097,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(users.len(), 1, "{users:?}");
+        assert_eq!(users.len(), 2, "{users:?}");
         assert!(users[0].starts_with("<user_info>\n"));
         assert!(users[0].contains("the summary"));
-        assert!(users.iter().all(|text| !text.contains("first ask")));
+        assert!(users[1].contains("first ask"));
         assert!(messages.iter().all(|message| match message {
             Message::Tool { content, .. } => !content.contains("OLD"),
             _ => true,

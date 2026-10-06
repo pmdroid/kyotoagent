@@ -217,7 +217,7 @@ impl Message {
     pub fn tool_result(tool_call_id: &str, content: &str) -> Message {
         Message::Tool {
             tool_call_id: tool_call_id.to_string(),
-            content: content.to_string(),
+            content: crate::compact::cap_dump(content),
         }
     }
 }
@@ -431,6 +431,12 @@ pub enum ChatError {
     Idle {
         seconds: u64,
     },
+}
+
+impl ChatError {
+    pub fn is_context_overflow(&self) -> bool {
+        matches!(self, Self::Status { status: 400 | 413, body } if ["input_too_large", "context_length_exceeded", "context_window_exceeded"].iter().any(|code| body.contains(code)))
+    }
 }
 
 impl fmt::Display for ChatError {

@@ -1,5 +1,10 @@
 use super::*;
 
+pub(super) struct HistoryCursor {
+    pub active_start: usize,
+    pub compact_id: Option<String>,
+}
+
 pub(super) fn spawn_compact(
     session: Session,
     slot: Arc<CompactSlot>,
@@ -33,7 +38,6 @@ pub(super) async fn wait_and_run_compact(
     client: &ChatClient,
     config: &Config,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
-    preserve_turn: &str,
 ) -> Result<(), TurnError> {
     let (job, started) = slot.begin();
     if !started {
@@ -46,7 +50,7 @@ pub(super) async fn wait_and_run_compact(
             let _ = job.cancel.send(true);
             Ok(())
         }
-        result = run_compact(session, client, config, &mut job_cancel, Some(preserve_turn)) => result,
+        result = run_compact(session, client, config, &mut job_cancel, None) => result,
     };
     slot.finish(&job);
     result
@@ -62,15 +66,32 @@ pub(super) async fn run_compact(
     if *cancel.borrow() {
         return Ok(());
     }
-    let events = session.events()?;
-    let previous_compact = crate::compact::latest_compact(&events).cloned();
+    let all_events = session.events()?;
+    let previous_compact = crate::compact::latest_compact(&all_events).cloned();
     let events = match preserve_turn
-        .and_then(|turn| events.iter().position(|event| event.turn_id == turn))
+        .and_then(|turn| all_events.iter().position(|event| event.turn_id == turn))
     {
-        Some(index) => &events[..index],
-        None => &events,
+        Some(index) => &all_events[..index],
+        None => &all_events,
     };
-    if events.is_empty() {
+    if previous_compact
+        .as_ref()
+        .and_then(|event| event.body_as::<CompactBody>().ok())
+        .and_then(|body| {
+            all_events
+                .iter()
+                .position(|event| event.id == body.through_event_id)
+        })
+        .is_some_and(|index| index >= events.len())
+    {
+        return Ok(());
+    }
+    if !events.iter().any(|event| {
+        matches!(
+            event.kind,
+            EventKind::ModelMessage | EventKind::ToolResult | EventKind::Result
+        )
+    }) {
         return Ok(());
     }
     let Some(through) = crate::compact::last_event_id(events) else {
@@ -82,15 +103,35 @@ pub(super) async fn run_compact(
     {
         history.push(compact);
     }
-    let messages = crate::compact::compact_request_messages(&history);
+    let mut messages = crate::compact::compact_request_messages(&history);
     let meta = session.meta()?;
     let window = crate::compact::resolve_window(client, config, session).await?;
-    if window.is_some_and(|window| crate::compact::estimate_tokens(&messages) > window) {
-        return Ok(());
+    if let Some(window) = window {
+        crate::compact::fit_compact_messages(&mut messages, window.saturating_mul(85) / 100);
+        if crate::compact::estimate_tokens(&messages) > window.saturating_mul(85) / 100 {
+            return Ok(());
+        }
     }
     let reply = tokio::select! {
         _ = cancel.changed() => return Ok(()),
         result = client.compact(&messages) => result,
+    };
+    let reply = if reply
+        .as_ref()
+        .is_err_and(|error| error.is_context_overflow())
+    {
+        let budget = window
+            .unwrap_or_else(|| crate::compact::estimate_tokens(&messages))
+            .saturating_mul(40)
+            / 100;
+        let budget = budget.min(crate::compact::estimate_tokens(&messages) / 2);
+        crate::compact::fit_compact_messages(&mut messages, budget);
+        tokio::select! {
+            _ = cancel.changed() => return Ok(()),
+            result = client.compact(&messages) => result,
+        }
+    } else {
+        reply
     };
     let Ok(reply) = reply else {
         return Ok(());
@@ -140,16 +181,20 @@ pub(super) async fn maybe_live_compact(
     transcript: &mut Vec<Message>,
     tools_json: &str,
     attempted: &mut bool,
-    active_start: &mut usize,
-    compact_id: &mut Option<String>,
+    cursor: &mut HistoryCursor,
+    usage: &mut Option<(u64, u64)>,
 ) -> Result<(), TurnError> {
     let window = crate::compact::resolve_window(&turn.client, &turn.config, &turn.session).await?;
-    refresh_compacted_history(turn, transcript, active_start, compact_id)?;
+    if refresh_compacted_history(turn, transcript, cursor)? {
+        *usage = None;
+        *attempted = false;
+    }
     transcript[0] = Message::System {
         content: turn.system_prompt(),
     };
-    let tokens = crate::compact::estimate_request(transcript, tools_json)
-        .max(turn.session.meta()?.prompt_tokens.unwrap_or(0));
+    let estimated = crate::compact::estimate_request(transcript, tools_json);
+    let tokens =
+        request_tokens(estimated, *usage).max(turn.session.meta()?.prompt_tokens.unwrap_or(0));
     let Some(window) = window else {
         return Ok(());
     };
@@ -161,13 +206,18 @@ pub(super) async fn maybe_live_compact(
             &turn.client,
             &turn.config,
             cancel,
-            &turn.turn_id,
         )
         .await?;
-        refresh_compacted_history(turn, transcript, active_start, compact_id)?;
+        if refresh_compacted_history(turn, transcript, cursor)? {
+            *usage = None;
+            *attempted = false;
+        }
     }
-    let estimated = crate::compact::estimate_request(transcript, tools_json);
-    if estimated > window && !*cancel.borrow() {
+    let estimated = request_tokens(
+        crate::compact::estimate_request(transcript, tools_json),
+        *usage,
+    );
+    if estimated > window.saturating_mul(95) / 100 && !*cancel.borrow() {
         return Err(TurnError::ContextLimit {
             estimated,
             limit: window,
@@ -176,17 +226,42 @@ pub(super) async fn maybe_live_compact(
     Ok(())
 }
 
-fn refresh_compacted_history(
+pub(super) fn refresh_compacted_history(
     turn: &Turn,
     transcript: &mut Vec<Message>,
-    active_start: &mut usize,
-    compact_id: &mut Option<String>,
-) -> Result<(), TurnError> {
+    cursor: &mut HistoryCursor,
+) -> Result<bool, TurnError> {
     let events = turn.session.event_snapshot()?.1;
     let latest = crate::compact::latest_compact(&events);
     let latest_id = latest.map(|event| event.id.clone());
-    if latest_id == *compact_id {
-        return Ok(());
+    if latest_id == cursor.compact_id {
+        return Ok(false);
+    }
+    let covers_active = latest
+        .and_then(|event| event.body_as::<CompactBody>().ok())
+        .and_then(|body| {
+            events
+                .iter()
+                .position(|event| event.id == body.through_event_id)
+        })
+        .zip(
+            events
+                .iter()
+                .position(|event| event.turn_id == turn.turn_id),
+        )
+        .is_some_and(|(through, start)| through >= start);
+    if covers_active {
+        *transcript = crate::compact::projected_messages(
+            &turn.system_prompt(),
+            &events,
+            &turn.tools.workspace().to_string_lossy(),
+        );
+        cursor.active_start = transcript
+            .iter()
+            .rposition(|message| matches!(message, Message::User { .. }))
+            .unwrap_or(1);
+        cursor.compact_id = latest_id;
+        return Ok(true);
     }
     let mut history = events
         .iter()
@@ -198,13 +273,13 @@ fn refresh_compacted_history(
     {
         history.push(compact.clone());
     }
-    let active = transcript.split_off(*active_start);
+    let active = transcript.split_off(cursor.active_start);
     let workspace = turn.tools.workspace().to_string_lossy();
     *transcript = crate::compact::projected_messages(&turn.system_prompt(), &history, &workspace);
-    *active_start = transcript.len();
+    cursor.active_start = transcript.len();
     transcript.extend(active);
-    *compact_id = latest_id;
-    Ok(())
+    cursor.compact_id = latest_id;
+    Ok(true)
 }
 
 pub(super) async fn maybe_prefire(turn: &Turn) {
@@ -227,4 +302,23 @@ pub(super) async fn maybe_prefire(turn: &Turn) {
         None,
         move || runner.after_idle(&state),
     );
+}
+
+fn request_tokens(estimated: u64, usage: Option<(u64, u64)>) -> u64 {
+    usage
+        .map(|(baseline, reported)| reported.saturating_add(estimated.saturating_sub(baseline)))
+        .unwrap_or(estimated)
+        .max(estimated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_usage_tracks_growth_and_resets_after_replacement() {
+        assert_eq!(request_tokens(1000, Some((1000, 80000))), 80000);
+        assert_eq!(request_tokens(9000, Some((1000, 80000))), 88000);
+        assert_eq!(request_tokens(1000, None), 1000);
+    }
 }

@@ -137,13 +137,16 @@ pub(super) async fn execute_tool(
                     })
                 }
             };
+            if offset.is_some() && line.is_some() {
+                return Ok(failed("Supply only one of line or offset.".to_string()));
+            }
             let options = match (
                 optional_string(args, "pages"),
                 optional_string(args, "format"),
             ) {
                 (Ok(pages), Ok(format)) => crate::tools::ReadOptions {
-                    offset,
-                    line,
+                    offset: None,
+                    line: line.or(offset),
                     limit,
                     pages,
                     format,
@@ -1031,7 +1034,7 @@ pub(super) fn append_tool_result(
     call: &ToolCall,
     output: &str,
 ) -> Result<(), SessionError> {
-    append_tool_output(session, turn_id, call, output, &[], false)
+    append_tool_output(session, turn_id, call, output, &[], false).map(|_| ())
 }
 
 pub(super) fn append_tool_output(
@@ -1041,7 +1044,25 @@ pub(super) fn append_tool_output(
     output: &str,
     images: &[crate::attachment::ImageAttachment],
     is_error: bool,
-) -> Result<(), SessionError> {
+) -> Result<String, SessionError> {
+    let output = if output.len() > crate::compact::DUMP_LIMIT {
+        let directory = session.dir().join("tool-output");
+        std::fs::create_dir_all(&directory).map_err(|source| SessionError::Io {
+            path: directory.clone(),
+            source,
+        })?;
+        let path = directory.join(format!("{}.txt", session.next_event_id()?));
+        std::fs::write(&path, output).map_err(|source| SessionError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        format!(
+            "{output}\nFull output saved to {}. Read a narrow line range with read_file.",
+            path.display()
+        )
+    } else {
+        output.to_string()
+    };
     append_with_body(
         session,
         turn_id,
@@ -1050,9 +1071,10 @@ pub(super) fn append_tool_output(
             is_error,
             images: images.to_vec(),
             tool: call.name.clone(),
-            output: output.to_string(),
+            output: output.clone(),
         },
-    )
+    )?;
+    Ok(crate::compact::cap_dump(&output))
 }
 
 pub(super) fn append_result(

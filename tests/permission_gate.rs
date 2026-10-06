@@ -284,7 +284,7 @@ fn a_read_inside_the_workspace_returns_bytes_and_asks_nothing() {
 
     let read = f
         .tools
-        .read_file("t1", "Cargo.toml", None, None, None)
+        .read_file("t1", "Cargo.toml", Some(0), None, None)
         .expect("a read inside the workspace runs");
     f.append(
         EventKind::ToolResult,
@@ -505,7 +505,7 @@ fn a_read_outside_the_workspace_names_its_absolute_path_on_the_card() {
     f.tools.gate().queue(Answer::allow_session());
     let read = f
         .tools
-        .read_file("t1", &secret.display().to_string(), None, None, None)
+        .read_file("t1", &secret.display().to_string(), Some(0), None, None)
         .expect("the read is allowed");
 
     assert_eq!(read.text, "a note for the agent\n");
@@ -767,7 +767,7 @@ fn an_allow_on_one_session_is_invisible_to_another() {
     // A read inside the workspace is still quiet for the second session: the
     // denied write is the only card its log holds.
     let read = other_tools
-        .read_file("t1", "a.md", None, None, None)
+        .read_file("t1", "a.md", Some(0), None, None)
         .expect("a read runs");
     assert_eq!(read.text, "# a\n");
     let kinds: Vec<EventKind> = other
