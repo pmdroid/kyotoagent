@@ -100,6 +100,7 @@ fn row(id: &str, dir: &str, status: Status, waiting: Option<Wait>) -> SessionRow
         parent_id: None,
         isolation: None,
         worktree: false,
+        archived: false,
     }
 }
 

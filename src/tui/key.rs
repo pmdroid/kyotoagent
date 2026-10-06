@@ -324,6 +324,9 @@ pub fn mode(app: &App) -> Mode {
     let Some(row) = app.selected_session() else {
         return Mode::Idle;
     };
+    if row.archived {
+        return Mode::Idle;
+    }
     match row.status {
         Status::Idle => Mode::Idle,
         Status::Working => Mode::Working,

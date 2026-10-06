@@ -47,6 +47,9 @@ impl Runner {
         if parent.parent_id.is_some() {
             return subagent::DEPTH_ERROR.to_string();
         }
+        if parent.archived {
+            return "the session is archived".to_string();
+        }
         if let Some(model) = input.model.as_deref() {
             let catalog = self.list_models().await;
             if let Err(error) = subagent::model_allowed(model, &parent.model, &catalog) {

@@ -203,6 +203,7 @@ fn a_waiting_row_names_its_card() {
         parent_id: None,
         isolation: None,
         worktree: false,
+        archived: false,
     };
     assert_eq!(row.name(), "kyotoagent");
     assert_eq!(row.status_text(), "waiting permission");
@@ -217,6 +218,11 @@ fn a_waiting_row_names_its_card() {
         ..row.clone()
     };
     assert_eq!(idle.status_text(), "idle");
+    let archived = SessionRow {
+        archived: true,
+        ..row
+    };
+    assert_eq!(archived.status_text(), "archived");
 }
 
 #[test]

@@ -151,9 +151,11 @@ pub(super) fn list_pieces(model: &ScreenModel) -> Vec<ListPiece> {
             keys.push(key);
         }
     }
-    if let Some(index) = keys.iter().position(|key| key == OTHER_PROJECT) {
-        let key = keys.remove(index);
-        keys.push(key);
+    for key in [OTHER_PROJECT, ARCHIVED_GROUP] {
+        if let Some(index) = keys.iter().position(|stored| stored == key) {
+            let key = keys.remove(index);
+            keys.push(key);
+        }
     }
     let mut pieces = Vec::new();
     for key in keys {
@@ -215,6 +217,9 @@ pub(super) fn sessions_grouped(model: &ScreenModel) -> bool {
 }
 
 pub(super) fn project_key(row: &SessionRow) -> Option<String> {
+    if row.archived {
+        return Some(ARCHIVED_GROUP.to_string());
+    }
     row.project
         .as_deref()
         .map(str::trim)
@@ -228,6 +233,9 @@ pub(super) fn header_label(model: &ScreenModel, key: &str) -> String {
     }
     if key == OTHER_PROJECT {
         return OTHER_PROJECT.to_string();
+    }
+    if key == ARCHIVED_GROUP {
+        return ARCHIVED_GROUP.to_string();
     }
     model
         .sessions
@@ -281,7 +289,7 @@ pub(super) fn session_name_line(
     let mut spans = Vec::new();
     let mut room = width;
     push_cols(&mut spans, mark, name_style, &mut room);
-    if let Some((glyph, color)) = list_mark(row.status) {
+    if let Some((glyph, color)) = session_mark(row) {
         let mut icon = Style::default().fg(color);
         if is_selected {
             icon = icon.add_modifier(Modifier::BOLD);
@@ -302,6 +310,13 @@ pub(super) fn list_mark(status: Status) -> Option<(&'static str, Color)> {
         Status::Waiting => Some(("!", theme::attention())),
         Status::Working => None,
     }
+}
+
+pub(super) fn session_mark(row: &SessionRow) -> Option<(&'static str, Color)> {
+    if row.archived {
+        return Some(("\u{25cb}", theme::muted()));
+    }
+    list_mark(row.status)
 }
 
 pub(super) fn push_cols(

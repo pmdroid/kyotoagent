@@ -35,6 +35,13 @@ struct SessionColumn: SwiftUI.View {
                             .listRowSeparator(.hidden)
                             .accessibilityIdentifier("session-row-" + group.server.id + "-" + node.id)
                             .contextMenu {
+                                Button(node.session.archived ? "Unarchive session" : "Archive session") {
+                                    connections.selectServer(group.server.id)
+                                    Swift.Task {
+                                        await group.model.setArchived(node.id, archived: !node.session.archived)
+                                    }
+                                }
+                                .accessibilityIdentifier((node.session.archived ? "unarchive-" : "archive-") + node.id)
                                 Button("Delete session", role: .destructive) {
                                     connections.selectServer(group.server.id)
                                     group.model.requestDelete(node.id)

@@ -400,6 +400,8 @@ pub enum TurnError {
     NoSession,
     /// The session is waiting on a permission or a question.
     Busy,
+    /// The session is archived, so a new ask is refused until it is restored.
+    Archived,
     /// The ask queue already holds eight texts.
     QueueFull,
     /// The chat client could not be built.
@@ -427,6 +429,7 @@ impl std::fmt::Display for TurnError {
         match self {
             TurnError::NoSession => write!(f, "no such session"),
             TurnError::Busy => write!(f, "the session is already working"),
+            TurnError::Archived => write!(f, "the session is archived"),
             TurnError::QueueFull => write!(f, "the queue is full"),
             TurnError::Chat(source) => write!(f, "{source}"),
             TurnError::Session(source) => write!(f, "{source}"),
@@ -997,7 +1000,9 @@ impl Runner {
                 let _ = self.answer(&session_id, Answer::allow_once());
             }
             let _ = state.tools.tasks().settle_orphans();
-            state.tools.schedules().arm_pending();
+            if !meta.archived {
+                state.tools.schedules().arm_pending();
+            }
         }
         Ok(())
     }
@@ -1032,6 +1037,9 @@ impl Runner {
             .get(session_id)
             .cloned()
             .ok_or(TurnError::NoSession)?;
+        if state.session.meta().is_ok_and(|meta| meta.archived) {
+            return Err(TurnError::Archived);
+        }
         if let Some(command) = text
             .trim()
             .strip_prefix("/goal")
@@ -1389,6 +1397,38 @@ impl Runner {
             }
         }
         state.tools.tasks().wait_idle().await;
+    }
+
+    /// Stop a live turn and its schedules without removing the session. Archive
+    /// uses this so a restored session can take a new ask.
+    pub async fn retire(&self, session_id: &str) {
+        self.finish_for_delete(session_id).await;
+        if let Some(state) = self
+            .sessions
+            .lock()
+            .expect("the session map is not poisoned")
+            .get(session_id)
+            .cloned()
+        {
+            state.tools.schedules().abort_live();
+            state.tools.tasks().cancel_all();
+            state.retiring.store(false, Ordering::Release);
+        }
+    }
+
+    /// Arm schedules again after a session is restored.
+    pub fn resume(&self, session_id: &str) {
+        let Some(state) = self
+            .sessions
+            .lock()
+            .expect("the session map is not poisoned")
+            .get(session_id)
+            .cloned()
+        else {
+            return;
+        };
+        state.retiring.store(false, Ordering::Release);
+        state.tools.schedules().arm_pending();
     }
 
     pub fn forget(&self, session_id: &str) {

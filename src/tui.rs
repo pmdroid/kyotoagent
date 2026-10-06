@@ -298,6 +298,8 @@ pub enum Effect {
     ToggleDeleteWorkspace,
     ConfirmDelete,
     ChooseDelete(usize),
+    ArchiveSession,
+    UnarchiveSession,
     EnhanceUse,
     EnhanceEdit,
     EnhanceDiscard,
@@ -472,6 +474,8 @@ enum CommandAction {
     OpenCheckTranscripts,
     Cancel,
     CloseSession,
+    ArchiveSession,
+    UnarchiveSession,
     CloseOverlay,
     Help,
 }
@@ -561,6 +565,18 @@ fn command_catalog(_skills: &[SkillEntry]) -> Vec<CatalogRow> {
             "Esc",
             "close the open popup",
             CommandAction::CloseOverlay,
+        ),
+        catalog_row(
+            "Archive session",
+            "",
+            "hide the selected session until it is restored",
+            CommandAction::ArchiveSession,
+        ),
+        catalog_row(
+            "Unarchive session",
+            "",
+            "restore an archived session",
+            CommandAction::UnarchiveSession,
         ),
         catalog_row(
             "Delete session",
