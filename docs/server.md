@@ -23,7 +23,7 @@ unanswered permission is still waiting and its answer still lands.
 | `POST /v1/sessions/:id/answers` | Answers the open card: `allow_once`, `allow_session`, `deny`, or the reply text; `409` when that card is already settled |
 | `POST /v1/sessions/:id/cancel` | Stops that turn |
 | `POST /v1/sessions/:id/yolo` | Sets that session's yolo flag. `true` answers an open permission with `allow_once`. `false` leaves the card waiting |
-| `POST /v1/sessions/:id/archive` | `{ "archived": true }` stops the turn and hides the session. `{ "archived": false }` restores it. The directory stays. A message to an archived session is `409` |
+| `POST /v1/sessions/:id/archive` | `{ "archived": true }` stops the turn, hides the session, and removes its subagent sessions. `{ "archived": false }` restores it. The directory stays. A message to an archived session is `409` |
 
 ## Over HTTPS and HTTP/2
 

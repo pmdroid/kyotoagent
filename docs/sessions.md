@@ -15,7 +15,7 @@ A session is a directory. A turn is one JSON object per line in
 the model, the timestamps, the status, and the exact paths and argv one
 `allow_session` answer remembered. `archived` hides the session from the live
 list. The directory and the log stay, and a new ask is refused until the
-session is restored.
+session is restored. Archiving also removes that session's subagent sessions.
 
 ## Events to cards
 
