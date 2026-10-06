@@ -86,8 +86,10 @@ It then walks from the git root to the workspace. In each directory it reads
 `AGENTS.md`, `.kyotoagent/AGENTS.md`, and `.agents/AGENTS.md` in that order.
 In workspace instruction folders, a missing `AGENTS.md` permits `agents.md`
 instead. An empty file or a symlink at the uppercase path prevents that fallback.
-Without a git root, it reads the workspace directory. Empty files and
-symlinks are skipped.
+Without a git root, it reads the workspace directory. Empty files are skipped.
+A symlink is followed when its target is a regular file inside the same root:
+the project for a workspace file, and home for `~/.kyotoagent/AGENTS.md` and
+`~/.agents/AGENTS.md`. A link that leaves that root is skipped.
 
 When the combined text exceeds 32 KiB, the prompt keeps its first 32 KiB
 and final 8 KiB, separated by `AGENTS.md truncated.`. Cuts preserve UTF-8
