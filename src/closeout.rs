@@ -1552,6 +1552,84 @@ mod tests {
         std::fs::remove_file(external).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
+    fn git(dir: &Path, args: &[&str]) -> std::process::Output {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    }
+
+    #[test]
+    fn merges_only_require_checks_for_paths_that_differ_from_the_base() {
+        for conflict in [false, true] {
+            let dir = temp_dir(if conflict { "merge-conflict" } else { "merge" });
+            write_file(&dir, "version: 1\nitems:\n  - id: engine-local\n    kind: command\n    run: true\n    hint: Check engine\n    paths: ['apps/engine/**']\n  - id: worker-local\n    kind: command\n    run: true\n    hint: Check worker\n    paths: ['apps/worker/**']\n");
+            git(&dir, &["init", "-b", "main"]);
+            git(&dir, &["config", "user.name", "Closeout Test"]);
+            git(&dir, &["config", "user.email", "closeout@example.test"]);
+            for path in ["apps/engine/x", "apps/worker/y"] {
+                std::fs::create_dir_all(dir.join(path).parent().unwrap()).unwrap();
+                std::fs::write(dir.join(path), "base\n").unwrap();
+            }
+            git(&dir, &["add", "."]);
+            git(&dir, &["commit", "-m", "Base"]);
+            git(&dir, &["checkout", "-b", "feature"]);
+            std::fs::write(dir.join("apps/engine/x"), "feature\n").unwrap();
+            git(&dir, &["commit", "-am", "Engine"]);
+            git(&dir, &["checkout", "main"]);
+            std::fs::write(dir.join("apps/worker/y"), "main\n").unwrap();
+            if conflict {
+                std::fs::write(dir.join("apps/engine/x"), "main\n").unwrap();
+            }
+            git(&dir, &["commit", "-am", "Main"]);
+            git(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+            git(&dir, &["checkout", "feature"]);
+            let mut state = CloseoutState::new(&dir).unwrap();
+            state.record_write("apps/engine/x");
+            state.record_write("apps/worker/y");
+            let merged = std::process::Command::new("git")
+                .args(["merge", "origin/main", "--no-edit"])
+                .current_dir(&dir)
+                .output()
+                .unwrap();
+            assert_eq!(merged.status.success(), !conflict);
+            if !conflict {
+                std::fs::write(dir.join("apps/engine/x"), "updated feature\n").unwrap();
+            }
+            assert_eq!(state.refresh_workspace(&dir), vec!["apps/engine/x"]);
+            let items = &state.file.as_ref().unwrap().items;
+            assert!(state.is_required(&items[0]));
+            assert!(!state.is_required(&items[1]));
+            assert!(state.refresh_workspace(&dir).is_empty());
+            if conflict {
+                std::fs::write(dir.join("apps/engine/x"), "resolved feature\n").unwrap();
+                git(&dir, &["add", "."]);
+                git(&dir, &["commit", "-m", "Resolve merge"]);
+                state.refresh_workspace(&dir);
+                assert!(!state.is_required(&state.file.as_ref().unwrap().items[1]));
+            }
+            git(
+                &dir,
+                &[
+                    "restore",
+                    "--source=origin/main",
+                    "--staged",
+                    "--worktree",
+                    "apps/engine/x",
+                ],
+            );
+            assert!(!state.is_required(&state.file.as_ref().unwrap().items[0]));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
     #[test]
     fn an_id_the_file_accepts_is_lowercase_then_dashes_and_digits() {
         assert!(is_valid_id("test"));

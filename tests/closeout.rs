@@ -2260,3 +2260,102 @@ async fn stop_hook_changes_require_closeout_before_finish() {
         "changed"
     );
 }
+
+#[tokio::test]
+async fn merging_main_through_a_tool_only_requires_engine_checks() {
+    for conflict in [false, true] {
+        let mut report_reply: serde_json::Value = serde_json::from_str(&tool_call_reply(vec![(
+            "get_closeout",
+            serde_json::json!({}),
+        )]))
+        .unwrap();
+        report_reply["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] =
+            serde_json::json!("");
+        let fixture = Fixture::new(
+            if conflict {
+                "merge-conflict-paths"
+            } else {
+                "merge-paths"
+            },
+            vec![
+                Canned::Json(tool_call_reply(vec![(
+                    "run",
+                    serde_json::json!({"argv": ["sh", "-c", "printf feature > apps/engine/x; git add apps/engine/x; git commit -m Engine; git merge origin/main --no-edit"]}),
+                )])),
+                Canned::Json(report_reply.to_string()),
+                Canned::Json(tool_call_reply(vec![(
+                    "ask_question",
+                    serde_json::json!({"question": "Ready for checks?"}),
+                )])),
+            ],
+        );
+        let workspace = fixture.add_session("91bc");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&workspace)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        fixture.write_closeout(&workspace, "true");
+        fs::write(workspace.join(".kyotoagent/closeout.yaml"), "version: 1\nitems:\n  - id: engine-local\n    kind: command\n    run: true\n    hint: Check engine\n    paths: ['apps/engine/**']\n  - id: engine-review\n    kind: command\n    run: true\n    hint: Review engine\n    paths: ['apps/engine/**']\n  - id: worker-local\n    kind: command\n    run: false\n    hint: Check worker\n    paths: ['apps/worker/**']\n").unwrap();
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.name", "Closeout Test"]);
+        git(&["config", "user.email", "closeout@example.test"]);
+        for path in ["apps/engine/x", "apps/worker/y"] {
+            fs::create_dir_all(workspace.join(path).parent().unwrap()).unwrap();
+            fs::write(workspace.join(path), "base").unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "-m", "Base"]);
+        git(&["branch", "feature"]);
+        fs::write(workspace.join("apps/worker/y"), "main").unwrap();
+        if conflict {
+            fs::write(workspace.join("apps/engine/x"), "main").unwrap();
+        }
+        git(&["commit", "-am", "Main"]);
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(&["checkout", "feature"]);
+        fixture.ask("91bc", "Update engine and merge main");
+        fixture.wait_for_waiting_permission("91bc").await;
+        fixture.answer("91bc", Answer::allow_once());
+        fixture.wait_for_log("91bc", "Ready for checks?").await;
+        let log = fixture.log("91bc");
+        let changed: Vec<serde_json::Value> = log
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|event| event["kind"] == "closeout_changed")
+            .collect();
+        assert_eq!(changed.len(), 1, "{log}");
+        assert_eq!(
+            changed[0]["body"]["paths"],
+            serde_json::json!(["apps/engine/x"])
+        );
+        let reports = tool_outputs(&log, "get_closeout");
+        let report: serde_json::Value = serde_json::from_str(&reports[0]).unwrap();
+        assert_eq!(
+            report["pending"],
+            serde_json::json!(["engine-local", "engine-review"])
+        );
+        let rows = fixture.view("91bc").closeout;
+        assert!(rows
+            .iter()
+            .filter(|row| row.id.starts_with("engine-"))
+            .all(|row| row.required));
+        assert!(
+            !rows
+                .iter()
+                .find(|row| row.id == "worker-local")
+                .unwrap()
+                .required
+        );
+        assert_eq!(workspace.join(".git/MERGE_HEAD").exists(), conflict);
+        fixture.runner.cancel("91bc");
+        fixture.wait_for_status("91bc", Status::Idle).await;
+    }
+}
