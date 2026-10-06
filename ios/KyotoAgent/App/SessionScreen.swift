@@ -8,6 +8,7 @@ struct SessionColumn: SwiftUI.View {
     @State private var showNew = false
 
     var body: some SwiftUI.View {
+        @Bindable var connections = connections
         VStack(spacing: 0) {
             if let notice = model.notice, !notice.isEmpty {
                 Text(notice)

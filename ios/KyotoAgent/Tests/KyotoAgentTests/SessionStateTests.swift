@@ -386,6 +386,7 @@ final class SessionStateTests: XCTestCase {
         XCTAssertEqual(SessionListFilter.archived.next(), .all)
         let screen = try String(contentsOf: packageRoot().appendingPathComponent("App/SessionScreen.swift"), encoding: .utf8)
         XCTAssertTrue(screen.contains("session-filter"))
+        XCTAssertTrue(screen.contains("@Bindable var connections = connections"))
         XCTAssertTrue(screen.contains("SessionListFilter.allCases"))
     }
 
