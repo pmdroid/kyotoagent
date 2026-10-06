@@ -43,7 +43,7 @@ const UNKNOWN_CATALOG_CHARS: usize = 8_000;
 
 fn catalog_shell(body: &str) -> String {
     let mut out = String::from("<skills_instructions>\n## Skills\n");
-    out.push_str("Load a body with use_skill when you need it. The user may type /name.\n");
+    out.push_str("Before work, you must use_skill for skills the user names or whose descriptions clearly match the task.\n");
     out.push_str("### Available skills\n");
     out.push_str(body);
     if !body.ends_with('\n') {
@@ -663,7 +663,7 @@ mod tests {
         assert!(block.contains("skill00"), "a prefix name: {block}");
         assert!(!block.contains("skill39"), "the tail name drops: {block}");
         assert!(
-            !block.contains("desc"),
+            !block.contains(": desc"),
             "descriptions drop before names: {block}"
         );
         let omitted = 40
