@@ -117,6 +117,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn file_reads_preserve_supported_images_within_attachment_limits() {
+        let pixels = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(2048, 128, |x, y| {
+            image::Rgb([x as u8, y as u8, (x ^ y) as u8])
+        }));
+        for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::WebP] {
+            let mut bytes = Cursor::new(Vec::new());
+            pixels.write_to(&mut bytes, format).unwrap();
+            let attachment = ImageAttachment::from_file_bytes("image", bytes.get_ref()).unwrap();
+            assert!(
+                STANDARD.decode(&attachment.data).unwrap() == *bytes.get_ref(),
+                "{format:?} bytes changed"
+            );
+        }
+    }
+
+    #[test]
+    fn file_reads_fit_oversized_dimensions_to_attachment_limits() {
+        for (width, height, expected) in [(6144, 768, (4096, 512)), (768, 6144, (512, 4096))] {
+            let pixels = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                width,
+                height,
+                image::Rgb([24, 48, 96]),
+            ));
+            let mut bytes = Cursor::new(Vec::new());
+            pixels.write_to(&mut bytes, ImageFormat::Png).unwrap();
+            let attachment = ImageAttachment::from_file_bytes("image", bytes.get_ref()).unwrap();
+            let decoded =
+                image::load_from_memory(&STANDARD.decode(&attachment.data).unwrap()).unwrap();
+            assert_eq!((decoded.width(), decoded.height()), expected);
+            attachment.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn file_reads_reduce_oversized_bytes_without_returning_to_thumbnail_resolution() {
+        let mut random = 1u32;
+        let pixels =
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(1536, 1024, |_, _| {
+                random ^= random << 13;
+                random ^= random >> 17;
+                random ^= random << 5;
+                image::Rgba(random.to_le_bytes())
+            }));
+        let mut bytes = Cursor::new(Vec::new());
+        pixels.write_to(&mut bytes, ImageFormat::Png).unwrap();
+        assert!(bytes.get_ref().len() > MAX_IMAGE_BYTES);
+        let attachment = ImageAttachment::from_file_bytes("image", bytes.get_ref()).unwrap();
+        let prepared = STANDARD.decode(&attachment.data).unwrap();
+        assert!(prepared.len() <= MAX_IMAGE_BYTES);
+        let decoded = image::load_from_memory(&prepared).unwrap();
+        assert!(decoded.width() > 1024 && decoded.width() < 1536);
+        assert!(decoded.height() < 1024);
+        assert!(decoded.color().has_alpha());
+        attachment.validate().unwrap();
+    }
+
+    #[test]
     fn real_images_round_trip_and_invalid_uploads_are_rejected() {
         let image = ImageAttachment::from_bytes("dog.png", crate::splash::PNG).unwrap();
         assert!(image.data_url().starts_with("data:image/png;base64,"));

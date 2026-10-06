@@ -2514,6 +2514,12 @@ mod tests {
         assert_eq!(images.images.len(), 2);
         for image in images.images {
             image.validate().unwrap();
+            let bytes =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &image.data)
+                    .unwrap();
+            let pixels = image::load_from_memory(&bytes).unwrap();
+            assert!(pixels.width() > 1024 && pixels.height() > 1024);
+            assert!(pixels.width() <= 4096 && pixels.height() <= 4096);
         }
         for pages in ["0", "3", "2-1", "invalid"] {
             assert!(tools
