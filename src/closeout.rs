@@ -886,11 +886,7 @@ impl CloseoutFile {
     ) -> Result<Self, CloseoutError> {
         for review in self.reviews.values_mut() {
             let skill = root.join(&review.skill);
-            let canonical_root = root.canonicalize().map_err(|source| CloseoutError::Parse {
-                path: root.to_path_buf(),
-                source: source.to_string(),
-            })?;
-            validate_skill(&skill, &canonical_root)?;
+            validate_skill(&skill)?;
             retry::skill_files(skill.parent().unwrap(), &mut self.policy_files)?;
             review.skill = skill
                 .canonicalize()
@@ -1173,36 +1169,18 @@ fn is_valid_id(id: &str) -> bool {
     }
 }
 
-fn validate_skill(skill: &Path, root: &Path) -> Result<(), CloseoutError> {
-    let fail = |source: String| CloseoutError::Parse {
+fn validate_skill(skill: &Path) -> Result<(), CloseoutError> {
+    let metadata = std::fs::metadata(skill).map_err(|source| CloseoutError::Parse {
         path: skill.to_path_buf(),
-        source,
-    };
-    let canonical = skill
-        .canonicalize()
-        .map_err(|source| fail(source.to_string()))?;
-    if !canonical.starts_with(root) || !canonical.is_file() {
-        return Err(fail("skill must be a file inside the repository".into()));
+        source: source.to_string(),
+    })?;
+    if !metadata.is_file() {
+        return Err(CloseoutError::Parse {
+            path: skill.to_path_buf(),
+            source: "skill must be a regular file".into(),
+        });
     }
-    fn walk(path: &Path) -> std::io::Result<()> {
-        let metadata = std::fs::symlink_metadata(path)?;
-        if metadata.file_type().is_symlink() {
-            return Err(std::io::Error::other(
-                "symlinks are not allowed in a skill directory",
-            ));
-        }
-        if metadata.is_dir() {
-            for entry in std::fs::read_dir(path)? {
-                walk(&entry?.path())?;
-            }
-        } else if !metadata.is_file() {
-            return Err(std::io::Error::other(
-                "skill directory entries must be regular files",
-            ));
-        }
-        Ok(())
-    }
-    walk(skill.parent().unwrap()).map_err(|source| fail(source.to_string()))
+    Ok(())
 }
 
 fn is_valid_import_path(path: &str) -> bool {

@@ -42,19 +42,36 @@ pub(crate) fn skill_files(
     dir: &Path,
     files: &mut BTreeMap<PathBuf, String>,
 ) -> Result<(), CloseoutError> {
-    let entries = std::fs::read_dir(dir).map_err(|error| io_error(dir, error))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| io_error(dir, error))?;
-        let path = entry.path();
-        let metadata = entry.file_type().map_err(|error| io_error(&path, error))?;
-        if metadata.is_dir() {
-            skill_files(&path, files)?;
-        } else if metadata.is_file() {
-            let bytes = std::fs::read(&path).map_err(|error| io_error(&path, error))?;
-            files.insert(path, hash(&bytes));
+    fn walk(
+        dir: &Path,
+        files: &mut BTreeMap<PathBuf, String>,
+        ancestors: &mut std::collections::HashSet<PathBuf>,
+    ) -> Result<(), CloseoutError> {
+        let canonical = dir.canonicalize().map_err(|error| io_error(dir, error))?;
+        if !ancestors.insert(canonical.clone()) {
+            return Err(io_error(dir, "skill directory contains a symlink cycle"));
         }
+        let entries = std::fs::read_dir(dir).map_err(|error| io_error(dir, error))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| io_error(dir, error))?;
+            let path = entry.path();
+            let metadata = std::fs::metadata(&path).map_err(|error| io_error(&path, error))?;
+            if metadata.is_dir() {
+                walk(&path, files, ancestors)?;
+            } else if metadata.is_file() {
+                let bytes = std::fs::read(&path).map_err(|error| io_error(&path, error))?;
+                files.insert(path, hash(&bytes));
+            } else {
+                return Err(io_error(
+                    &path,
+                    "skill directory entries must be regular files",
+                ));
+            }
+        }
+        ancestors.remove(&canonical);
+        Ok(())
     }
-    Ok(())
+    walk(dir, files, &mut std::collections::HashSet::new())
 }
 
 fn io_error(path: &Path, error: impl std::fmt::Display) -> CloseoutError {
