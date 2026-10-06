@@ -2057,6 +2057,25 @@ async fn pr_creation_requires_another_pass_after_a_new_write() {
 
 #[tokio::test]
 async fn imported_review_uses_a_fresh_read_only_session_and_retains_its_findings() {
+    imported_review_candidate("imported-review", false, false, false).await;
+}
+
+#[tokio::test]
+async fn imported_review_includes_committed_changes() {
+    imported_review_candidate("committed-review", true, false, false).await;
+}
+
+#[tokio::test]
+async fn imported_review_includes_committed_and_pending_changes() {
+    imported_review_candidate("partial-review", true, true, false).await;
+}
+
+#[tokio::test]
+async fn imported_review_rejects_written_paths_with_an_empty_diff() {
+    imported_review_candidate("empty-review", false, false, true).await;
+}
+
+async fn imported_review_candidate(name: &str, committed: bool, pending: bool, empty: bool) {
     let replies = vec![
         Canned::Json(tool_call_reply(vec![(
             "write_file",
@@ -2091,7 +2110,7 @@ async fn imported_review_uses_a_fresh_read_only_session_and_retains_its_findings
             serde_json::json!({"text":"Verified", "proof":"review passed"}),
         )])),
     ];
-    let fixture = Fixture::new("imported-review", replies);
+    let fixture = Fixture::new(name, replies);
     let workspace = fixture.add_session("91bc");
     fs::create_dir_all(workspace.join(".agents/closeout")).unwrap();
     fs::create_dir_all(workspace.join(".agents/skills/review")).unwrap();
@@ -2106,18 +2125,72 @@ async fn imported_review_uses_a_fresh_read_only_session_and_retains_its_findings
     )
     .unwrap();
     fs::write(workspace.join(".agents/closeout/review.yaml"), "specVersion: '0.1'\nitems:\n  - id: review\n    kind: review\n    gate: beforePR\n    skill: .agents/skills/review/SKILL.md\n    independence:\n      differentSession: true\n      differentModel: true\n    failOn: P1\n").unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&workspace)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "Reviewer Test"]);
+    git(&["config", "user.email", "review@example.test"]);
+    fs::write(workspace.join("changed.txt"), "original\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "Base candidate"]);
+    git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
     fixture.ask("91bc", "Write and review");
     fixture.respond("91bc", Answer::allow_once()).await;
+    fixture.wait_for_waiting_permission("91bc").await;
+    if committed {
+        git(&["add", "changed.txt"]);
+        git(&["commit", "-m", "Commit candidate before review"]);
+    }
+    if pending {
+        fs::write(workspace.join("pending.txt"), "pending change\n").unwrap();
+        git(&["add", "pending.txt"]);
+        fs::write(workspace.join("changed.txt"), "candidate\npending edit\n").unwrap();
+    }
+    if empty {
+        git(&["restore", "changed.txt"]);
+    }
     fixture.respond("91bc", Answer::allow_once()).await;
+    if empty {
+        fixture.wait_for_closeout_runs("91bc", 1).await;
+        fixture.runner.cancel("91bc");
+    }
     fixture.wait_for_status("91bc", Status::Idle).await;
     let outputs = tool_outputs(&fixture.log("91bc"), "get_closeout");
     let report: serde_json::Value = serde_json::from_str(&outputs[0]).unwrap();
     assert_eq!(report["pending"], serde_json::json!(["quality/review"]));
     assert_eq!(report["required"][0]["different_model"], true);
     assert_eq!(report["required"][0]["kind"], "review");
+    if empty {
+        let log = fixture.log("91bc");
+        assert!(log.contains("Review evaluated as invalid"));
+        assert_eq!(
+            fixture.view("91bc").closeout[0].status,
+            view::CloseoutStatus::Failed
+        );
+        assert!(!fixture
+            .prompts()
+            .iter()
+            .any(|body| body.contains("Tracked git diff:")));
+        return;
+    }
     assert_eq!(
         fs::read_to_string(workspace.join("changed.txt")).unwrap(),
-        "candidate"
+        if pending {
+            "candidate\npending edit\n"
+        } else {
+            "candidate"
+        }
     );
     let row = &fixture.view("91bc").closeout[0];
     assert_eq!(row.id, "quality/review");
@@ -2136,6 +2209,12 @@ async fn imported_review_uses_a_fresh_read_only_session_and_retains_its_findings
         .find(|body| body.contains("Inspect each changed file"))
         .unwrap();
     let body: serde_json::Value = serde_json::from_str(review_prompt).unwrap();
+    assert!(review_prompt.contains("-original"));
+    assert!(review_prompt.contains("+candidate"));
+    if pending {
+        assert!(review_prompt.contains("+pending edit"));
+        assert!(review_prompt.contains("+pending change"));
+    }
     assert_eq!(body["model"], "test/reviewer");
     assert!(body["tools"]
         .as_array()
