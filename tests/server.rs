@@ -2963,6 +2963,40 @@ async fn archive_hides_the_session_and_unarchive_restores_it() {
 }
 
 #[tokio::test]
+async fn archive_removes_subagent_sessions() {
+    let fixture = Fixture::new("archive-children", Vec::new()).await;
+    let id = fixture.add_session("notes").await;
+    let sessions = fixture.root.join("sessions");
+    let child_dir = sessions.join("child01");
+    let workspace = fixture.workspace("notes");
+    let mut child = kyotoagent::session::SessionMeta::new(
+        "child01",
+        &workspace,
+        "test/model",
+        "2026-10-06T00:00:00.000Z",
+    );
+    child.parent_id = Some(id.clone());
+    kyotoagent::session::Session::at(&child_dir)
+        .create(&child)
+        .expect("child session");
+    fixture
+        .runner
+        .add_session(&kyotoagent::session::Session::at(&child_dir))
+        .expect("child loads");
+
+    let (status, response) = fixture
+        .client
+        .request("POST", &format!("/v1/sessions/{id}/archive"), None)
+        .await;
+    assert_eq!(status, 204, "{response}");
+    assert!(!child_dir.exists(), "the subagent session is removed");
+    assert!(sessions.join(&id).join("meta.json").is_file());
+    let listed = fixture.client.list().await;
+    assert!(listed.iter().any(|row| row["id"] == id));
+    assert!(!listed.iter().any(|row| row["id"] == "child01"));
+}
+
+#[tokio::test]
 async fn delete_session_is_204_and_an_unknown_id_is_404() {
     let fixture = Fixture::new("delete-session", write_then_finish()).await;
     let id = fixture.add_session("notes").await;

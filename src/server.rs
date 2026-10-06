@@ -26,7 +26,8 @@
 //! - `DELETE /v1/sessions/:id` stops the turn, removes a worktree child, and
 //!   deletes the session directory.
 //! - `POST /v1/sessions/:id/archive` stops the turn and hides the session.
-//!   `POST` with `{ "archived": false }` restores it. The directory stays.
+//!   Its subagent sessions are removed. `POST` with `{ "archived": false }`
+//!   restores the session. The directory stays.
 //! - `DELETE /v1/sessions/:id/worktree` removes the git worktree and keeps the
 //!   session.
 
@@ -64,6 +65,7 @@ use crate::events::{now, open_enhance, Decision, EventKind};
 use crate::permit::Answer;
 use crate::screen::Status;
 use crate::session::{AllowList, Session, SessionError, SessionMeta, EVENTS_FILE};
+use crate::subagent;
 use crate::tools::{ToolError, Tools};
 use crate::turn::{Runner, TurnError};
 
@@ -1343,7 +1345,9 @@ fn default_archive() -> bool {
 }
 
 /// Stop the turn and hide the session, or restore it. The directory stays.
-/// An empty body archives. `{ "archived": false }` restores.
+/// An empty body archives. `{ "archived": false }` restores. Archiving also
+/// removes every subagent of that session, because a hidden parent cannot
+/// use them.
 async fn set_archive(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
@@ -1362,6 +1366,10 @@ async fn set_archive(
         return Err(ApiError::not_found());
     }
     if archived {
+        let children = child_ids(&state.root, &id);
+        for child in &children {
+            remove_child(&state, child).await;
+        }
         state.runner.retire(&id).await;
     }
     session
@@ -1375,6 +1383,33 @@ async fn set_archive(
         state.runner.resume(&id);
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn child_ids(root: &Path, parent: &str) -> Vec<String> {
+    session_dirs(root)
+        .into_iter()
+        .filter_map(|dir| {
+            let meta = Session::at(&dir).meta().ok()?;
+            (meta.parent_id.as_deref() == Some(parent)).then_some(meta.id)
+        })
+        .collect()
+}
+
+async fn remove_child(state: &AppState, id: &str) {
+    let dir = session_dir(&state.root, id);
+    let Ok(meta) = Session::at(&dir).meta() else {
+        return;
+    };
+    state.runner.finish_for_delete(id).await;
+    if meta.isolation.as_deref() == Some("worktree") {
+        let dest = PathBuf::from(&meta.workspace);
+        let repo = parent_workspace(&state.root, &meta)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| dest.clone());
+        subagent::remove_worktree(&repo, &dest);
+    }
+    state.runner.forget(id);
+    let _ = fs::remove_dir_all(&dir);
 }
 
 async fn delete_session(
