@@ -1435,6 +1435,9 @@ fn parent_workspace(root: &Path, meta: &SessionMeta) -> Option<String> {
 }
 
 fn removes_worktree(root: &Path, meta: &SessionMeta) -> bool {
+    if meta.parent_id.is_some() {
+        return meta.isolation.as_deref() == Some("worktree");
+    }
     meta.isolation.as_deref() == Some("worktree") || under_worktrees(root, &meta.workspace)
 }
 
