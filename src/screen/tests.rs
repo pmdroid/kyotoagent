@@ -2119,12 +2119,13 @@ fn a_long_session_list_scrolls_and_keeps_clicks_on_the_visible_row() {
     assert!(bottom.contains("session 11"), "{bottom}");
     let list = split_of(&model, area).list;
     let inner = Block::bordered().inner(list);
-    let top_row = list_at(&model, area, inner.x + 2, inner.y);
+    let session_row = inner.y + u16::from(inner.height > 1);
+    let top_row = list_at(&model, area, inner.x + 2, session_row);
     assert_ne!(top_row, Some(ListHit::Session("id00".into())));
     assert!(matches!(top_row, Some(ListHit::Session(_))));
     model.list_scroll = 0;
     assert_eq!(
-        list_at(&model, area, inner.x + 2, inner.y),
+        list_at(&model, area, inner.x + 2, session_row),
         Some(ListHit::Session("id00".into()))
     );
     model.selected = "id11".into();

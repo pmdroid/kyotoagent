@@ -385,6 +385,7 @@ pub fn screen_model(app: &App) -> ScreenModel {
         collapsed: app.collapsed.clone(),
         list_header: app.list_header.clone(),
         list_scroll: app.list_scroll,
+        list_filter: app.list_filter,
     }
 }
 

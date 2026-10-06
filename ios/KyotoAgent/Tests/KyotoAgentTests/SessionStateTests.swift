@@ -370,6 +370,25 @@ final class SessionStateTests: XCTestCase {
         XCTAssertFalse(transcript.contains("\"More\""))
     }
 
+    func testTheSessionFilterKeepsRunningQuestionsAndArchivedApart() throws {
+        let running = try session("run1", .working)
+        let asking = try session("ask1", .waiting, waiting: "question")
+        let permission = try session("perm1", .waiting, waiting: "permission")
+        let idle = try session("idle1", .idle)
+        var archived = try session("old1", .idle)
+        archived.archived = true
+        let rows = [running, asking, permission, idle, archived]
+        XCTAssertEqual(filteredSessions(rows, filter: .all).map(\.id), ["run1", "ask1", "perm1", "idle1"])
+        XCTAssertEqual(filteredSessions(rows, filter: .running).map(\.id), ["run1"])
+        XCTAssertEqual(filteredSessions(rows, filter: .questions).map(\.id), ["ask1"])
+        XCTAssertEqual(filteredSessions(rows, filter: .archived).map(\.id), ["old1"])
+        XCTAssertEqual(SessionListFilter.all.next(), .running)
+        XCTAssertEqual(SessionListFilter.archived.next(), .all)
+        let screen = try String(contentsOf: packageRoot().appendingPathComponent("App/SessionScreen.swift"), encoding: .utf8)
+        XCTAssertTrue(screen.contains("session-filter"))
+        XCTAssertTrue(screen.contains("SessionListFilter.allCases"))
+    }
+
     func testASessionTapShowsDetailForTheCurrentIdAndADifferentId() throws {
         XCTAssertEqual(compactColumn(after: .session("a11a0001"), selection: "a11a0001"), .detail)
         XCTAssertEqual(compactColumn(after: .session("b0b0b0b0"), selection: "a11a0001"), .detail)

@@ -55,7 +55,11 @@ evidence is not lost to a short card.
 ## The turn loop
 
 `turn::Runner` runs one ask as a tool loop against the chat client. The core tools include `read_file`, `grep`, `list_dir`, `search_replace`, `write_file`,
-`run`, `get_closeout`, `run_closeout`, `ask`, `finish`, and `use_skill`.
+`run`, `get_closeout`, `run_closeout`, `ask`, `archive_session`, `finish`, and `use_skill`.
+
+`archive_session` only archives. It hides the named session, or this session
+when no id is passed. Archiving another session also stops its turn. The
+directory and the log stay. The tool cannot restore or delete a session.
 
 - A read, a search, or a list inside the workspace runs immediately.
 - A write, a command, or an outside read waits on the gate, and the session reads

@@ -15,6 +15,7 @@ pub(super) fn render_list(model: &ScreenModel, area: Rect, frame: &mut Frame) {
     let mut bands: Vec<bool> = Vec::new();
     for piece in list_pieces(model) {
         match piece.hit {
+            ListHit::Filter => continue,
             ListHit::Header(key) => {
                 let selected = model.list_header.as_deref() == Some(key.as_str());
                 let mark = if model.collapsed.contains(&key) {
@@ -98,7 +99,8 @@ pub(super) fn render_list(model: &ScreenModel, area: Rect, frame: &mut Frame) {
         }
     }
     if inner.height > 0 {
-        let filled = inner.height.saturating_sub(1) as usize;
+        let filter = inner.height > 1;
+        let filled = inner.height.saturating_sub(1 + u16::from(filter)) as usize;
         let hints = Line::from(vec![
             Span::styled("ctrl-n/p", theme::quiet_key()),
             Span::raw("  "),
@@ -112,6 +114,9 @@ pub(super) fn render_list(model: &ScreenModel, area: Rect, frame: &mut Frame) {
         let shown_bands: Vec<bool> = bands.into_iter().skip(scroll).take(filled).collect();
         while body.len() < filled {
             body.push(Line::from(""));
+        }
+        if filter {
+            body.insert(0, filter_line(model, width));
         }
         body.push(hints);
         for (index, line) in body.iter_mut().enumerate() {
@@ -128,8 +133,50 @@ pub(super) fn render_list(model: &ScreenModel, area: Rect, frame: &mut Frame) {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ListHit {
+    Filter,
     Header(String),
     Session(String),
+}
+
+fn filter_line(model: &ScreenModel, width: usize) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut room = width;
+    for (index, filter) in ListFilter::ORDER.iter().enumerate() {
+        if index > 0 {
+            push_cols(&mut spans, " ", theme::faint(), &mut room);
+        }
+        let style = if model.list_filter == *filter {
+            Style::default()
+                .fg(theme::text())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            theme::faint()
+        };
+        push_cols(&mut spans, filter.label(), style, &mut room);
+    }
+    if room > 0 {
+        spans.push(Span::styled(" ".repeat(room), Style::default()));
+    }
+    Line::from(spans)
+}
+
+pub fn filter_at(column: usize) -> Option<ListFilter> {
+    let mut cursor = 0usize;
+    for (index, filter) in ListFilter::ORDER.iter().enumerate() {
+        if index > 0 {
+            if column == cursor {
+                return None;
+            }
+            cursor += 1;
+        }
+        let label = filter.label();
+        let end = cursor + UnicodeWidthStr::width(label);
+        if column >= cursor && column < end {
+            return Some(*filter);
+        }
+        cursor = end;
+    }
+    None
 }
 
 pub(super) struct ListPiece {
@@ -140,10 +187,10 @@ pub(super) fn list_pieces(model: &ScreenModel) -> Vec<ListPiece> {
     let shown: Vec<SessionRow> = model
         .sessions
         .iter()
-        .filter(|row| !row.hidden)
+        .filter(|row| !row.hidden && row_matches_filter(row, model.list_filter))
         .cloned()
         .collect();
-    if !sessions_grouped(model) {
+    if !sessions_grouped(model) || model.list_filter != ListFilter::All {
         return nest_rows(&shown)
             .into_iter()
             .map(|row| ListPiece {
@@ -360,11 +407,50 @@ mod tests {
             .iter()
             .filter_map(|piece| match &piece.hit {
                 ListHit::Session(id) => Some(id.as_str()),
-                ListHit::Header(_) => None,
+                ListHit::Header(_) | ListHit::Filter => None,
             })
             .collect();
         assert!(!ids.contains(&"c0ffee00"), "{ids:?}");
         assert!(ids.contains(&"visible1"), "{ids:?}");
         assert!(ids.contains(&"91bc7a1d"), "{ids:?}");
+    }
+
+    #[test]
+    fn a_list_filter_keeps_running_questions_and_archived_apart() {
+        let mut model = crate::mock::children();
+        model.sessions[0].status = Status::Working;
+        model.sessions.push(SessionRow {
+            id: "ask1".into(),
+            status: Status::Waiting,
+            waiting: Some(Wait::Question),
+            title: Some("needs a question".into()),
+            ..model.sessions[0].clone()
+        });
+        model.sessions.push(SessionRow {
+            id: "old1".into(),
+            archived: true,
+            title: Some("old session".into()),
+            ..model.sessions[0].clone()
+        });
+        let mut ids = |filter: ListFilter| {
+            model.list_filter = filter;
+            list_pieces(&model)
+                .into_iter()
+                .filter_map(|piece| match piece.hit {
+                    ListHit::Session(id) => Some(id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(ids(ListFilter::All).contains(&"91bc7a1d".to_string()));
+        assert!(!ids(ListFilter::All).iter().any(|id| id == "old1"));
+        let running = ids(ListFilter::Running);
+        assert!(running.contains(&"91bc7a1d".to_string()), "{running:?}");
+        assert!(!running.iter().any(|id| id == "ask1" || id == "old1"));
+        assert_eq!(ids(ListFilter::Questions), vec!["ask1".to_string()]);
+        assert_eq!(ids(ListFilter::Archived), vec!["old1".to_string()]);
+        assert_eq!(filter_at(0), Some(ListFilter::All));
+        assert_eq!(filter_at(4), Some(ListFilter::Running));
+        assert_eq!(ListFilter::Archived.next(), ListFilter::All);
     }
 }

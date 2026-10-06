@@ -19,6 +19,17 @@ struct SessionColumn: SwiftUI.View {
                     .accessibilityIdentifier("session-notice")
             }
             List {
+                Section {
+                    Picker("Filter", selection: $connections.sessionFilter) {
+                        ForEach(SessionListFilter.allCases) { filter in
+                            Text(filter.label).tag(filter)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("session-filter")
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
                 ForEach(connections.projectGroups) { group in
                     Section {
                         ForEach(group.nodes) { node in

@@ -37,6 +37,51 @@ nonisolated public struct SessionLine: Equatable, Sendable {
     }
 }
 
+nonisolated public enum SessionListFilter: String, CaseIterable, Equatable, Sendable, Identifiable {
+    case all
+    case running
+    case questions
+    case archived
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .all:
+            return "All"
+        case .running:
+            return "Running"
+        case .questions:
+            return "Questions"
+        case .archived:
+            return "Archived"
+        }
+    }
+
+    public func next() -> SessionListFilter {
+        let values = Self.allCases
+        let index = values.firstIndex(of: self) ?? 0
+        return values[(index + 1) % values.count]
+    }
+}
+
+nonisolated public func sessionMatches(_ session: Session, filter: SessionListFilter) -> Bool {
+    switch filter {
+    case .all:
+        return !session.archived
+    case .running:
+        return !session.archived && session.status == .working
+    case .questions:
+        return !session.archived && session.status == .waiting && session.waiting == "question"
+    case .archived:
+        return session.archived
+    }
+}
+
+nonisolated public func filteredSessions(_ rows: [Session], filter: SessionListFilter) -> [Session] {
+    rows.filter { sessionMatches($0, filter: filter) }
+}
+
 nonisolated public func nestedSessions(_ rows: [Session]) -> [SessionNode] {
     let rows = rows.filter { !$0.hidden }
     let ids = Set(rows.map(\.id))

@@ -1,14 +1,14 @@
  ☰  Kyoto Agent                                     3 sessions · 0 waiting ▦
 ╭ sessions ──────────────────╮╭ ~/work/kyotoagent ─────────────────────────╮
-│▸ ✓ kyotoagent              ││                                            │
-│  idle                      ││▎ RESULT                                    │
-│                            │││ Done                                      │
-│  ✓ acpbot                  │││                                           │
-│  idle                      │││ • wrote README.md                         │
+│all running questions archiv││                                            │
+│▸ ✓ kyotoagent              ││▎ RESULT                                    │
+│  idle                      │││ Done                                      │
 │                            │││                                           │
-│  ✓ notes                   │││ fn main() {}                              │
+│  ✓ acpbot                  │││ • wrote README.md                         │
 │  idle                      │││                                           │
-│                            │││ docs (https://example.com)                │
+│                            │││ fn main() {}                              │
+│  ✓ notes                   │││                                           │
+│  idle                      │││ docs (https://example.com)                │
 │                            ││                                            │
 │                            ││                                            │
 │                            ││                                            │

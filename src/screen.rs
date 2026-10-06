@@ -112,6 +112,52 @@ pub const PRODUCT: &str = "Kyoto Agent";
 pub const OTHER_PROJECT: &str = "other";
 pub const ARCHIVED_GROUP: &str = "archived";
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ListFilter {
+    #[default]
+    All,
+    Running,
+    Questions,
+    Archived,
+}
+
+impl ListFilter {
+    pub const ORDER: [ListFilter; 4] = [
+        ListFilter::All,
+        ListFilter::Running,
+        ListFilter::Questions,
+        ListFilter::Archived,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ListFilter::All => "all",
+            ListFilter::Running => "running",
+            ListFilter::Questions => "questions",
+            ListFilter::Archived => "archived",
+        }
+    }
+
+    pub fn next(self) -> ListFilter {
+        let index = Self::ORDER
+            .iter()
+            .position(|filter| *filter == self)
+            .unwrap_or(0);
+        Self::ORDER[(index + 1) % Self::ORDER.len()]
+    }
+}
+
+pub fn row_matches_filter(row: &SessionRow, filter: ListFilter) -> bool {
+    match filter {
+        ListFilter::All => !row.archived,
+        ListFilter::Running => !row.archived && row.status == Status::Working,
+        ListFilter::Questions => {
+            !row.archived && row.status == Status::Waiting && row.waiting == Some(Wait::Question)
+        }
+        ListFilter::Archived => row.archived,
+    }
+}
+
 /// The first four characters of a session id, as the list shows it.
 pub fn short_id(id: &str) -> String {
     id.chars().take(4).collect()
@@ -733,6 +779,7 @@ pub struct ScreenModel {
     pub collapsed: BTreeSet<String>,
     pub list_header: Option<String>,
     pub list_scroll: usize,
+    pub list_filter: ListFilter,
     pub context_percent: Option<u32>,
 }
 
@@ -796,6 +843,7 @@ impl Default for ScreenModel {
             collapsed: BTreeSet::new(),
             list_header: None,
             list_scroll: 0,
+            list_filter: ListFilter::All,
             context_percent: None,
         }
     }
@@ -1587,7 +1635,7 @@ pub fn list_line_count(model: &ScreenModel) -> usize {
     list_pieces(model)
         .into_iter()
         .map(|piece| match piece.hit {
-            ListHit::Header(_) => 1,
+            ListHit::Filter | ListHit::Header(_) => 1,
             ListHit::Session(_) => 3,
         })
         .sum()
@@ -1599,7 +1647,8 @@ pub fn list_body_height(model: &ScreenModel, area: Rect) -> usize {
         return 0;
     }
     let inner = Block::bordered().inner(list);
-    usize::from(inner.height.saturating_sub(1))
+    let filter = u16::from(inner.height > 1);
+    usize::from(inner.height.saturating_sub(1 + filter))
 }
 
 pub fn list_scroll_max(model: &ScreenModel, area: Rect) -> usize {
@@ -1620,10 +1669,11 @@ pub fn list_scroll_for(model: &ScreenModel, area: Rect, scroll: usize) -> usize 
     let mut cursor = 0usize;
     for piece in list_pieces(model) {
         let lines = match piece.hit {
-            ListHit::Header(_) => 1,
+            ListHit::Filter | ListHit::Header(_) => 1,
             ListHit::Session(_) => 3,
         };
         let wanted = match &piece.hit {
+            ListHit::Filter => false,
             ListHit::Header(key) => model.list_header.as_deref() == Some(key.as_str()),
             ListHit::Session(id) => model.list_header.is_none() && model.selected == *id,
         };
