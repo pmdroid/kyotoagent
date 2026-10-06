@@ -1,14 +1,14 @@
  ☰  Kyoto Agent                                     3 sessions · 0 waiting ▦
 ╭ sessions ──────────────────╮╭ ~/work/acpbot ─────╮╭ todos ───────────────x
-│  ✓ kyotoagent              ││                    ││███░░░░░░░ 1/3  2 left│
-│  idle                      ││               ASK ▎││✓ Read the crate      │
-│                            ││       What is the ▎││▸ Write the todo tool │
-│▸ acpbot                    ││           package ▎││· Draw the right pane │
-│  working                   ││           name in ▎││                      │
-│                            ││       Cargo.toml? ▎││                      │
+│all running questions archiv││                    ││███░░░░░░░ 1/3  2 left│
+│  ✓ kyotoagent              ││               ASK ▎││✓ Read the crate      │
+│  idle                      ││       What is the ▎││▸ Write the todo tool │
+│                            ││           package ▎││· Draw the right pane │
+│▸ acpbot                    ││           name in ▎││                      │
+│  working                   ││       Cargo.toml? ▎││                      │
+│                            ││                    ││                      │
 │  ✓ notes                   ││                    ││                      │
 │  idle                      ││                    ││                      │
-│                            ││                    ││                      │
 │                            ││                    ││                      │
 │                            ││                    ││                      │
 │                            ││                    ││                      │

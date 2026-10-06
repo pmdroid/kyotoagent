@@ -40,10 +40,11 @@ impl Default for SkillEntry {
 }
 
 const UNKNOWN_CATALOG_CHARS: usize = 8_000;
+const WORK_INSTRUCTIONS: &str = include_str!("prompts/work.md");
 
 fn catalog_shell(body: &str) -> String {
     let mut out = String::from("<skills_instructions>\n## Skills\n");
-    out.push_str("Load a body with use_skill when you need it. The user may type /name.\n");
+    out.push_str("Before work, you must use_skill for skills the user names or whose descriptions clearly match the task.\n");
     out.push_str("### Available skills\n");
     out.push_str(body);
     if !body.ends_with('\n') {
@@ -179,7 +180,7 @@ Add no comments. Commit only when the user asks. Use URLs from the user or from 
 
 pub const ARTIFACT_LINE: &str = "You decide which useful files to share. `attach_artifact` is the only tool that publishes clickable chat artifacts and retains session copies. Attach requested deliverables or evidence supporting a meaningful claim: Markdown reports, screenshots/images, videos or relevant terminal transcripts. Do not attach routine tool output, transient lookup errors or a duplicate response merely to finish a turn. Answers, clarification and progress need no attachment. Include git_sha when documenting or verifying a specific commit. Exercise the feature and capture its observed result; never invent verification data. Correct attachment errors and give a short matching response. Code changes need appropriate verification, which can be a recorded check without an artifact. Closeout retains actual check transcripts without publishing them; use the returned file_id with attach_artifact only when useful to share. An attachment never passes a check. Keep failure, timeout and stale outcomes truthful.\n";
 
-const DELEGATE_LINE: &str = "When the user asks you to delegate, launching the children is part of doing the work, so call `spawn_subagent` near the start. Independent children belong in one turn. Leave `run_in_background` true. A child is hidden from the session list. Set `visible` true only when the user should watch that child. Call `check_task` with every id when you need all of them. timeout_sec waits until every listed child is idle.\nWhen you are done with a child, call `kill_task` with its id. That removes the session and its worktree. Clean up every child you started before you finish the turn.\n";
+const DELEGATE_LINE: &str = "When the user asks you to delegate, launching the children is part of doing the work, so call `spawn_subagent` near the start. Independent children belong in one turn. Leave `run_in_background` true. A child is hidden from the session list. Set `visible` true only when the user should watch that child. Call `check_task` with every id when you need all of them. timeout_sec waits until every listed child is idle.\nWhen you are done with a child, call `kill_task` with its id. That removes the session and its worktree. Clean up every child you started before you finish the turn.\n`archive_session` only archives. It stops the turn and hides the session. The directory and the log stay. It cannot restore or delete a session.\n";
 
 fn agents_block(agents: &str) -> String {
     if agents.is_empty() {
@@ -243,6 +244,8 @@ pub fn prompt_parts(
     prefix.push_str("You are Kyoto Agent, a coding agent working in ");
     prefix.push_str(workspace);
     prefix.push_str(".\n\n");
+    prefix.push_str(WORK_INSTRUCTIONS);
+    prefix.push('\n');
     prefix.push_str(&agents_block(agents));
 
     let skills_block = skills_catalog(skills, context_length);
@@ -294,6 +297,8 @@ pub fn subagent_prompt(
     text.push_str(
         "If a decision is missing, call `finish` anyway. Put what you did in `text`, and name the decision you needed. Leave `proof` empty when it would only repeat `text`.\n\n",
     );
+    text.push_str(WORK_INSTRUCTIONS);
+    text.push('\n');
     text.push_str(&agents_block(agents));
     text.push_str(&skills_catalog(skills, context_length));
     text.push_str(&closeout_block(closeout, true));
@@ -647,7 +652,7 @@ mod tests {
         assert!(block.contains("skill00"), "a prefix name: {block}");
         assert!(!block.contains("skill39"), "the tail name drops: {block}");
         assert!(
-            !block.contains("desc"),
+            !block.contains(": desc"),
             "descriptions drop before names: {block}"
         );
         let omitted = 40
@@ -686,7 +691,6 @@ mod tests {
     fn an_empty_agents_string_omits_the_section() {
         let prompt = system_prompt("/w", &[], None, "", None);
         assert!(!prompt.contains("Project instructions"), "{prompt}");
-        assert!(!prompt.contains("AGENTS.md"), "{prompt}");
     }
 
     #[test]
@@ -705,6 +709,10 @@ mod tests {
             "{prompt}"
         );
         assert!(prompt.contains("call `kill_task` with its id"), "{prompt}");
+        assert!(
+            prompt.contains("`archive_session` only archives"),
+            "{prompt}"
+        );
         assert!(prompt.contains("A child is hidden"), "{prompt}");
         assert!(
             prompt.contains("Clean up every child you started"),

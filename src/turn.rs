@@ -75,6 +75,7 @@ pub fn known_tool_names() -> &'static [&'static str] {
         "check_task",
         "kill_task",
         "spawn_subagent",
+        "archive_session",
         "schedule",
         "cancel_schedule",
         "get_closeout",
@@ -235,6 +236,16 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
             }),
         ),
         Tool::new(
+            "archive_session",
+            "Archive a session. Pass id, or omit it to archive this session. This only archives. It cannot restore or delete a session.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                },
+            }),
+        ),
+        Tool::new(
             "schedule",
             "Wake after a number of minutes with a note.",
             serde_json::json!({
@@ -311,7 +322,7 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "use_skill",
-            "Load a skill's instructions by name.",
+            "Load a skill's instructions by name. Before task work, compare the request with the available skill descriptions and load clearly matching skills without waiting for a slash command. Follow the loaded instructions. Reconsider matching skills when moving to verification or shipping.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -682,6 +693,7 @@ impl Flight {
             "run" | "start_task" | "check_task" | "kill_task" => "Running",
             "run_closeout" => "Verifying",
             "spawn_subagent" => "Delegating",
+            "archive_session" => "Archiving",
             "schedule" | "cancel_schedule" => "Scheduling",
             "todo" => "Organizing",
             "ask" => "Waiting",
@@ -1945,6 +1957,7 @@ mod tests {
             ("check_task", "Running"),
             ("kill_task", "Running"),
             ("spawn_subagent", "Delegating"),
+            ("archive_session", "Archiving"),
             ("schedule", "Scheduling"),
             ("cancel_schedule", "Scheduling"),
             ("get_closeout", "Reading"),

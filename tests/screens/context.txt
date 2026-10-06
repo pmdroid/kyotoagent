@@ -1,14 +1,14 @@
  ☰  Kyoto Agent  12%                                3 sessions · 0 waiting ▦
 ╭ sessions ──────────────────╮╭ ~/work/kyotoagent ─────────────────────────╮
-│▸ ✓ kyotoagent              ││                                            │
-│  idle                      ││▎ RESULT                                    │
-│                            │││ The readme now names the                  │
-│  ✓ acpbot                  │││ binary under the heading                  │
-│  idle                      ││╭──────────────────────────────────────────x│
-│                            │││CONTEXT  12%  ·  31,200 / 256,000         ││
-│  ✓ notes                   │││Estimated current request                 ││
-│  idle                      │││Last request  30,000                      ││
-│                            │││system  2,100                             ││
+│all running questions archiv││                                            │
+│▸ ✓ kyotoagent              ││▎ RESULT                                    │
+│  idle                      │││ The readme now names the                  │
+│                            │││ binary under the heading                  │
+│  ✓ acpbot                  ││╭──────────────────────────────────────────x│
+│  idle                      │││CONTEXT  12%  ·  31,200 / 256,000         ││
+│                            │││Estimated current request                 ││
+│  ✓ notes                   │││Last request  30,000                      ││
+│  idle                      │││system  2,100                             ││
 │                            │││tools  4,800                              ││
 │                            │││skills  400                               ││
 │                            │││messages  23,900                          ││

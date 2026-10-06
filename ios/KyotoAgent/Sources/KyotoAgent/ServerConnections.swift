@@ -37,6 +37,7 @@ public final class ServerConnections {
     public var address = ""
     public private(set) var models: [String: AppModel]
     public var visibleSessionID: String?
+    public var sessionFilter: SessionListFilter = .all
     public private(set) var notificationRevision = 0
     public var notificationsChanged: (@MainActor () async -> Void)?
     public var serverRemoved: (@MainActor (SavedServer) -> Void)?
@@ -294,7 +295,7 @@ public final class ServerConnections {
                     projectID: id,
                     name: candidate.projects.first { $0.id == id }?.name ?? id ?? "Other",
                     model: candidate,
-                    nodes: nestedSessions(candidate.sessions.filter { $0.project == id })
+                    nodes: nestedSessions(filteredSessions(candidate.sessions.filter { $0.project == id }, filter: sessionFilter))
                 )
             }
         }

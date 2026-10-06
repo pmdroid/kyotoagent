@@ -183,6 +183,7 @@ pub fn key_for(
             KeyCode::Char('m') | KeyCode::Char('M') => Some(Effect::OpenModel),
             KeyCode::Char('k') | KeyCode::Char('K') => Some(Effect::OpenPalette),
             KeyCode::Char('b') | KeyCode::Char('B') => Some(Effect::ToggleLeft),
+            KeyCode::Char('f') | KeyCode::Char('F') => Some(Effect::CycleListFilter),
             KeyCode::Char('g') | KeyCode::Char('G') => Some(Effect::ToggleRight),
             KeyCode::Char('w') | KeyCode::Char('W') => {
                 if overlay {

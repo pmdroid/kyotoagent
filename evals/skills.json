@@ -1,0 +1,11 @@
+[
+  {"id":"lines_direct","scenario":"lines","kind":"implicit","prompt":"Fix count_lines in app.py so empty text has zero lines. Preserve the existing counts for nonempty text, including trailing newlines, and verify the change.","expected":{"line-counter":"work","verify-python":"verify"}},
+  {"id":"lines_indirect","scenario":"lines","kind":"implicit","prompt":"An empty document currently shows one phantom row. Correct the counter in app.py, keeping the behavior of populated documents. Check the result before finishing.","expected":{"line-counter":"work","verify-python":"verify"}},
+  {"id":"lines_named","scenario":"lines","kind":"explicit","prompt":"Use the line-counter skill to fix the empty-input bug in app.py. Keep nonempty-input behavior and verify the fix.","expected":{"line-counter":"work","verify-python":"verify"}},
+  {"id":"terminal_direct","scenario":"terminal","kind":"implicit","prompt":"Fix render_row in app.py so every terminal row has exactly the requested width, padding short labels and truncating long ones. Verify it.","expected":{"terminal-ui":"work","verify-python":"verify"}},
+  {"id":"terminal_indirect","scenario":"terminal","kind":"implicit","prompt":"The sidebar rows have ragged right edges. Update app.py so short names get spaces up to the column width and long names stop at that width. Confirm the rendering behaves correctly.","expected":{"terminal-ui":"work","verify-python":"verify"}},
+  {"id":"verification_only","scenario":"lines","kind":"implicit","fixed":true,"readonly":true,"prompt":"Run the Python checks in this workspace and report whether they pass. No code changes are requested.","expected":{"verify-python":"work"}},
+  {"id":"unrelated_math","scenario":"lines","kind":"negative","readonly":true,"answer":"42","prompt":"What is 17 plus 25? Reply with the number only.","expected":{}},
+  {"id":"unrelated_readme","scenario":"lines","kind":"negative","readonly":true,"answer":"Bluebird","prompt":"What release name is listed in README.md? Just tell me the name.","expected":{}},
+  {"id":"disabled_matching","scenario":"lines","kind":"disabled","disabled":["line-counter"],"prompt":"Fix count_lines in app.py so an empty string returns zero and all nonempty strings keep their existing counts. Verify the result.","expected":{"verify-python":"verify"}}
+]

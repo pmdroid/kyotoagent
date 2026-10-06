@@ -1,14 +1,14 @@
  ☰  Kyoto Agent                                     3 sessions · 0 waiting ▦
 ╭ sessions ──────────────────╮╭ ~/work/kyotoagent ─────────────────────────╮
-│▸ ✓ kyotoagent              ││╭──────────────────────────────────────────x│
-│  idle                      │││  Effort  open the effort list            ││
-│                            │││  Profile  open the profile list          ││
-│  ✓ acpbot                  │││  Server  manage saved servers            ││
-│  idle                      │││  Projects  configure projects on this ser││
-│                            │││  Providers  sign in on the selected serve││
-│  ✓ notes                   │││  Compact  summarize the older transcript ││
-│  idle                      │││  Ctrl-Y  Yolo  allow writes and commands ││
-│                            │││  Enhance  rewrite a short prompt before t││
+│all running questions archiv││╭──────────────────────────────────────────x│
+│▸ ✓ kyotoagent              │││  Effort  open the effort list            ││
+│  idle                      │││  Profile  open the profile list          ││
+│                            │││  Server  manage saved servers            ││
+│  ✓ acpbot                  │││  Projects  configure projects on this ser││
+│  idle                      │││  Providers  sign in on the selected serve││
+│                            │││  Compact  summarize the older transcript ││
+│  ✓ notes                   │││  Ctrl-Y  Yolo  allow writes and commands ││
+│  idle                      │││  Enhance  rewrite a short prompt before t││
 │                            │││  Queued messages  remove a pending messag││
 │                            │││  Ctrl-X  Cancel  stop the turn           ││
 │                            │││  Esc  Close popup  close the open popup  ││
@@ -16,7 +16,7 @@
 │                            │││  Unarchive session  restore an archived s││
 │                            │││  Ctrl-W  Delete session  delete the selec││
 │                            │││  Ctrl-B  Sessions  show or hide the sessi││
-│                            │││  Ctrl-G  Panes  show or hide the right co││
+│                            │││  Ctrl-F  Filter sessions  cycle running, ││
 │ctrl-n/p  ctrl-k  commands  ││╰──────────────────────────────────────────╯│
 ╰────────────────────────────╯╰────────────────────────────────────────────╯
 ╭ Message ─────────────────────────────────────────────────────────────────╮
