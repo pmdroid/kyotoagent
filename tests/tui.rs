@@ -2721,15 +2721,25 @@ async fn the_wheel_moves_one_wrapped_line_and_follow_returns_at_the_tail() {
     assert_eq!(pane_line(&app, 0), first);
 
     let scroll = app.scroll;
+    for index in 0..8 {
+        let mut extra = app.sessions[0].clone();
+        extra.id = format!("extra-{index}");
+        extra.title = Some(format!("extra {index}"));
+        app.sessions.push(extra);
+    }
     let list = list_inner(&screen_model(&app), area);
     let over_list = mouse(
-        wheel_at(MouseEventKind::ScrollUp, list.x + 2, list.y + 1),
+        wheel_at(MouseEventKind::ScrollDown, list.x + 1, list.y),
         &screen_model(&app),
         area,
     );
-    assert_eq!(over_list, None);
+    assert_eq!(over_list, Some(Effect::ScrollList { up: false }));
+    apply(&mut app, &client, over_list.expect("list wheel"))
+        .await
+        .expect("list scroll");
     assert_eq!(app.scroll, scroll);
     assert!(app.follow);
+    assert!(app.list_scroll > 0);
 }
 
 #[tokio::test]

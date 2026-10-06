@@ -106,15 +106,16 @@ pub(super) fn render_list(model: &ScreenModel, area: Rect, frame: &mut Frame) {
             Span::raw("  "),
             Span::styled("commands", theme::hint()),
         ]);
-        let content = lines.len().min(filled);
-        let mut body = lines;
+        let scroll = model.list_scroll.min(lines.len().saturating_sub(filled));
+        let content = lines.len().saturating_sub(scroll).min(filled);
+        let mut body: Vec<Line<'static>> = lines.into_iter().skip(scroll).take(filled).collect();
+        let shown_bands: Vec<bool> = bands.into_iter().skip(scroll).take(filled).collect();
         while body.len() < filled {
             body.push(Line::from(""));
         }
-        body.truncate(filled);
         body.push(hints);
         for (index, line) in body.iter_mut().enumerate() {
-            if index >= content || !bands.get(index).copied().unwrap_or(false) {
+            if index >= content || !shown_bands.get(index).copied().unwrap_or(false) {
                 continue;
             }
             for span in line.spans.iter_mut() {

@@ -2090,6 +2090,44 @@ fn header_glyphs_are_accent_when_open_and_faint_when_closed() {
 }
 
 #[test]
+fn a_long_session_list_scrolls_and_keeps_clicks_on_the_visible_row() {
+    let mut model = crate::mock::idle();
+    model.sessions = (0..12)
+        .map(|index| {
+            let mut row = model.sessions[0].clone();
+            row.id = format!("id{index:02}");
+            row.title = Some(format!("session {index:02}"));
+            row
+        })
+        .collect();
+    model.selected = "id00".into();
+    let area = Rect::new(0, 0, 76, 24);
+    assert!(list_scroll_max(&model, area) > 0);
+    let top = draw(&model);
+    assert!(top.contains("session 00"), "{top}");
+    assert!(!top.contains("session 11"), "{top}");
+    model.list_scroll = list_scroll_max(&model, area);
+    let bottom = draw(&model);
+    assert!(!bottom.contains("session 00"), "{bottom}");
+    assert!(bottom.contains("session 11"), "{bottom}");
+    let list = split_of(&model, area).list;
+    let inner = Block::bordered().inner(list);
+    let top_row = list_at(&model, area, inner.x + 2, inner.y);
+    assert_ne!(top_row, Some(ListHit::Session("id00".into())));
+    assert!(matches!(top_row, Some(ListHit::Session(_))));
+    model.list_scroll = 0;
+    assert_eq!(
+        list_at(&model, area, inner.x + 2, inner.y),
+        Some(ListHit::Session("id00".into()))
+    );
+    model.selected = "id11".into();
+    model.list_scroll = list_scroll_for(&model, area, 0);
+    let followed = draw(&model);
+    assert!(followed.contains("session 11"), "{followed}");
+    assert!(!followed.contains("session 00"), "{followed}");
+}
+
+#[test]
 fn an_empty_todo_list_keeps_two_columns() {
     let area = Rect::new(0, 0, 76, 24);
     let split = split_of(&crate::mock::waiting(), area);
