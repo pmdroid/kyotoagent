@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::events::{CloseoutRunBody, ProofItem};
+use crate::events::{
+    CloseoutChangedBody, CloseoutRunBody, CloseoutStartedBody, Event, EventKind, ProofBody,
+    ProofItem,
+};
 use crate::tools::RunOutput;
 
 mod retry;
@@ -167,6 +170,72 @@ impl CloseoutState {
             snapshot: workspace_snapshot(workspace),
             ..CloseoutState::default()
         }
+    }
+
+    pub fn replay(&mut self, events: &[Event]) {
+        for event in events {
+            match event.kind {
+                EventKind::CloseoutChanged => {
+                    if let Ok(body) = event.body_as::<CloseoutChangedBody>() {
+                        for path in body.paths {
+                            self.record_write(&path);
+                        }
+                    }
+                }
+                EventKind::Proof => {
+                    if let Ok(body) = event.body_as::<ProofBody>() {
+                        for path in body.wrote {
+                            if !self.written_paths.contains(&path) {
+                                self.record_write(&path);
+                            }
+                        }
+                    }
+                }
+                EventKind::CloseoutStarted => {
+                    if let Ok(body) = event.body_as::<CloseoutStartedBody>() {
+                        let state = self.item_mut(&body.id);
+                        state.passed = false;
+                        state.attempts = body.attempt;
+                    }
+                }
+                EventKind::CloseoutRun => {
+                    if let Ok(body) = event.body_as::<CloseoutRunBody>() {
+                        let state = self.item_mut(&body.id);
+                        state.attempts = body.attempt;
+                        state.passed = body.passed.unwrap_or(body.exit == 0 && !body.timed_out);
+                        if state.passed {
+                            state.last_failure = None;
+                        } else {
+                            state.failures += 1;
+                            state.last_failure = Some((body.exit, body.tail));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn proof_items_with_carried_passes(&self) -> Vec<ProofItem> {
+        let mut items = self.proof_items.clone();
+        if let Some(file) = &self.file {
+            for item in file.setup.iter().chain(&file.items) {
+                if self.is_required(item)
+                    && self.items.get(&item.id).is_some_and(|state| state.passed)
+                    && !items.iter().any(|proof| proof.id == item.id)
+                {
+                    items.push(ProofItem {
+                        id: item.id.clone(),
+                        kind: item.kind.label().into(),
+                        outcome: "passed_earlier".into(),
+                        argv: Vec::new(),
+                        exit: None,
+                        tail: String::new(),
+                    });
+                }
+            }
+        }
+        items
     }
 
     pub fn cannot_finish(&self) -> Option<String> {
@@ -340,6 +409,17 @@ impl CloseoutState {
             self.proof_items.push(item);
         }
     }
+}
+
+pub(crate) fn workspace_fingerprint(workspace: &Path, head: &str, status: &str) -> String {
+    let paths: std::collections::BTreeMap<_, _> =
+        workspace_snapshot(workspace).into_iter().collect();
+    let bytes = serde_json::to_vec(&(head, status, paths)).unwrap();
+    ring::digest::digest(&ring::digest::SHA256, &bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 pub(crate) fn workspace_snapshot(workspace: &Path) -> HashMap<String, u64> {

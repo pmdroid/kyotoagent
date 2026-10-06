@@ -176,6 +176,18 @@ pub(in crate::screen) fn overlay_lines(overlay: &Overlay, width: usize) -> Vec<L
             if !text.is_empty() {
                 lines.extend(markdown_lines(text, width));
             }
+            if let Overlay::Proof { items, .. } = overlay {
+                for item in items
+                    .iter()
+                    .filter(|item| item.outcome == Outcome::PassedEarlier)
+                {
+                    lines.extend(wrapped(
+                        &format!("✓ {} (earlier)", item.id),
+                        width,
+                        Style::default().fg(theme::good()),
+                    ));
+                }
+            }
         }
         Overlay::Pull { url } => {
             lines.extend(wrapped(url, width, theme::body()));

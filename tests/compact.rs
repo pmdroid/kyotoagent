@@ -1659,7 +1659,7 @@ async fn closeout_across_turns(name: &str, external_edit: bool, commit: bool) {
     }
     fixture
         .runner
-        .ask("91bc", "Edit docs and check them")
+        .ask_with("91bc", "Edit docs and check them", Some(false))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
@@ -1693,7 +1693,7 @@ async fn closeout_across_turns(name: &str, external_edit: bool, commit: bool) {
     }
     fixture
         .runner
-        .ask("91bc", "Explain the result without editing")
+        .ask_with("91bc", "Explain the result without editing", Some(false))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
@@ -1712,7 +1712,12 @@ async fn closeout_across_turns(name: &str, external_edit: bool, commit: bool) {
         {
             break;
         }
-        assert!(Instant::now() < deadline, "second turn did not finish");
+        assert!(
+            Instant::now() < deadline,
+            "second turn did not finish: {:?} {:?}",
+            fixture.view("91bc"),
+            fixture.events("91bc")
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let events = fixture.events("91bc");
