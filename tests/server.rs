@@ -2141,14 +2141,18 @@ async fn the_view_lists_workspace_skills() {
 #[tokio::test]
 async fn an_idle_session_fills_its_pull_url_from_gh_on_serve() {
     let fixture = Fixture::new("pull-fill", write_then_finish()).await;
-    let _id = fixture.add_session("91bc").await;
+    let id = fixture.add_session("91bc").await;
     let workspace = fixture.workspace("91bc");
     fs::create_dir_all(workspace.join(".git")).expect("the workspace is a git repo");
     let bin = fixture.root.join("bin");
     fs::create_dir_all(&bin).expect("the bin exists");
     let gh = bin.join("gh");
     let url = format!("{}/pmdroid/kyotoagent/pull/42", github_origin());
-    fs::write(&gh, format!("#!/bin/sh\necho '{{\"url\":\"{url}\"}}'\n")).expect("gh is written");
+    fs::write(
+        &gh,
+        format!("#!/bin/sh\necho '{{\"url\":\"{url}\",\"baseRefName\":\"release\"}}'\n"),
+    )
+    .expect("gh is written");
     let mut perm = fs::metadata(&gh).expect("gh metadata").permissions();
     perm.set_mode(0o755);
     fs::set_permissions(&gh, perm).expect("gh is executable");
@@ -2157,6 +2161,10 @@ async fn an_idle_session_fills_its_pull_url_from_gh_on_serve() {
     loop {
         let rows = fixture.client.list().await;
         if rows[0]["pullUrl"].as_str() == Some(url.as_str()) {
+            assert_eq!(
+                session_meta(&fixture.root, &id).base_ref_name.as_deref(),
+                Some("release")
+            );
             break;
         }
         assert!(

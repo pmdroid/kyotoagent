@@ -3233,7 +3233,7 @@ async fn truncated_tool_arguments_are_a_tool_error_the_model_retries() {
 }
 
 #[tokio::test]
-async fn empty_tool_arguments_omit_the_original_block_and_the_turn_continues() {
+async fn empty_tool_arguments_are_an_empty_object_and_required_fields_still_fail() {
     let replies = vec![
         Canned::Json(tool_call_raw("run", "")),
         Canned::Json(text_reply("recovered")),
@@ -3251,11 +3251,12 @@ async fn empty_tool_arguments_omit_the_original_block_and_the_turn_continues() {
         .body["output"]
         .as_str()
         .expect("output");
-    assert!(
-        output.starts_with("the tool arguments were not JSON:"),
-        "{output}"
-    );
-    assert!(!output.contains("Your original arguments"), "{output}");
+    assert_eq!(output, "no command to run");
+    let call = events
+        .iter()
+        .find(|event| event.kind == EventKind::ToolCall)
+        .unwrap();
+    assert_eq!(call.body["args"], serde_json::json!({}));
     let bodies = fixture.chat_bodies();
     let posts = chat_posts(&bodies);
     assert!(posts.len() >= 2, "the model was asked again");

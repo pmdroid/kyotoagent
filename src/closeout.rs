@@ -129,6 +129,8 @@ pub struct CloseoutState {
     pub stop: Option<String>,
     pub proof_items: Vec<ProofItem>,
     snapshot: HashMap<String, u64>,
+    pub(crate) workspace: Option<PathBuf>,
+    pub(crate) base_ref_name: Option<String>,
 }
 
 pub fn closeout_path(workspace: &Path) -> PathBuf {
@@ -168,6 +170,7 @@ impl CloseoutState {
         CloseoutState {
             file,
             snapshot: workspace_snapshot(workspace),
+            workspace: Some(workspace.to_path_buf()),
             ..CloseoutState::default()
         }
     }
@@ -288,7 +291,7 @@ impl CloseoutState {
         {
             return false;
         }
-        self.written_paths
+        self.active_written_paths()
             .iter()
             .any(|written| item.matches_path(written))
     }
@@ -326,8 +329,8 @@ impl CloseoutState {
                     pending.push(&item.id);
                 }
                 let matched_paths: std::collections::BTreeSet<_> = self
-                    .written_paths
-                    .iter()
+                    .active_written_paths()
+                    .into_iter()
                     .filter(|path| item.matches_path(path))
                     .collect();
                 required.push(serde_json::json!({
@@ -392,12 +395,40 @@ impl CloseoutState {
             .collect();
         changed.sort();
         changed.dedup();
+        if rebase_in_progress(workspace) {
+            changed.clear();
+        } else if let Some(paths) = paths_against_base(workspace, self.base_ref_name.as_deref()) {
+            changed.retain(|path| paths.contains(path));
+        }
         for path in &changed {
             self.record_write(path);
         }
         self.snapshot = current;
         changed
     }
+    pub(crate) fn active_written_paths(&self) -> Vec<String> {
+        if self.written_paths.is_empty() {
+            return Vec::new();
+        }
+        let paths = self
+            .workspace
+            .as_deref()
+            .and_then(|workspace| paths_against_base(workspace, self.base_ref_name.as_deref()));
+        self.written_paths
+            .iter()
+            .filter(|path| paths.as_ref().is_none_or(|paths| paths.contains(*path)))
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn tracks_path(&self, path: &str) -> bool {
+        self.workspace.as_deref().is_none_or(|workspace| {
+            !rebase_in_progress(workspace)
+                && paths_against_base(workspace, self.base_ref_name.as_deref())
+                    .is_none_or(|paths| paths.contains(path))
+        })
+    }
+
     pub fn item_mut(&mut self, id: &str) -> &mut ItemState {
         self.items.entry(id.to_string()).or_default()
     }
@@ -420,6 +451,85 @@ pub(crate) fn workspace_fingerprint(workspace: &Path, head: &str, status: &str) 
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn git_text(workspace: &Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(workspace)
+        .output()
+        .ok()?;
+    output.status.success().then(|| {
+        let text = String::from_utf8_lossy(&output.stdout);
+        if args.contains(&"-z") {
+            text.into_owned()
+        } else {
+            text.trim().to_string()
+        }
+    })
+}
+
+pub(crate) fn merge_base(workspace: &Path, base_ref_name: Option<&str>) -> Option<String> {
+    let remote = git_text(
+        workspace,
+        &["rev-parse", "--symbolic-full-name", "@{upstream}"],
+    )
+    .and_then(|upstream| {
+        upstream
+            .strip_prefix("refs/remotes/")
+            .and_then(|path| path.split('/').next())
+            .map(str::to_string)
+    })
+    .unwrap_or_else(|| "origin".into());
+    let target = if let Some(base) = base_ref_name {
+        let remote_ref = format!("refs/remotes/{remote}/{base}");
+        if git_text(workspace, &["rev-parse", "--verify", &remote_ref]).is_some() {
+            remote_ref
+        } else {
+            base.to_string()
+        }
+    } else {
+        git_text(
+            workspace,
+            &["symbolic-ref", &format!("refs/remotes/{remote}/HEAD")],
+        )
+        .unwrap_or_else(|| "origin/main".into())
+    };
+    if git_text(workspace, &["rev-parse", "--verify", "MERGE_HEAD"]).is_some() {
+        git_text(workspace, &["merge-base", &target, "HEAD", "MERGE_HEAD"])
+    } else {
+        git_text(workspace, &["merge-base", &target, "HEAD"])
+    }
+}
+
+fn rebase_in_progress(workspace: &Path) -> bool {
+    ["rebase-merge", "rebase-apply"].iter().any(|name| {
+        git_text(workspace, &["rev-parse", "--git-path", name])
+            .is_some_and(|path| workspace.join(path).is_dir())
+    })
+}
+
+fn paths_against_base(
+    workspace: &Path,
+    base_ref_name: Option<&str>,
+) -> Option<std::collections::HashSet<String>> {
+    if rebase_in_progress(workspace) {
+        return None;
+    }
+    let base = merge_base(workspace, base_ref_name)?;
+    let tracked = git_text(workspace, &["diff", "--name-only", "-z", &base, "--"])?;
+    let untracked = git_text(
+        workspace,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )?;
+    Some(
+        tracked
+            .split('\0')
+            .chain(untracked.split('\0'))
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 pub(crate) fn workspace_snapshot(workspace: &Path) -> HashMap<String, u64> {
@@ -1628,6 +1738,91 @@ mod tests {
             assert!(!state.is_required(&state.file.as_ref().unwrap().items[0]));
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[test]
+    fn base_selection_prefers_the_pr_then_the_upstream_default_then_origin_main() {
+        let dir = temp_dir("base-selection");
+        git(&dir, &["init", "-b", "main"]);
+        git(&dir, &["config", "user.name", "Closeout Test"]);
+        git(&dir, &["config", "user.email", "closeout@example.test"]);
+        std::fs::write(dir.join("file"), "main").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-m", "Main"]);
+        let main = git_text(&dir, &["rev-parse", "HEAD"]).unwrap();
+        git(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        std::fs::write(dir.join("file"), "default").unwrap();
+        git(&dir, &["commit", "-am", "Default"]);
+        let default = git_text(&dir, &["rev-parse", "HEAD"]).unwrap();
+        git(
+            &dir,
+            &["update-ref", "refs/remotes/upstream/develop", "HEAD"],
+        );
+        git(
+            &dir,
+            &[
+                "symbolic-ref",
+                "refs/remotes/upstream/HEAD",
+                "refs/remotes/upstream/develop",
+            ],
+        );
+        std::fs::write(dir.join("file"), "release").unwrap();
+        git(&dir, &["commit", "-am", "Release"]);
+        let release = git_text(&dir, &["rev-parse", "HEAD"]).unwrap();
+        git(
+            &dir,
+            &["update-ref", "refs/remotes/upstream/release", "HEAD"],
+        );
+        git(&dir, &["remote", "add", "upstream", "."]);
+        git(&dir, &["config", "branch.main.remote", "upstream"]);
+        git(&dir, &["config", "branch.main.merge", "refs/heads/develop"]);
+        assert_eq!(merge_base(&dir, Some("release")), Some(release));
+        assert_eq!(merge_base(&dir, None), Some(default));
+        git(
+            &dir,
+            &["symbolic-ref", "--delete", "refs/remotes/upstream/HEAD"],
+        );
+        assert_eq!(merge_base(&dir, None), Some(main));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn refresh_skips_rebase_changes_and_updates_the_snapshot() {
+        let dir = temp_dir("rebase");
+        write_file(&dir, "version: 1\nitems:\n  - id: test\n    kind: command\n    run: true\n    hint: Check changes\n");
+        git(&dir, &["init", "-b", "main"]);
+        git(&dir, &["config", "user.name", "Closeout Test"]);
+        git(&dir, &["config", "user.email", "closeout@example.test"]);
+        std::fs::write(dir.join("file"), "base\n").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-m", "Base"]);
+        git(&dir, &["checkout", "-b", "feature"]);
+        std::fs::write(dir.join("file"), "feature\n").unwrap();
+        git(&dir, &["commit", "-am", "Feature"]);
+        git(&dir, &["checkout", "main"]);
+        std::fs::write(dir.join("file"), "main\n").unwrap();
+        std::fs::write(dir.join("imported"), "main\n").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-m", "Main"]);
+        git(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(&dir, &["checkout", "feature"]);
+        let mut state = CloseoutState::new(&dir).unwrap();
+        let rebased = std::process::Command::new("git")
+            .args(["rebase", "origin/main"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert!(!rebased.status.success());
+        assert!(rebase_in_progress(&dir));
+        assert!(state.refresh_workspace(&dir).is_empty());
+        assert!(state.written_paths.is_empty());
+        assert!(!state.tracks_path("imported"));
+        std::fs::write(dir.join("file"), "resolved feature\n").unwrap();
+        git(&dir, &["add", "file"]);
+        git(&dir, &["-c", "core.editor=true", "rebase", "--continue"]);
+        assert_eq!(state.refresh_workspace(&dir), vec!["file"]);
+        assert!(state.refresh_workspace(&dir).is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -254,6 +254,8 @@ pub fn closeout_rows(workspace: &Path, events: &[Event], show: bool) -> Vec<Clos
         crate::closeout::read(workspace).ok().flatten(),
         events,
         show,
+        Some(workspace),
+        None,
     )
 }
 
@@ -261,6 +263,8 @@ pub(crate) fn closeout_rows_for(
     file: Option<crate::closeout::CloseoutFile>,
     events: &[Event],
     show: bool,
+    workspace: Option<&Path>,
+    base_ref_name: Option<&str>,
 ) -> Vec<CloseoutRow> {
     if !show {
         return Vec::new();
@@ -272,7 +276,9 @@ pub(crate) fn closeout_rows_for(
         return Vec::new();
     }
     let mut state = crate::closeout::CloseoutState::default();
+    state.workspace = workspace.map(Path::to_path_buf);
     state.file = Some(file.clone());
+    state.base_ref_name = base_ref_name.map(str::to_string);
     state.replay(events);
     let mut latest: std::collections::HashMap<String, CloseoutRunBody> =
         std::collections::HashMap::new();
@@ -1185,12 +1191,12 @@ mod tests {
                 serde_json::json!({"id":"test", "attempt":2, "stderr":true, "bytes":b"new stderr"}),
             ),
         ];
-        let started = closeout_rows_for(Some(file.clone()), &events[..2], true);
+        let started = closeout_rows_for(Some(file.clone()), &events[..2], true, None, None);
         assert_eq!(started[0].status, CloseoutStatus::Running);
         assert_eq!(started[0].attempt, Some(2));
         assert_eq!(started[0].exit, None);
         assert!(started[0].tail.is_empty());
-        let streaming = closeout_rows_for(Some(file), &events, true);
+        let streaming = closeout_rows_for(Some(file), &events, true, None, None);
         assert_eq!(streaming[0].tail, "new stdout\nnew stderr");
         assert!(!streaming[0].tail.contains("old failure"));
     }
@@ -1229,7 +1235,7 @@ mod tests {
             ),
             ask("e4", "Open the draft PR"),
         ];
-        let rows = closeout_rows_for(Some(file), &events, true);
+        let rows = closeout_rows_for(Some(file), &events, true, None, None);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].required);
         assert_eq!(rows[0].status, CloseoutStatus::Passed);

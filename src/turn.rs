@@ -1615,6 +1615,8 @@ impl Runner {
                 .flatten(),
             &events,
             meta.show_closeout,
+            Some(state.tools.workspace()),
+            meta.base_ref_name.as_deref(),
         );
         let allowance = config.skill_allowance(meta.profile.as_deref());
         view.skills =
@@ -1748,7 +1750,8 @@ impl Runner {
         let Ok(meta) = state.session.meta() else {
             return;
         };
-        if meta.status != Status::Idle || meta.pull_url.is_some() {
+        if meta.status != Status::Idle || (meta.pull_url.is_some() && meta.base_ref_name.is_some())
+        {
             return;
         }
         let workspace = PathBuf::from(&meta.workspace);
@@ -1770,12 +1773,14 @@ impl Runner {
 }
 
 async fn fill_pull_url(session: &Session, workspace: &Path, gh: &Path) {
+    let mut command = tokio::process::Command::new(gh);
+    command.args(["pr", "view", "--json", "url,baseRefName"]);
+    if let Some(url) = session.meta().ok().and_then(|meta| meta.pull_url) {
+        command.arg(url);
+    }
     let Ok(Ok(output)) = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        tokio::process::Command::new(gh)
-            .args(["pr", "view", "--json", "url"])
-            .current_dir(workspace)
-            .output(),
+        command.current_dir(workspace).output(),
     )
     .await
     else {
@@ -1790,8 +1795,16 @@ async fn fill_pull_url(session: &Session, workspace: &Path, gh: &Path) {
         return;
     };
     if let Ok(meta) = session.meta() {
-        if meta.status == Status::Idle && meta.pull_url.is_none() {
-            let _ = session.set_pull_url(&url);
+        if meta.status == Status::Idle && (meta.pull_url.is_none() || meta.base_ref_name.is_none())
+        {
+            let base = serde_json::from_str::<Value>(&stdout)
+                .ok()
+                .and_then(|value| value["baseRefName"].as_str().map(str::to_string));
+            let _ = session.update(|meta| {
+                meta.pull_url = Some(url.clone());
+                meta.base_ref_name = base.clone();
+                true
+            });
         }
     }
 }
@@ -2117,9 +2130,8 @@ skills = ["skill-a"]
         assert!(text.contains("Your original arguments:"));
         assert!(text.contains(raw));
         assert!(text.contains("Please fix the syntax and retry."));
-        let empty = super::bad_arguments_result(&error, "");
-        assert!(empty.starts_with("the tool arguments were not JSON:"));
-        assert!(!empty.contains("Your original arguments"));
+        assert_eq!(super::parse_args("").unwrap(), serde_json::json!({}));
+        assert_eq!(super::parse_args(" \n").unwrap(), serde_json::json!({}));
         let long = "a".repeat(2_001);
         let capped = super::bad_arguments_result(&error, &long);
         assert!(capped.contains(&"a".repeat(2_000)));

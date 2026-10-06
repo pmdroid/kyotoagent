@@ -858,7 +858,11 @@ pub(super) fn set_status(session: &Session, status: Status) -> Result<(), Sessio
 }
 
 pub(super) fn parse_args(arguments: &str) -> Result<Value, TurnError> {
-    Ok(serde_json::from_str(arguments)?)
+    Ok(serde_json::from_str(if arguments.trim().is_empty() {
+        "{}"
+    } else {
+        arguments
+    })?)
 }
 
 const ARGUMENT_ECHO_LIMIT: usize = 2_000;

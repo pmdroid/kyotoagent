@@ -2071,7 +2071,7 @@ async fn imported_review_includes_committed_and_pending_changes() {
 }
 
 #[tokio::test]
-async fn imported_review_rejects_written_paths_with_an_empty_diff() {
+async fn imported_review_is_not_required_after_restoring_the_diff() {
     imported_review_candidate("empty-review", false, false, true).await;
 }
 
@@ -2159,31 +2159,23 @@ async fn imported_review_candidate(name: &str, committed: bool, pending: bool, e
     }
     if empty {
         git(&["restore", "changed.txt"]);
-    }
-    fixture.respond("91bc", Answer::allow_once()).await;
-    if empty {
-        fixture.wait_for_closeout_runs("91bc", 1).await;
+        let row = &fixture.view("91bc").closeout[0];
+        assert!(!row.required);
         fixture.runner.cancel("91bc");
-    }
-    fixture.wait_for_status("91bc", Status::Idle).await;
-    let outputs = tool_outputs(&fixture.log("91bc"), "get_closeout");
-    let report: serde_json::Value = serde_json::from_str(&outputs[0]).unwrap();
-    assert_eq!(report["pending"], serde_json::json!(["quality/review"]));
-    assert_eq!(report["required"][0]["different_model"], true);
-    assert_eq!(report["required"][0]["kind"], "review");
-    if empty {
-        let log = fixture.log("91bc");
-        assert!(log.contains("Review evaluated as invalid"));
-        assert_eq!(
-            fixture.view("91bc").closeout[0].status,
-            view::CloseoutStatus::Failed
-        );
+        fixture.wait_for_status("91bc", Status::Idle).await;
         assert!(!fixture
             .prompts()
             .iter()
             .any(|body| body.contains("Tracked git diff:")));
         return;
     }
+    fixture.respond("91bc", Answer::allow_once()).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    let outputs = tool_outputs(&fixture.log("91bc"), "get_closeout");
+    let report: serde_json::Value = serde_json::from_str(&outputs[0]).unwrap();
+    assert_eq!(report["pending"], serde_json::json!(["quality/review"]));
+    assert_eq!(report["required"][0]["different_model"], true);
+    assert_eq!(report["required"][0]["kind"], "review");
     assert_eq!(
         fs::read_to_string(workspace.join("changed.txt")).unwrap(),
         if pending {

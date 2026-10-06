@@ -69,6 +69,7 @@ pub(super) async fn run_turn(
         }
     };
 
+    closeout.base_ref_name = session.meta()?.base_ref_name;
     closeout.replay(&prior_events);
     if let Some(proof) = prior_events
         .iter()

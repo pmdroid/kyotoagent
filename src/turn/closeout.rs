@@ -214,7 +214,7 @@ async fn execute_closeout(
             &argv,
             cancel,
             sink,
-            &closeout.written_paths,
+            &closeout.active_written_paths(),
         )
         .await?;
         (output, Some(state))
@@ -367,7 +367,8 @@ async fn review_output(
         source,
     })?;
     let changed = paths.join("\n");
-    let base = git_output(workspace, &["merge-base", "HEAD", "origin/main"]);
+    let base = crate::closeout::merge_base(workspace, candidate.base_ref_name.as_deref())
+        .unwrap_or_default();
     let diff = if base.trim().is_empty() {
         String::new()
     } else {
@@ -378,7 +379,7 @@ async fn review_output(
             argv: argv.to_vec(),
             exit: Some(1),
             stdout: String::new(),
-            stderr: "Review evaluated as invalid: changed paths have no tracked diff against the merge-base with origin/main".into(),
+            stderr: "Review evaluated as invalid: changed paths have no tracked diff against the pull request base".into(),
             timed_out: false,
             truncated: false,
             denied: false,
@@ -534,9 +535,8 @@ fn retry_identity(
             "Closeout is blocked: candidate retry scope requires a resolved HEAD commit".into(),
         );
     }
-    let base = git_output(workspace, &["merge-base", "HEAD", "origin/main"])
-        .trim()
-        .to_string();
+    let base =
+        crate::closeout::merge_base(workspace, meta.base_ref_name.as_deref()).unwrap_or_default();
     let common = git_output(workspace, &["rev-parse", "--git-common-dir"]);
     let repository = if common.trim().is_empty() {
         workspace.to_path_buf()
@@ -612,9 +612,10 @@ pub(super) fn refresh_closeout(
     if closeout.file.is_none() {
         return Ok(());
     }
+    closeout.base_ref_name = tools.session().meta()?.base_ref_name;
     let mut paths = closeout.refresh_workspace(tools.workspace());
     for path in written {
-        if !Path::new(path).is_absolute() && !paths.contains(path) {
+        if !Path::new(path).is_absolute() && !paths.contains(path) && closeout.tracks_path(path) {
             closeout.record_write(path);
             paths.push(path.clone());
         }

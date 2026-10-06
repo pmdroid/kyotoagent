@@ -88,6 +88,12 @@ pub struct SessionMeta {
     pub pull_url: Option<String>,
     #[serde(
         default,
+        rename = "baseRefName",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub base_ref_name: Option<String>,
+    #[serde(
+        default,
         rename = "contextLength",
         skip_serializing_if = "Option::is_none"
     )]
@@ -182,6 +188,7 @@ impl SessionMeta {
             status: Status::Idle,
             allow: AllowList::default(),
             pull_url: None,
+            base_ref_name: None,
             context_length: None,
             prompt_tokens: None,
             yolo: false,
