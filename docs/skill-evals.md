@@ -1,4 +1,8 @@
-# Skill evals
+---
+title: Skill evals
+description: Compare automatic skill selection and task behavior across Git revisions on a live model server.
+editUrl: https://github.com/pmdroid/kyotoagent/edit/main/docs/skill-evals.md
+---
 
 Run the same requests against Git revisions using a live OpenAI-compatible server:
 
