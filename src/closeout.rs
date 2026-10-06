@@ -1582,7 +1582,7 @@ mod tests {
     }
 
     #[test]
-    fn reviews_require_a_real_skill_directory_without_symlinks() {
+    fn reviews_allow_symlinked_skill_files_and_directories() {
         let dir = temp_dir("review-skill");
         write_file(&dir, "specVersion: '0.1'\nitems:\n  - id: review\n    kind: review\n    gate: beforePR\n    skill: skills/review/SKILL.md\n    independence:\n      differentSession: true\n      differentModel: false\n    failOn: P1\n");
         assert!(read(&dir).is_err());
@@ -1592,8 +1592,70 @@ mod tests {
         assert_eq!(file.items[0].kind, CloseoutKind::Review);
         assert_eq!(file.reviews["review"].fail_on, Severity::P1);
         std::os::unix::fs::symlink("SKILL.md", dir.join("skills/review/link")).unwrap();
-        assert!(read(&dir).unwrap_err().to_string().contains("symlinks"));
+        let linked = read(&dir).unwrap().unwrap();
+        assert_eq!(
+            linked.policy_files[&dir.join("skills/review/link")],
+            retry::hash(b"Review changes")
+        );
+        std::fs::create_dir_all(dir.join("shared")).unwrap();
+        std::fs::write(dir.join("shared/reference.md"), "Review reference").unwrap();
+        std::os::unix::fs::symlink("../../shared", dir.join("skills/review/references")).unwrap();
+        let before = read(&dir).unwrap().unwrap();
+        assert_eq!(
+            before.policy_files[&dir.join("skills/review/references/reference.md")],
+            retry::hash(b"Review reference")
+        );
+        std::fs::write(dir.join("shared/reference.md"), "Updated reference").unwrap();
+        let after = read(&dir).unwrap().unwrap();
+        assert_ne!(before.policy_digest, after.policy_digest);
+        std::os::unix::fs::symlink("missing", dir.join("skills/review/broken")).unwrap();
+        assert!(read(&dir).is_err());
+        std::fs::remove_file(dir.join("skills/review/broken")).unwrap();
+        std::os::unix::fs::symlink(".", dir.join("skills/review/cycle")).unwrap();
+        assert!(read(&dir).unwrap_err().to_string().contains("cycle"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reviews_follow_shared_skill_symlinks_outside_the_repository() {
+        for directory_link in [false, true] {
+            let dir = temp_dir("external-review-skill");
+            let shared = temp_dir("shared-review-skill");
+            write_file(&dir, "specVersion: '0.1'\nitems:\n  - id: review\n    kind: review\n    gate: beforePR\n    skill: skills/review/SKILL.md\n    independence:\n      differentSession: true\n      differentModel: false\n    failOn: P1\n");
+            std::fs::write(shared.join("SKILL.md"), "Shared review").unwrap();
+            std::fs::create_dir_all(dir.join("skills")).unwrap();
+            if directory_link {
+                std::os::unix::fs::symlink(&shared, dir.join("skills/review")).unwrap();
+                std::fs::write(shared.join("reference.md"), "Shared reference").unwrap();
+            } else {
+                std::fs::create_dir_all(dir.join("skills/review")).unwrap();
+                std::os::unix::fs::symlink(
+                    shared.join("SKILL.md"),
+                    dir.join("skills/review/SKILL.md"),
+                )
+                .unwrap();
+            }
+            let before = read(&dir).unwrap().unwrap();
+            assert_eq!(
+                before.reviews["review"].skill,
+                shared.join("SKILL.md").to_string_lossy()
+            );
+            assert_eq!(
+                before.policy_files[&dir.join("skills/review/SKILL.md")],
+                retry::hash(b"Shared review")
+            );
+            if directory_link {
+                assert_eq!(
+                    before.policy_files[&dir.join("skills/review/reference.md")],
+                    retry::hash(b"Shared reference")
+                );
+            }
+            std::fs::write(shared.join("SKILL.md"), "Updated shared review").unwrap();
+            let after = read(&dir).unwrap().unwrap();
+            assert_ne!(before.policy_digest, after.policy_digest);
+            std::fs::remove_dir_all(dir).unwrap();
+            std::fs::remove_dir_all(shared).unwrap();
+        }
     }
 
     #[test]

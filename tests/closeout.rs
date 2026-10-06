@@ -2113,9 +2113,12 @@ async fn imported_review_candidate(name: &str, committed: bool, pending: bool, e
     let fixture = Fixture::new(name, replies);
     let workspace = fixture.add_session("91bc");
     fs::create_dir_all(workspace.join(".agents/closeout")).unwrap();
-    fs::create_dir_all(workspace.join(".agents/skills/review")).unwrap();
+    fs::create_dir_all(workspace.join(".agents/skills")).unwrap();
+    let shared_skill = fixture.root.join("shared-review");
+    fs::create_dir_all(&shared_skill).unwrap();
+    std::os::unix::fs::symlink(&shared_skill, workspace.join(".agents/skills/review")).unwrap();
     fs::write(
-        workspace.join(".agents/skills/review/SKILL.md"),
+        shared_skill.join("SKILL.md"),
         "Inspect each changed file for correctness. Report only P0 findings.",
     )
     .unwrap();
