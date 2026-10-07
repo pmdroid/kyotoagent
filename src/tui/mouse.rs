@@ -160,6 +160,9 @@ pub(super) fn press_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -
         Some(screen::TodoTarget::Link(_)) | None => {}
     }
     if let Some(url) = screen::link_at(model, area, column, row) {
+        if let Some(path) = screen::local_file_link(&url) {
+            return Some(Effect::OpenFile(path));
+        }
         return Some(Effect::OpenLink(url));
     }
     if let Some(text) = screen::preview_text_at(model, area, column, row) {

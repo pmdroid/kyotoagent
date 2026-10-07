@@ -3026,6 +3026,31 @@ fn a_click_on_a_todo_file_opens_the_file_effect() {
 }
 
 #[test]
+fn markdown_file_clicks_decode_paths_in_cards_tables_and_overlays() {
+    let path = ".scratch/queue%20definition.md";
+    for text in [
+        format!("[Queue]({path})"),
+        format!("| Document |\n| --- |\n| [Queue]({path}) |"),
+    ] {
+        let mut app = todos_app(false);
+        app.cards = vec![Card::result(&text)];
+        let area = Rect::new(0, 0, 76, 24);
+        for overlay in [false, true] {
+            if overlay {
+                app.open_text = Some(text.clone());
+                app.overlay = true;
+            }
+            let model = screen_model(&app);
+            let (x, y) = hit(&model, area, screen::link_at, path);
+            assert_eq!(
+                released_click(&model, area, x, y),
+                Some(Effect::OpenFile(".scratch/queue definition.md".into()))
+            );
+        }
+    }
+}
+
+#[test]
 fn a_click_on_a_todo_link_opens_the_url() {
     let mut app = todos_app(true);
     let area = Rect::new(0, 0, 76, 24);

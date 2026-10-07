@@ -3237,6 +3237,47 @@ fn todo_with_readme() -> TodoItem {
 }
 
 #[tokio::test]
+async fn markdown_local_file_links_open_workspace_contents() {
+    let fixture = Fixture::new("tui-markdown-file").await;
+    let path = ".scratch/platform/issues/03-queue-definition.md";
+    let absolute = fixture.workspace.join(path);
+    fs::create_dir_all(absolute.parent().unwrap()).unwrap();
+    fs::write(
+        &absolute,
+        "# Queue definition\n\nA person defines the queue.",
+    )
+    .unwrap();
+    let mut app = fixture.app();
+    poll(&mut app, &fixture.client).await.unwrap();
+    new_here(&mut app, &fixture.client).await;
+    let area = Rect::new(0, 0, 76, 24);
+    for destination in [path.to_string(), absolute.to_string_lossy().into_owned()] {
+        app.cards = vec![Card::result(&format!(
+            "[How a person defines the queue]({destination})"
+        ))];
+        let model = screen_model(&app);
+        let (x, y) = hit(&model, area, kyotoagent::screen::link_at, &destination);
+        let effect = released_click(&model, area, x, y).unwrap();
+        assert_eq!(effect, Effect::OpenFile(destination.clone()));
+        apply(&mut app, &fixture.client, effect).await.unwrap();
+        match screen_model(&app).overlay {
+            Some(Overlay::File {
+                path,
+                text,
+                truncated,
+            }) => {
+                assert_eq!(path, destination);
+                assert_eq!(text, "# Queue definition\n\nA person defines the queue.");
+                assert!(!truncated);
+            }
+            other => panic!("expected file contents, got {other:?}"),
+        }
+        drive(&mut app, &fixture.client, press(KeyCode::Esc)).await;
+        assert!(screen_model(&app).overlay.is_none());
+    }
+}
+
+#[tokio::test]
 async fn a_click_on_a_todo_file_opens_the_file_overlay() {
     let fixture = Fixture::new("tui-file").await;
     fs::write(fixture.workspace.join("README.md"), "hello from readme").expect("readme");

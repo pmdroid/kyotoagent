@@ -728,7 +728,7 @@ fn find_phrase(rows: &[Vec<String>], phrase: &str) -> (u16, u16) {
 }
 
 #[test]
-fn link_at_misses_a_destination_that_is_not_http() {
+fn link_at_hits_local_files_and_web_urls() {
     let mut model = crate::mock::idle();
     model.cards = vec![Card::result(
         "See [readme](README.md) and [docs](https://example.com).",
@@ -736,9 +736,15 @@ fn link_at_misses_a_destination_that_is_not_http() {
     let area = Rect::new(0, 0, 76, 24);
     let rows = grid(&model);
     let (readme_x, readme_y) = find_phrase(&rows, "readme");
-    assert_eq!(link_at(&model, area, readme_x, readme_y), None);
+    assert_eq!(
+        link_at(&model, area, readme_x, readme_y).as_deref(),
+        Some("README.md")
+    );
     let (path_x, path_y) = find_phrase(&rows, "README.md");
-    assert_eq!(link_at(&model, area, path_x, path_y), None);
+    assert_eq!(
+        link_at(&model, area, path_x, path_y).as_deref(),
+        Some("README.md")
+    );
     let (docs_x, docs_y) = find_phrase(&rows, "docs");
     assert_eq!(
         link_at(&model, area, docs_x, docs_y).as_deref(),

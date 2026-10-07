@@ -401,6 +401,25 @@ pub(super) fn http_url(value: &str) -> Option<String> {
     }
 }
 
+pub fn local_file_link(value: &str) -> Option<String> {
+    if value.is_empty() || value.starts_with('#') || value.starts_with("//") || value.contains(':')
+    {
+        return None;
+    }
+    let mut bytes = value.bytes();
+    let mut decoded = Vec::new();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let high = (bytes.next()? as char).to_digit(16)?;
+            let low = (bytes.next()? as char).to_digit(16)?;
+            decoded.push((high * 16 + low) as u8);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
 pub(super) fn wrote_path_at(
     model: &ScreenModel,
     area: Rect,
