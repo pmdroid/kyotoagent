@@ -68,6 +68,14 @@ nonisolated public struct QuestionCard: Codable, Equatable, Sendable {
     public var choices: [String]
     public var eventId: String
     public var text: String
+    public var visuals: [QuestionVisual]? = nil
+}
+
+nonisolated public struct QuestionVisual: Codable, Equatable, Sendable {
+    public var title: String
+    public var alt: String
+    public var image: ImageAttachment
+    public var source: String?
 }
 
 nonisolated public struct PermissionCard: Codable, Equatable, Sendable {

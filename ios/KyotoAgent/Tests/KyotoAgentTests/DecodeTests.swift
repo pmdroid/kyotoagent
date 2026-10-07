@@ -2,6 +2,20 @@ import XCTest
 @testable import KyotoAgent
 
 final class DecodeTests: XCTestCase {
+    func testVisualQuestionsPreserveSourceAndPreviewWithoutBreakingOldCards() throws {
+        let old = Data(#"{"text":"Choose","choices":["A","B"],"eventId":"q1"}"#.utf8)
+        let legacy = try JSONDecoder().decode(QuestionCard.self, from: old)
+        XCTAssertNil(legacy.visuals)
+        let json = Data(#"{"text":"Choose","choices":["A","B"],"eventId":"q2","visuals":[{"title":"Route A","alt":"Plan then build","source":"flowchart LR; A-->B","image":{"name":"diagram.png","mimeType":"image/png","data":"aGVsbG8="}}]}"#.utf8)
+        let question = try JSONDecoder().decode(QuestionCard.self, from: json)
+        XCTAssertEqual(question.visuals?.first?.title, "Route A")
+        XCTAssertEqual(question.visuals?.first?.alt, "Plan then build")
+        XCTAssertEqual(question.visuals?.first?.source, "flowchart LR; A-->B")
+        let restored = try JSONDecoder().decode(QuestionCard.self, from: JSONEncoder().encode(question))
+        XCTAssertEqual(restored, question)
+        XCTAssertEqual(AnswerPayload(sheet: .question(question), choice: "A").id, "q2")
+    }
+
     func testToolErrorActivitySurvivesViewCaching() throws {
         var view = try fixture(View.self, "view.json")
         view.status = .working

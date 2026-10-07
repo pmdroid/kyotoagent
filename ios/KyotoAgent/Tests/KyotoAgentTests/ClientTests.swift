@@ -816,7 +816,9 @@ final class ClientTests: XCTestCase {
         }
         let model = try await openSession(gate)
         XCTAssertEqual(model.answerSheet?.eventId, "e-open")
-        await model.answer("Kyoto Agent")
+        await model.answer("stale visual choice", eventId: "previous-question")
+        XCTAssertTrue(posted.payloads.isEmpty)
+        await model.answer("Kyoto Agent", eventId: "e-open")
         await model.answer("a free reply")
         XCTAssertEqual(
             posted.payloads,

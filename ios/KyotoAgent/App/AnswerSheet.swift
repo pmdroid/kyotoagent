@@ -4,6 +4,9 @@ struct AnswerSheetView: SwiftUI.View {
     @Bindable var model: AppModel
     var sheet: AnswerSheet
     @State private var reply = ""
+    @State private var expandedVisual: Int?
+    @State private var zoom = 1.0
+    @GestureState private var magnification = 1.0
 
     var body: some SwiftUI.View {
         ScrollView {
@@ -26,6 +29,19 @@ struct AnswerSheetView: SwiftUI.View {
             .padding(.bottom, 24)
         }
         .background(Ink.canvas.opacity(0.72))
+        .safeAreaInset(edge: .bottom) {
+            if case .question(let question) = sheet, !(question.visuals ?? []).isEmpty {
+                VStack(spacing: 8) { questionAnswers(question) }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(Ink.canvas)
+            }
+        }
+        .onChange(of: sheet.eventId) {
+            reply = ""
+            expandedVisual = nil
+            zoom = 1
+        }
     }
 
     @ViewBuilder
@@ -93,6 +109,16 @@ struct AnswerSheetView: SwiftUI.View {
         MarkdownBlocksView(blocks: transcriptBlocks(question.text))
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier("answer-prompt")
+        ForEach(Array((question.visuals ?? []).enumerated()), id: \.offset) { index, visual in
+            visualPreview(visual, index: index)
+        }
+        if (question.visuals ?? []).isEmpty {
+            questionAnswers(question)
+        }
+    }
+
+    @ViewBuilder
+    private func questionAnswers(_ question: QuestionCard) -> some SwiftUI.View {
         if !question.choices.isEmpty {
             VStack(spacing: 8) {
                 ForEach(Array(question.choices.enumerated()), id: \.offset) { _, choice in
@@ -113,7 +139,7 @@ struct AnswerSheetView: SwiftUI.View {
                 .accessibilityIdentifier("answer-reply")
             Button {
                 let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-                Swift.Task { await model.answer(text) }
+                Swift.Task { await model.answer(text, eventId: sheet.eventId) }
             } label: {
                 Image(systemName: "arrow.up")
                     .font(.body.weight(.bold))
@@ -129,6 +155,60 @@ struct AnswerSheetView: SwiftUI.View {
         .background(RoundedRectangle(cornerRadius: 22).fill(Ink.card))
     }
 
+    @ViewBuilder
+    private func visualPreview(_ visual: QuestionVisual, index: Int) -> some SwiftUI.View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(visual.title)
+                .font(.headline)
+            if let bytes = visual.image.bytes, let image = UIImage(data: bytes) {
+                if expandedVisual == index {
+                    ScrollView([.horizontal, .vertical]) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: max(280, min(image.size.width, 700)) * CGFloat(min(4, max(1, zoom * magnification))))
+                            .accessibilityLabel(visual.alt)
+                    }
+                    .frame(height: 320)
+                    .gesture(MagnifyGesture()
+                        .updating($magnification) { value, state, _ in state = value.magnification }
+                        .onEnded { value in zoom = min(4, max(1, zoom * value.magnification)) })
+                    HStack {
+                        Button("Zoom in", systemImage: "plus.magnifyingglass") { zoom = min(4, zoom + 0.5) }
+                        Button("Zoom out", systemImage: "minus.magnifyingglass") { zoom = max(1, zoom - 0.5) }
+                        Button("Collapse") { expandedVisual = nil }
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(minHeight: 44)
+                } else {
+                    Button {
+                        expandedVisual = index
+                        zoom = 1
+                    } label: {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity, maxHeight: 200)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Expand " + visual.title)
+                    .accessibilityHint(visual.alt)
+                    .accessibilityIdentifier("question-visual-\(index)")
+                }
+            }
+            Text(visual.alt)
+                .font(.subheadline)
+                .foregroundStyle(Ink.faint)
+            if let source = visual.source {
+                DisclosureGroup("Diagram source") {
+                    Text(verbatim: source)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+
     private func choiceButton(
         _ title: String,
         choice: String,
@@ -137,7 +217,7 @@ struct AnswerSheetView: SwiftUI.View {
         identifier: String
     ) -> some SwiftUI.View {
         Button {
-            Swift.Task { await model.answer(choice) }
+            Swift.Task { await model.answer(choice, eventId: sheet.eventId) }
         } label: {
             Text(title)
                 .font(.body.weight(.semibold))
