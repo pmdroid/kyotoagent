@@ -471,8 +471,14 @@ impl Gate {
     /// different answer. Like a permission, the question is let go as the
     /// answer lands, so a second answer to it is refused too.
     pub fn answer_question(&self, answer: String) -> Result<(), AnswerError> {
+        self.answer_question_for(None, answer)
+    }
+
+    pub fn answer_question_for(&self, id: Option<&str>, answer: String) -> Result<(), AnswerError> {
         let mut state = self.lock();
-        if state.open_question.is_none() {
+        if state.open_question.is_none()
+            || id.is_some_and(|id| state.open_question.as_deref() != Some(id))
+        {
             return Err(AnswerError::NothingOpen);
         }
         state.live_question = Some(answer);
@@ -557,12 +563,23 @@ impl Gate {
         text: &str,
         choices: &[String],
     ) -> Result<String, GateError> {
-        let id = self.session.next_event_id()?;
-        let asked =
-            Event::new(&id, &now(), turn_id, EventKind::Question).with_body(&QuestionBody {
+        self.ask_visual_question(
+            turn_id,
+            QuestionBody {
                 text: text.to_string(),
                 choices: choices.to_vec(),
-            })?;
+                visuals: Vec::new(),
+            },
+        )
+    }
+
+    pub fn ask_visual_question(
+        &self,
+        turn_id: &str,
+        question: QuestionBody,
+    ) -> Result<String, GateError> {
+        let id = self.session.next_event_id()?;
+        let asked = Event::new(&id, &now(), turn_id, EventKind::Question).with_body(&question)?;
         self.session.append(&asked)?;
         self.stop_on_question(&id)?;
         self.set_status(Status::Waiting)?;

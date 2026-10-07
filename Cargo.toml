@@ -24,6 +24,7 @@ include = [
     "/ios/Fixtures/*.json",
     "/.agents/AGENTS.md",
     "/.agents/skills/verify-kyotoagent/**",
+    "/.agents/skills/kyoto-plan/**",
     "/.agents/skills/verify-kyotoagent-tui/**",
     "/.kyotoagent/closeout.yaml",
     "/.acpdash/closeout.yaml",
@@ -102,6 +103,8 @@ crossterm = "0.29"
 png = "0.17"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff", "ico"] }
 infer = "0.19"
+mermaid-rs-renderer = { version = "0.3.1", default-features = false }
+resvg = { version = "0.47", default-features = false, features = ["text", "system-fonts"] }
 pdf_oxide = { version = "0.3.78", default-features = false, features = ["rendering"] }
 base64 = "0.22"
 jsonwebtoken = { version = "9", default-features = false }

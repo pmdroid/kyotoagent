@@ -247,6 +247,8 @@ pub struct QuestionBody {
     pub text: String,
     /// The choices, in the order they were offered.
     pub choices: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub visuals: Vec<crate::question::QuestionVisual>,
 }
 
 /// The chosen answer. `question_id` names the question it answers; without it

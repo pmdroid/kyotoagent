@@ -700,13 +700,12 @@ fn question_body(event: &Event) -> Option<Value> {
     let question: QuestionBody = event.body_as().unwrap_or(QuestionBody {
         text: String::new(),
         choices: Vec::new(),
+        visuals: Vec::new(),
     });
-    Some(serde_json::json!({
-        "text": question.text,
-        "choices": question.choices,
-        "answer": Value::Null,
-        "eventId": event.id,
-    }))
+    let mut body = serde_json::to_value(question).ok()?;
+    body["answer"] = Value::Null;
+    body["eventId"] = Value::from(event.id.clone());
+    Some(body)
 }
 
 /// A permission card. While the question is open it carries the diff or the
@@ -836,6 +835,7 @@ mod tests {
                 serde_json::to_value(QuestionBody {
                     text: "Which title?".into(),
                     choices: vec!["Kyoto Agent".into(), "Kyoto Agent CLI".into()],
+                    visuals: Vec::new(),
                 })
                 .expect("a question body"),
             ),
@@ -871,6 +871,7 @@ mod tests {
             serde_json::to_value(QuestionBody {
                 text: "Which title?".into(),
                 choices: vec!["Kyoto Agent".into(), "Kyoto Agent CLI".into()],
+                visuals: Vec::new(),
             })
             .expect("a question body"),
         )];
@@ -880,6 +881,7 @@ mod tests {
         assert!(cards[0].body["answer"].is_null());
         assert_eq!(cards[0].body["choices"][1], Value::from("Kyoto Agent CLI"));
         assert_eq!(cards[0].body["eventId"], Value::from("e1"));
+        assert!(cards[0].body.get("visuals").is_none());
     }
 
     #[test]
@@ -928,6 +930,7 @@ mod tests {
                 serde_json::to_value(QuestionBody {
                     text: "First?".into(),
                     choices: vec!["a".into()],
+                    visuals: Vec::new(),
                 })
                 .expect("a question body"),
             ),
@@ -937,6 +940,7 @@ mod tests {
                 serde_json::to_value(QuestionBody {
                     text: "Second?".into(),
                     choices: vec!["b".into()],
+                    visuals: Vec::new(),
                 })
                 .expect("a question body"),
             ),

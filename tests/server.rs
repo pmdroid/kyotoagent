@@ -969,6 +969,78 @@ async fn restarting_leaves_an_unanswered_permission_waiting() {
 /// A question the model asks says `question` on the list, and the reply text
 /// answers it.
 #[tokio::test]
+async fn visual_questions_survive_http_projection_and_reject_stale_answers() {
+    let first = serde_json::json!({
+        "text": "When should review happen?", "choices": ["Before PR", "After PR"],
+        "visuals": [{"title": "Before PR", "alt": "Implement then review then PR", "mermaid": "flowchart LR\n A[Implement] --> B[Review]\n B --> C[PR]"}]
+    });
+    let fixture = Fixture::new(
+        "visual-questions",
+        vec![
+            Canned::Json(tool_call_reply(vec![("ask", first)])),
+            Canned::Json(tool_call_reply(vec![(
+                "ask",
+                serde_json::json!({"text":"Which branch?","choices":["Main","New branch"]}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"Decisions recorded."}),
+            )])),
+        ],
+    )
+    .await;
+    let id = fixture.add_session("visual").await;
+    fixture.client.message(&id, "Plan review").await;
+    let view = fixture.client.wait_for_status(&id, "waiting").await;
+    let question = view["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "question")
+        .unwrap();
+    let first_id = question["body"]["eventId"].as_str().unwrap().to_string();
+    let image: kyotoagent::attachment::ImageAttachment =
+        serde_json::from_value(question["body"]["visuals"][0]["image"].clone()).unwrap();
+    image.validate().unwrap();
+    assert_eq!(
+        question["body"]["visuals"][0]["source"],
+        "flowchart LR\n A[Implement] --> B[Review]\n B --> C[PR]"
+    );
+    assert_eq!(
+        fixture.client.answer(&id, &first_id, "Before PR").await.0,
+        204
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let second_id = loop {
+        let view = fixture.client.view(&id).await;
+        if let Some(card) = view["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["kind"] == "question" && c["body"]["text"] == "Which branch?")
+        {
+            break card["body"]["eventId"].as_str().unwrap().to_string();
+        }
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(
+        fixture.client.answer(&id, &first_id, "After PR").await.0,
+        409
+    );
+    assert_eq!(
+        fixture.client.answer(&id, &second_id, "New branch").await.0,
+        204
+    );
+    let view = fixture.client.wait_for_status(&id, "idle").await;
+    assert!(view["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["body"]["text"] == "New branch"));
+}
+
+#[tokio::test]
 async fn a_question_is_answered_by_its_reply_text() {
     let replies = vec![
         Canned::Json(tool_call_reply(vec![(

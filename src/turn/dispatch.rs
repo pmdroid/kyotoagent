@@ -620,11 +620,38 @@ pub(super) async fn execute_tool(
             }
             let text = string_arg(args, "text").unwrap_or_default();
             let choices = choices_arg(args);
+            let visual_tools = tools.clone();
+            let visual_turn = turn_id.to_string();
+            let visual_args = args.clone();
+            let visuals = tokio::task::spawn_blocking(move || {
+                crate::question::prepare(&visual_tools, &visual_turn, &visual_args)
+            })
+            .await?;
+            let visuals = match visuals {
+                Ok(visuals) => visuals,
+                Err(error) => {
+                    return Ok(ToolOutcome {
+                        is_error: true,
+                        images: Vec::new(),
+                        summary: error,
+                        wrote: None,
+                        failure: None,
+                    })
+                }
+            };
             let gate = tools.gate().clone();
             let turn_id = turn_id.to_string();
-            let result =
-                tokio::task::spawn_blocking(move || gate.ask_question(&turn_id, &text, &choices))
-                    .await?;
+            let result = tokio::task::spawn_blocking(move || {
+                gate.ask_visual_question(
+                    &turn_id,
+                    crate::events::QuestionBody {
+                        text,
+                        choices,
+                        visuals,
+                    },
+                )
+            })
+            .await?;
             match result {
                 Ok(answer) => ToolOutcome {
                     is_error: false,
