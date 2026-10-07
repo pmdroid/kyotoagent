@@ -45,7 +45,8 @@ pub(super) struct PollData {
 }
 
 pub(super) async fn fetch(context: &PollContext, client: &Client) -> Result<PollData, String> {
-    let (info, sessions, projects, layout) = tokio::join!(
+    let (_, info, sessions, projects, layout) = tokio::join!(
+        client.request("POST", "/v1/tui/heartbeat", None),
         async {
             if context.server.is_some() {
                 client.server_info().await.map(Some)
