@@ -64,7 +64,6 @@ pub(super) async fn run_turn(
                     items: Vec::new(),
                 },
             )?;
-            maybe_prefire(turn).await;
             return Ok(());
         }
     };
@@ -165,7 +164,10 @@ pub(super) async fn run_turn(
         )
         .await
         {
-            if matches!(error, TurnError::ContextLimit { .. }) {
+            if matches!(
+                error,
+                TurnError::ContextLimit { .. } | TurnError::Compaction(_)
+            ) {
                 result_text = error.to_string();
                 break;
             }
@@ -509,6 +511,13 @@ pub(super) async fn run_turn(
         append_result(session, turn_id, &result_text, &note)?;
     }
     turn.flight.clear();
+    if turn.compact.requested.swap(false, Ordering::SeqCst) && !*cancel.borrow() {
+        if let Err(error) =
+            wait_and_run_compact(&turn.compact, session, client, &turn.config, &mut cancel).await
+        {
+            append_result(session, turn_id, &error.to_string(), "")?;
+        }
+    }
     set_status(session, Status::Idle)?;
 
     // The proof event: what the turn wrote, the git state of the workspace, and
@@ -537,7 +546,6 @@ pub(super) async fn run_turn(
         items: closeout.proof_items_with_carried_passes(),
     };
     append_proof(session, turn_id, &proof)?;
-    maybe_prefire(turn).await;
 
     Ok(())
 }

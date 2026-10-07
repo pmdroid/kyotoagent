@@ -138,8 +138,6 @@ struct File {
     effort: Option<String>,
     #[serde(default = "default_compact_percent")]
     compact_percent: u32,
-    #[serde(default = "default_prefire_percent")]
-    prefire_percent: u32,
     #[serde(default)]
     listen: Option<String>,
     #[serde(default)]
@@ -218,7 +216,6 @@ pub struct Config {
     pub grok_client_id: Option<String>,
     pub effort: Option<String>,
     pub compact_percent: u32,
-    pub prefire_percent: u32,
     pub listen: Option<String>,
     pub listen_cert: Option<String>,
     pub listen_key: Option<String>,
@@ -261,10 +258,6 @@ impl Project {
 
 fn default_compact_percent() -> u32 {
     crate::compact::DEFAULT_COMPACT_PERCENT
-}
-
-fn default_prefire_percent() -> u32 {
-    crate::compact::DEFAULT_PREFIRE_PERCENT
 }
 
 fn filled(value: Option<String>) -> Option<String> {
@@ -317,7 +310,6 @@ impl Default for Config {
             grok_client_id: None,
             effort: None,
             compact_percent: crate::compact::DEFAULT_COMPACT_PERCENT,
-            prefire_percent: crate::compact::DEFAULT_PREFIRE_PERCENT,
             listen: None,
             listen_cert: None,
             listen_key: None,
@@ -436,7 +428,6 @@ impl Config {
             grok_client_id: file.grok_client_id,
             effort: file.effort,
             compact_percent: file.compact_percent,
-            prefire_percent: file.prefire_percent,
             listen: file.listen,
             listen_cert: file.listen_cert,
             listen_key: file.listen_key,
@@ -1751,7 +1742,6 @@ model = "grok-4.6"
         assert_eq!(config.request_effort(), Some("high"));
         assert_eq!(config.models_url(), "x/models");
         assert_eq!(config.compact_percent, 85);
-        assert_eq!(config.prefire_percent, 70);
         assert_eq!(config.provider_context_window(), None);
     }
 

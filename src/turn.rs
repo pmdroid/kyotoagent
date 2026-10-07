@@ -466,6 +466,7 @@ pub enum TurnError {
     /// The tool arguments were not the JSON the tool expected.
     Args(serde_json::Error),
     Goal(String),
+    Compaction(String),
     ContextLimit {
         estimated: u64,
         limit: u64,
@@ -487,6 +488,7 @@ impl std::fmt::Display for TurnError {
             TurnError::Join(source) => write!(f, "a task did not finish: {source}"),
             TurnError::Config(source) => write!(f, "{source}"),
             TurnError::Goal(message) => write!(f, "{message}"),
+            TurnError::Compaction(message) => write!(f, "Context compaction failed: {message}. The original history was kept. Retry /compact."),
             TurnError::ContextLimit { estimated, limit } => write!(f, "The estimated request uses {estimated} tokens and exceeds the model context limit {limit}. Reduce the prompt or tool output and retry."),
             TurnError::Args(source) => write!(f, "the tool arguments were not JSON: {source}"),
         }
@@ -554,11 +556,11 @@ pub enum AskOutcome {
 /// One running turn's cancel handle.
 struct RunningTurn {
     cancel: tokio::sync::watch::Sender<bool>,
-    turn_id: String,
 }
 
 struct CompactSlot {
     job: Mutex<Option<Arc<CompactJob>>>,
+    requested: AtomicBool,
 }
 
 struct CompactJob {
@@ -571,6 +573,7 @@ impl CompactSlot {
     fn new() -> Arc<CompactSlot> {
         Arc::new(CompactSlot {
             job: Mutex::new(None),
+            requested: AtomicBool::new(false),
         })
     }
 
@@ -619,6 +622,7 @@ impl CompactSlot {
     }
 
     fn cancel(&self) {
+        self.requested.store(false, Ordering::SeqCst);
         if let Some(job) = self.current() {
             let _ = job.cancel.send(true);
         }
@@ -1276,7 +1280,6 @@ impl Runner {
             .map(Path::to_path_buf);
         let client = ChatClient::in_root(&config, root.as_deref())?;
         let compact_percent = config.compact_percent;
-        let prefire_percent = config.prefire_percent;
         let workspace = state.tools.workspace().to_path_buf();
         let meta = state.session.meta().ok();
         let profile = meta.as_ref().and_then(|meta| meta.profile.clone());
@@ -1319,10 +1322,8 @@ impl Runner {
             silent,
             turn_id: turn_id.clone(),
             compact_percent,
-            prefire_percent,
             flight: Arc::clone(&state.flight),
             runner: Arc::clone(&runner),
-            state: Arc::clone(state),
             root,
             child,
             goal_run: meta
@@ -1358,10 +1359,7 @@ impl Runner {
             }
         });
 
-        *turn = Some(RunningTurn {
-            cancel: cancel_tx,
-            turn_id: turn_id.clone(),
-        });
+        *turn = Some(RunningTurn { cancel: cancel_tx });
         Ok(TurnStart::Id(turn_id))
     }
 
@@ -1386,18 +1384,16 @@ impl Runner {
         let client = ChatClient::in_root(&config, root)?;
         let runner = self.me.upgrade().expect("the runner is still held");
         let done = Arc::clone(&state);
-        let preserve_turn = state
-            .turn
-            .lock()
-            .expect("the turn slot is not poisoned")
-            .as_ref()
-            .map(|turn| turn.turn_id.clone());
+        let turn = state.turn.lock().expect("the turn slot is not poisoned");
+        if turn.is_some() {
+            state.compact.requested.store(true, Ordering::SeqCst);
+            return Ok(());
+        }
         spawn_compact(
             state.session.clone(),
             Arc::clone(&state.compact),
             client,
             config,
-            preserve_turn,
             move || runner.after_idle(&done),
         );
         Ok(())
@@ -1930,10 +1926,8 @@ struct Turn {
     silent: bool,
     turn_id: String,
     compact_percent: u32,
-    prefire_percent: u32,
     flight: Arc<Flight>,
     runner: Arc<Runner>,
-    state: Arc<SessionState>,
     root: Option<PathBuf>,
     child: bool,
     goal_run: bool,

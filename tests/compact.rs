@@ -210,6 +210,16 @@ fn text_reply(text: &str, prompt_tokens: u64) -> String {
     .to_string()
 }
 
+fn summary_reply(text: &str) -> String {
+    text_reply(
+        &format!(
+            "{text}\n{}",
+            "Verified task state and pending requirements. ".repeat(12)
+        ),
+        20,
+    )
+}
+
 fn tool_reply(name: &str, args: Value, prompt_tokens: u64) -> String {
     serde_json::json!({
         "choices": [{
@@ -410,7 +420,7 @@ async fn manual_compaction_fits_oversized_history_before_sending() {
     let fixture = Fixture::new(
         "uncached-manual-capacity",
         catalog(Some(10000)),
-        vec![Canned::Json(text_reply("bounded history summary", 1))],
+        vec![Canned::Json(summary_reply("bounded history summary"))],
         Duration::from_millis(250),
     );
     fixture.add_session("91bc");
@@ -432,7 +442,7 @@ async fn oversized_history_is_fitted_before_compaction_and_inference() {
     let fixture = Fixture::new(
         "oversized-history",
         catalog(Some(10000)),
-        vec![Canned::Json(text_reply("bounded history summary", 1))],
+        vec![Canned::Json(summary_reply("bounded history summary"))],
         Duration::ZERO,
     );
     fixture.add_session("91bc");
@@ -453,7 +463,7 @@ async fn oversized_history_is_fitted_before_compaction_and_inference() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_summary_that_enlarges_history_is_not_saved_or_retried() {
+async fn a_summary_that_enlarges_history_stops_without_replacing_history() {
     let fixture = Fixture::new(
         "expanding-summary",
         catalog(Some(100000)),
@@ -492,14 +502,13 @@ async fn a_summary_that_enlarges_history_is_not_saved_or_retried() {
             .count(),
         1
     );
-    let posted = fixture
-        .chat()
-        .into_iter()
-        .rfind(|body| !is_compact_body(body))
-        .unwrap();
-    assert!(user_contents(&posted)
+    assert!(fixture
+        .events("91bc")
         .iter()
-        .any(|text| text.contains("older requirements still readable")));
+        .any(|event| event.kind == EventKind::Result
+            && event.body["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("did not reduce context usage"))));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -569,7 +578,7 @@ async fn manual_compaction_preserves_a_running_ask_and_its_permission() {
                 serde_json::json!({"path": "notes.md", "contents": "hello"}),
                 100,
             )),
-            Canned::Json(text_reply("older task summary", 20)),
+            Canned::Json(summary_reply("older task summary")),
             Canned::Json(tool_reply(
                 "finish",
                 serde_json::json!({"text": "done", "proof": "checked"}),
@@ -581,7 +590,7 @@ async fn manual_compaction_preserves_a_running_ask_and_its_permission() {
     let workspace = fixture.add_session("91bc");
     fixture.prior_history(
         "91bc",
-        "An older task with enough readable background to summarize accurately",
+        &"An older task with enough readable background to summarize accurately. ".repeat(40),
     );
     fixture
         .runner
@@ -589,12 +598,8 @@ async fn manual_compaction_preserves_a_running_ask_and_its_permission() {
         .unwrap();
     fixture.wait_for_status("91bc", Status::Waiting).await;
     fixture.runner.compact("91bc").unwrap();
-    fixture.wait_compacting("91bc", true).await;
-    fixture.wait_compacting("91bc", false).await;
-    let compact = fixture.chat().into_iter().find(is_compact_body).unwrap();
-    assert!(user_contents(&compact)
-        .iter()
-        .all(|text| !text.contains("Create notes.md without losing this request")));
+    assert!(!fixture.runner.is_compacting("91bc"));
+    assert!(fixture.chat().iter().all(|body| !is_compact_body(body)));
     fixture
         .runner
         .answer("91bc", kyotoagent::permit::Answer::allow_once())
@@ -653,7 +658,7 @@ async fn a_large_new_ask_compacts_before_its_first_completion() {
         "large-new-ask",
         catalog(Some(64000)),
         vec![
-            Canned::Json(text_reply("Keep the new request requirement", 20)),
+            Canned::Json(summary_reply("Keep the new request requirement")),
             Canned::Json(tool_reply(
                 "finish",
                 serde_json::json!({ "text": "done", "proof": "checked" }),
@@ -694,7 +699,7 @@ async fn new_tool_output_compacts_before_the_next_completion() {
                 serde_json::json!({ "path": "large.txt" }),
                 100,
             )),
-            Canned::Json(text_reply("Keep the request and the file findings", 20)),
+            Canned::Json(summary_reply("Keep the request and the file findings")),
             Canned::Json(tool_reply(
                 "finish",
                 serde_json::json!({ "text": "done", "proof": "checked" }),
@@ -741,7 +746,7 @@ async fn advertised_hundred_thousand_tokens_compacts_before_the_next_complete() 
                 serde_json::json!({ "path": "." }),
                 90000,
             )),
-            Canned::Json(text_reply("files and unfinished work", 40)),
+            Canned::Json(summary_reply("files and unfinished work")),
             Canned::Json(tool_reply(
                 "finish",
                 serde_json::json!({ "text": "done", "proof": "cargo test passed." }),
@@ -751,7 +756,7 @@ async fn advertised_hundred_thousand_tokens_compacts_before_the_next_complete() 
         Duration::ZERO,
     );
     fixture.add_session("91bc");
-    fixture.prior_history("91bc", "older request");
+    fixture.prior_history("91bc", &"older request context ".repeat(100));
     fixture
         .runner
         .ask("91bc", "first ask")
@@ -886,7 +891,7 @@ async fn provider_window_is_used_when_the_catalog_omits_length() {
                 serde_json::json!({ "path": "." }),
                 90000,
             )),
-            Canned::Json(text_reply("provider summary", 40)),
+            Canned::Json(summary_reply("provider summary")),
             Canned::Json(tool_reply(
                 "finish",
                 serde_json::json!({ "text": "done", "proof": "cargo test passed." }),
@@ -896,7 +901,7 @@ async fn provider_window_is_used_when_the_catalog_omits_length() {
         100000,
     );
     fixture.add_session("91bc");
-    fixture.prior_history("91bc", "older request");
+    fixture.prior_history("91bc", &"older request context ".repeat(100));
     fixture
         .runner
         .ask("91bc", "first ask")
@@ -944,108 +949,62 @@ async fn a_window_cached_for_another_model_is_replaced_by_the_running_model() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn idle_at_prefire_percent_compacts_and_the_next_ask_joins() {
+async fn idle_at_seventy_five_percent_does_not_start_background_compaction() {
     let fixture = Fixture::new(
-        "prefire",
+        "no-prefire",
         catalog(Some(100000)),
         vec![
             Canned::Json(text_reply("turn one", 75000)),
-            Canned::Json(text_reply("the session so far", 40)),
             Canned::Json(text_reply("woke", 60)),
         ],
-        Duration::from_millis(250),
+        Duration::ZERO,
     );
     fixture.add_session("91bc");
-    fixture
-        .runner
-        .ask("91bc", "first ask")
-        .expect("the turn starts");
-    fixture.wait_for_cards("91bc", 1).await;
+    fixture.runner.ask("91bc", "first ask").unwrap();
+    fixture.wait_for_cards("91bc", 2).await;
     fixture.wait_for_status("91bc", Status::Idle).await;
-    fixture.wait_compacting("91bc", true).await;
-    fixture
-        .runner
-        .ask("91bc", "wake")
-        .expect("the next ask waits");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!fixture.runner.is_compacting("91bc"));
+    assert_eq!(fixture.chat().len(), 1);
+    fixture.runner.ask("91bc", "wake").unwrap();
     fixture.wait_for_cards("91bc", 4).await;
     fixture.wait_for_status("91bc", Status::Idle).await;
-    let posts = fixture.chat();
-    let wake = posts
-        .iter()
-        .rev()
-        .find(|body| !is_compact_body(body))
-        .expect("the wake complete");
-    let users = user_contents(wake);
-    assert!(
-        users.iter().any(|text| text.contains("the session so far")),
-        "the wake uses the summary: {wake}"
-    );
-    assert!(
-        users.iter().all(|text| !text.contains("first ask")),
-        "the compacted ask is omitted: {wake}"
-    );
-    assert!(users.iter().any(|text| text.contains("wake")), "{wake}");
+    assert!(fixture.chat().iter().all(|body| !is_compact_body(body)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_failed_compact_leaves_the_next_complete_on_the_full_transcript() {
+async fn a_failed_compact_stops_with_a_visible_error_and_keeps_history() {
     let fixture = Fixture::new(
         "fail",
         catalog(Some(100000)),
         vec![
             Canned::Json(tool_reply(
                 "list_dir",
-                serde_json::json!({ "path": "." }),
+                serde_json::json!({"path": "."}),
                 90000,
             )),
-            Canned::Status(500, "nope".into()),
-            Canned::Json(tool_reply(
-                "list_dir",
-                serde_json::json!({ "path": "." }),
-                90000,
-            )),
-            Canned::Json(tool_reply(
-                "finish",
-                serde_json::json!({ "text": "done", "proof": "cargo test passed." }),
-                50,
-            )),
+            Canned::Status(400, "invalid summary request".into()),
         ],
         Duration::ZERO,
     );
     fixture.add_session("91bc");
     fixture.prior_history("91bc", "older request");
-    fixture
-        .runner
-        .ask("91bc", "first ask")
-        .expect("the turn starts");
+    fixture.runner.ask("91bc", "first ask").unwrap();
     fixture.wait_for_cards("91bc", 4).await;
     fixture.wait_for_status("91bc", Status::Idle).await;
-    assert!(
-        fixture
-            .events("91bc")
-            .iter()
-            .all(|event| event.kind != EventKind::Compact),
-        "a failed compact records no event"
-    );
-    assert_eq!(
-        fixture
-            .chat()
-            .iter()
-            .filter(|body| is_compact_body(body))
-            .count(),
-        1
-    );
-    let later = fixture
-        .chat()
-        .into_iter()
-        .rfind(|body| !is_compact_body(body))
-        .expect("a later complete");
-    assert!(
-        user_contents(&later)
-            .iter()
-            .any(|text| text.contains("first ask")),
-        "the full ask stays: {later}"
-    );
+    assert!(fixture
+        .events("91bc")
+        .iter()
+        .all(|event| event.kind != EventKind::Compact));
+    assert_eq!(fixture.chat().len(), 2);
+    assert!(fixture
+        .events("91bc")
+        .iter()
+        .any(|event| event.kind == EventKind::Result
+            && event.body["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("Context compaction failed"))));
+    assert!(!fixture.runner.is_compacting("91bc"));
 }
 
 struct SocketFixture {
@@ -1166,7 +1125,7 @@ async fn a_message_during_compact_is_queued_and_runs_when_compact_finishes() {
         catalog(Some(100000)),
         vec![
             Canned::Json(text_reply("turn one", 75000)),
-            Canned::Json(text_reply("the session so far", 40)),
+            Canned::Json(summary_reply("the session so far")),
             Canned::Json(text_reply("ran next", 20)),
         ],
         Duration::from_millis(800),
@@ -1180,6 +1139,11 @@ async fn a_message_during_compact_is_queued_and_runs_when_compact_finishes() {
     let body = serde_json::json!({ "text": "first ask" }).to_string();
     let (status, response) = fixture
         .request("POST", &format!("/v1/sessions/{id}/messages"), Some(&body))
+        .await;
+    assert_eq!(status, 202, "{response}");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (status, response) = fixture
+        .request("POST", &format!("/v1/sessions/{id}/compact"), None)
         .await;
     assert_eq!(status, 202, "{response}");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1242,13 +1206,13 @@ async fn first_turn_compacts_completed_tools_repeatedly() {
                 serde_json::json!({"path": "large.txt"}),
                 90000,
             )),
-            Canned::Json(text_reply("first file findings", 20)),
+            Canned::Json(summary_reply("first file findings")),
             Canned::Json(tool_reply(
                 "read_file",
                 serde_json::json!({"path": "large.txt"}),
                 90000,
             )),
-            Canned::Json(text_reply("second file findings", 20)),
+            Canned::Json(summary_reply("second file findings")),
             Canned::Json(tool_reply(
                 "finish",
                 serde_json::json!({"text": "done", "proof": "checked"}),
@@ -1347,7 +1311,7 @@ async fn provider_overflow_compacts_and_resubmits_once() {
         vec![
             Canned::Json(tool_reply("read_file", serde_json::json!({"path": "large.txt"}), 100)),
             Canned::Status(400, serde_json::json!({"error": "[input_too_large] The prompt is too long for this model's context window"}).to_string()),
-            Canned::Json(text_reply("file findings", 20)),
+            Canned::Json(summary_reply("file findings")),
             Canned::Json(tool_reply("finish", serde_json::json!({"text": "recovered", "proof": "checked"}), 50)),
         ],
         Duration::ZERO,
@@ -1386,7 +1350,7 @@ async fn provider_usage_includes_new_tool_output_before_compaction() {
                 serde_json::json!({"path": "large.txt"}),
                 80000,
             )),
-            Canned::Json(text_reply("file findings", 20)),
+            Canned::Json(summary_reply("file findings")),
             Canned::Json(tool_reply(
                 "finish",
                 serde_json::json!({"text": "done", "proof": "checked"}),
@@ -1420,7 +1384,7 @@ async fn a_second_provider_overflow_stops_without_another_retry() {
                 100,
             )),
             overflow.clone(),
-            Canned::Json(text_reply("file findings", 20)),
+            Canned::Json(summary_reply("file findings")),
             overflow,
         ],
         Duration::ZERO,
@@ -1526,7 +1490,7 @@ async fn overflowing_compaction_input_is_reduced_before_retry() {
                 90000,
             )),
             Canned::Status(400, "input_too_large".into()),
-            Canned::Json(text_reply("file findings", 20)),
+            Canned::Json(summary_reply("file findings")),
             Canned::Json(tool_reply(
                 "finish",
                 serde_json::json!({"text": "done", "proof": "checked"}),
@@ -1558,12 +1522,13 @@ async fn manual_compaction_cannot_rewind_an_active_checkpoint() {
                 serde_json::json!({"path": "large.txt"}),
                 90000,
             )),
-            Canned::Json(text_reply("active file findings", 20)),
+            Canned::Json(summary_reply("active file findings")),
             Canned::Json(tool_reply(
                 "write_file",
                 serde_json::json!({"path": "notes.md", "contents": "hello"}),
                 100,
             )),
+            Canned::Json(summary_reply("updated checkpoint")),
             Canned::Json(text_reply("done", 50)),
         ],
         Duration::ZERO,
@@ -1571,7 +1536,7 @@ async fn manual_compaction_cannot_rewind_an_active_checkpoint() {
     let workspace = fixture.add_session("91bc");
     fixture.prior_history(
         "91bc",
-        "An older task with enough readable background to summarize accurately",
+        &"An older task with enough readable background to summarize accurately. ".repeat(40),
     );
     fs::write(workspace.join("large.txt"), "evidence\n".repeat(200)).unwrap();
     fixture
@@ -1598,7 +1563,7 @@ async fn manual_compaction_cannot_rewind_an_active_checkpoint() {
             .iter()
             .filter(|event| event.kind == EventKind::Compact)
             .count(),
-        1
+        2
     );
 }
 
@@ -1769,4 +1734,81 @@ async fn closeout_passes_expire_after_between_turn_edits() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn closeout_fingerprint_uses_the_head_at_turn_end() {
     closeout_across_turns("closeout-commit", false, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn degenerate_summary_is_retried_before_history_is_replaced() {
+    let fixture = Fixture::new(
+        "degenerate-retry",
+        catalog(Some(100000)),
+        vec![
+            Canned::Json(tool_reply(
+                "list_dir",
+                serde_json::json!({"path": "."}),
+                90000,
+            )),
+            Canned::Json(text_reply(
+                "The height helper is past the readable window.",
+                20,
+            )),
+            Canned::Json(summary_reply(
+                "Preserve the filters and archive tool requirements",
+            )),
+            Canned::Json(tool_reply(
+                "finish",
+                serde_json::json!({"text": "done"}),
+                50,
+            )),
+        ],
+        Duration::from_millis(50),
+    );
+    fixture.add_session("91bc");
+    fixture.prior_history("91bc", &"Original requirements and decisions. ".repeat(100));
+    fixture
+        .runner
+        .ask("91bc", "Add filters and archive-only tool")
+        .unwrap();
+    fixture.wait_compacting("91bc", true).await;
+    assert_eq!(fixture.view("91bc").status, Status::Working);
+    fixture.wait_for_cards("91bc", 4).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    let posts = fixture.chat();
+    assert_eq!(posts.iter().filter(|body| is_compact_body(body)).count(), 2);
+    assert!(posts[1]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Pending Tasks"));
+    let compacts = fixture
+        .events("91bc")
+        .into_iter()
+        .filter(|event| event.kind == EventKind::Compact)
+        .collect::<Vec<_>>();
+    assert_eq!(compacts.len(), 1);
+    assert!(compacts[0].body["summary"]
+        .as_str()
+        .unwrap()
+        .contains("filters and archive"));
+    assert!(!fixture.runner.is_compacting("91bc"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancel_during_summary_retry_keeps_history_and_clears_compacting() {
+    let fixture = Fixture::new(
+        "cancel-retry",
+        catalog(Some(100000)),
+        vec![Canned::Json(text_reply("too short", 1))],
+        Duration::from_millis(50),
+    );
+    fixture.add_session("91bc");
+    fixture.prior_history("91bc", &"Original task details. ".repeat(100));
+    fixture.runner.compact("91bc").unwrap();
+    fixture.wait_compacting("91bc", true).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    fixture.runner.cancel("91bc");
+    fixture.wait_compacting("91bc", false).await;
+    assert_eq!(fixture.chat().len(), 1);
+    assert!(fixture
+        .events("91bc")
+        .iter()
+        .all(|event| event.kind != EventKind::Compact));
 }

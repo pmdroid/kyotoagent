@@ -1789,7 +1789,7 @@ fn the_header_shows_the_selected_model_and_effort() {
     let text = draw(&model);
     assert!(text.contains("compact"), "{text}");
     assert!(
-        text.contains("compact \u{00b7} grok-4.6 high \u{00b7} 3 sessions"),
+        text.contains("compacting \u{00b7} grok-4.6 high \u{00b7} 3 sessions"),
         "{text}"
     );
 }
@@ -3012,4 +3012,22 @@ fn idle_panes_have_no_image_and_working_labels_keep_their_row() {
             }
         }
     }
+}
+
+#[test]
+fn compaction_overrides_stale_thinking_and_retry_status() {
+    let mut model = crate::mock::working();
+    model.compacting = true;
+    model.phase = Some(Phase::Thinking);
+    model.retry_status = Some("Provider busy. Retrying in 10s".into());
+    model.sessions[0].compacting = true;
+    let text = draw(&model);
+    assert!(text.contains("Compacting context"), "{text}");
+    assert!(!text.contains("Provider busy"), "{text}");
+    assert_eq!(model.sessions[0].status_text(), "compacting");
+    let area = Rect::new(0, 0, 100, 30);
+    assert!(!(0..30).any(|y| (0..100).any(|x| thinking_at(&model, area, x, y))));
+    model.compacting = false;
+    model.sessions[0].compacting = false;
+    assert!(!draw(&model).contains("Compacting context"));
 }
