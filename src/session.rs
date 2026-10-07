@@ -1013,6 +1013,59 @@ mod tests {
         fs::remove_dir_all(&dir).expect("clean up");
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_partial_append_preserves_the_log() {
+        if std::env::var_os("KYOTO_TEST_PARTIAL_APPEND").is_none() {
+            let output = std::process::Command::new("bash")
+                .args(["-c", "ulimit -f 1; trap '' XFSZ; exec \"$@\"", "bash"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "session::tests::a_failed_partial_append_preserves_the_log",
+                    "--nocapture",
+                ])
+                .env("KYOTO_TEST_PARTIAL_APPEND", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let dir = temp_dir("partial-append");
+        fs::create_dir_all(&dir).unwrap();
+        let session = Session::at(&dir);
+        let event = Event::new("e1", "2026-09-29T00:00:00.000Z", "t1", EventKind::Result);
+        session.append(&event).unwrap();
+        let original = fs::read(session.events_path()).unwrap();
+        let snapshot = session.event_snapshot().unwrap();
+        let large = Event::new("e2", "2026-09-29T00:00:00.000Z", "t1", EventKind::Result)
+            .with_body(&serde_json::json!({"text": "x".repeat(4096)}))
+            .unwrap();
+        assert!(matches!(
+            session.append(&large),
+            Err(SessionError::Io { .. })
+        ));
+        assert_eq!(fs::read(session.events_path()).unwrap(), original);
+        assert_eq!(session.events().unwrap(), vec![event.clone()]);
+        assert_eq!(snapshot.1.as_ref(), &vec![event]);
+        assert_eq!(session.next_event_id().unwrap(), "e2");
+        session
+            .append(&Event::new(
+                "e2",
+                "2026-09-29T00:00:00.000Z",
+                "t1",
+                EventKind::Result,
+            ))
+            .unwrap();
+        assert_eq!(session.events().unwrap().len(), 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn recovery_preserves_a_complete_final_event_without_a_newline() {
         let dir = temp_dir("complete-tail");
