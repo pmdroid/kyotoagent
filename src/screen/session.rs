@@ -87,6 +87,9 @@ fn session_lines(model: &ScreenModel, width: usize) -> Rc<Vec<Line<'static>>> {
 }
 
 pub(super) fn session_action(model: &ScreenModel) -> Option<&str> {
+    if model.compacting {
+        return Some("Compacting context");
+    }
     let selected = model.selected_session();
     let working = selected.is_some_and(|row| row.status == Status::Working);
     model.retry_status.as_deref().or(

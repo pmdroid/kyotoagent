@@ -58,7 +58,7 @@ pub fn pull_target_at(model: &ScreenModel, area: Rect, column: u16, row: u16) ->
 }
 
 pub fn thinking_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -> bool {
-    if model.phase != Some(Phase::Thinking) {
+    if model.compacting || model.phase != Some(Phase::Thinking) {
         return false;
     }
     let inner = session_inner_of(model, area);

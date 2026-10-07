@@ -446,7 +446,7 @@ pub(crate) fn pending_schedules(events: &[Event], now_millis: i64) -> Vec<Schedu
     open
 }
 
-fn running_tasks(events: &[Event]) -> Vec<TaskItem> {
+pub(crate) fn running_tasks(events: &[Event]) -> Vec<TaskItem> {
     let mut open: Vec<TaskItem> = Vec::new();
     for event in events {
         match event.kind {
@@ -477,7 +477,7 @@ fn running_tasks(events: &[Event]) -> Vec<TaskItem> {
     open
 }
 
-fn latest_todos(events: &[Event]) -> Vec<TodoItem> {
+pub(crate) fn latest_todos(events: &[Event]) -> Vec<TodoItem> {
     events
         .iter()
         .rev()

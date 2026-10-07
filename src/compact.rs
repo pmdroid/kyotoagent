@@ -9,7 +9,7 @@ use crate::events::{
 use crate::session::{Session, SessionError};
 
 pub const DEFAULT_COMPACT_PERCENT: u32 = 85;
-pub const DEFAULT_PREFIRE_PERCENT: u32 = 70;
+pub const MIN_SUMMARY_CHARS: usize = 500;
 
 pub fn at_or_above(tokens: u64, window: u64, percent: u32) -> bool {
     window > 0 && tokens.saturating_mul(100) >= window.saturating_mul(u64::from(percent))
@@ -148,7 +148,7 @@ fn one_message_bytes(message: &Message) -> u64 {
 }
 
 pub fn compact_instruction() -> &'static str {
-    "Summarize this coding session for a later turn. Name files that were touched, decisions that were made, and work that is still unfinished. Reply with the summary only."
+    include_str!("prompts/compact.md")
 }
 
 pub fn latest_compact(events: &[Event]) -> Option<&Event> {
@@ -173,7 +173,11 @@ pub fn projected_messages(system: &str, events: &[Event], workspace: &str) -> Ve
                 let prior = through.map(|index| &events[..=index]).unwrap_or(events);
                 out.push(Message::User {
                     content: crate::chat::UserContent::with_images(
-                        format!("{}\n{}", user_info(workspace), body.summary),
+                        format!(
+                            "{}\nThis session continues after context compaction.\n{}",
+                            user_info(workspace),
+                            body.summary
+                        ),
                         &recent_images(prior),
                     ),
                 });
@@ -199,6 +203,12 @@ pub fn projected_messages(system: &str, events: &[Event], workspace: &str) -> Ve
                         }
                     }
                 }
+                let state = handoff_state(events);
+                if !state.is_empty() {
+                    out.push(Message::User {
+                        content: state.into(),
+                    });
+                }
                 project_slice(
                     events_after(events, &body.through_event_id),
                     &mut out,
@@ -211,6 +221,54 @@ pub fn projected_messages(system: &str, events: &[Event], workspace: &str) -> Ve
     }
     project_slice(events, &mut out, &mut first_user, workspace);
     out
+}
+
+pub(crate) fn handoff_state(events: &[Event]) -> String {
+    let mut sections = Vec::new();
+    let todos = crate::view::latest_todos(events)
+        .into_iter()
+        .filter(|item| item.status != crate::events::TodoStatus::Done)
+        .collect::<Vec<_>>();
+    if !todos.is_empty() {
+        sections.push(format!(
+            "Pending TODOs: {}",
+            serde_json::to_string(&todos).unwrap_or_default()
+        ));
+    }
+    let tasks = crate::view::running_tasks(events);
+    if !tasks.is_empty() {
+        sections.push(format!(
+            "Running commands: {}",
+            serde_json::to_string(&tasks).unwrap_or_default()
+        ));
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    for event in events
+        .iter()
+        .filter(|event| event.kind == EventKind::ToolCall)
+    {
+        if let Ok(body) = event.body_as::<ToolCallBody>() {
+            if matches!(body.tool.as_str(), "write_file" | "search_replace") {
+                if let Some(path) = body.args.get("path").and_then(serde_json::Value::as_str) {
+                    paths.insert(path.to_string());
+                }
+            }
+        }
+    }
+    if !paths.is_empty() {
+        sections.push(format!(
+            "File edit targets (check the workspace for actual changes): {}",
+            paths.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if sections.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<system-reminder>\n{}\n</system-reminder>",
+            sections.join("\n")
+        )
+    }
 }
 
 struct Pending {
@@ -519,6 +577,14 @@ fn transcript_dump(events: &[Event]) -> String {
                 if let Ok(body) = event.body_as::<ModelMessageBody>() {
                     lines.push(format!("assistant: {}", body.text));
                 }
+            }
+            EventKind::Result => {
+                if let Ok(body) = event.body_as::<ResultBody>() {
+                    lines.push(format!("completed turn: {}", body.text));
+                }
+            }
+            EventKind::Question | EventKind::QuestionAnswer => {
+                lines.push(format!("{}: {}", event.kind.label(), event.body));
             }
             EventKind::ToolCall => {
                 if let Ok(body) = event.body_as::<ToolCallBody>() {
@@ -1261,5 +1327,25 @@ mod tests {
         assert!(users[1].contains("the accepted prompt"));
         assert!(!users[1].contains("DRAFT TEXT"));
         assert!(!users[1].contains("ship it"));
+    }
+}
+
+#[cfg(test)]
+mod handoff_tests {
+    use super::*;
+
+    #[test]
+    fn compacted_history_reinjects_todos_and_running_commands() {
+        let events = vec![
+            Event::new("e1", "now", "t1", EventKind::UserAsk).with_body(&serde_json::json!({"text": "Keep the requirements"})).unwrap(),
+            Event::new("e2", "now", "t1", EventKind::Todos).with_body(&serde_json::json!({"items": [{"id": "verify", "title": "Verify the archive tool", "status": "in_progress"}]})).unwrap(),
+            Event::new("e3", "now", "t1", EventKind::TaskStart).with_body(&serde_json::json!({"id": "task-1", "argv": ["cargo", "test"]})).unwrap(),
+            Event::new("e4", "now", "t1", EventKind::Compact).with_body(&CompactBody {summary: "Summary of earlier work".into(), through_event_id: "e3".into()}).unwrap(),
+        ];
+        let messages = serde_json::to_string(&projected_messages("system", &events, "/w")).unwrap();
+        assert!(messages.contains("Keep the requirements"));
+        assert!(messages.contains("Verify the archive tool"));
+        assert!(messages.contains("task-1"));
+        assert!(messages.contains("cargo"));
     }
 }
