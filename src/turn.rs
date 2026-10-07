@@ -1341,6 +1341,7 @@ impl Runner {
         tokio::spawn(async move {
             wait_compact(&compact).await;
             if let Err(error) = run_turn(&turn_ctx, cancel_rx).await {
+                let _ = goal::pause_unfinished(&turn_ctx, &error.to_string());
                 idle_after_turn_error(
                     &turn_ctx.session,
                     &turn_ctx.turn_id,
@@ -1942,13 +1943,18 @@ impl Turn {
         } else {
             prompt::system_prompt
         };
-        let text = build(
+        let mut text = build(
             &workspace.to_string_lossy(),
             &self.prompt_skills,
             self.prompt_closeout.as_ref(),
             &agents,
             self.context_length,
         );
+        if self.goal_run {
+            if let Some(goal) = self.session.meta().ok().and_then(|meta| meta.goal) {
+                text.push_str(&format!("\nActive goal outcome criteria: {}\nPrior verification: {}\nThe objective remains authoritative; these criteria do not authorize extra work or narrow the request. Todos are flexible implementation memory. Produce actual behavior evidence, continue ready work without asking for go, and preserve existing permission gates.\n", serde_json::to_string(&goal.criteria).unwrap_or_default(), goal.verification));
+            }
+        }
         let profile = self.session.meta().ok().and_then(|meta| meta.profile);
         if self
             .config

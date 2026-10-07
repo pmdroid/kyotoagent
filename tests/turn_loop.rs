@@ -3369,11 +3369,261 @@ async fn reload_during_an_enhance_rewrite_goes_idle_without_a_stopped_result() {
 }
 
 #[tokio::test]
+async fn goal_evaluation_continues_with_flexible_todos_and_real_output() {
+    let fixture = Fixture::new(
+        "goal-continue",
+        vec![
+            goal_plan_reply(),
+            Canned::Json(tool_call_reply(vec![(
+                "todo",
+                serde_json::json!({"items":[{"id":"investigate","title":"Read the workspace","status":"done"}]}),
+            )])),
+            Canned::Json(text_reply("Everything is done.")),
+            goal_evaluation_reply("continue", ""),
+            Canned::Json(tool_call_reply(vec![
+                ("todo", serde_json::json!({"items":[]})),
+                (
+                    "write_file",
+                    serde_json::json!({"path":"result.txt","contents":"expected"}),
+                ),
+            ])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"The requested file is ready."}),
+            )])),
+            goal_evaluation_reply("candidate_complete", ""),
+            Canned::Json(tool_call_reply(vec![(
+                "run",
+                serde_json::json!({"argv":["sh","-c","test \"$(cat result.txt)\" = expected && printf verified"]}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"verified":true,"text":"Checked the real file contents."}),
+            )])),
+        ],
+    );
+    let workspace = fixture.add_session("goal");
+    fixture.ask("goal", "/goal Ensure result.txt contains expected");
+    fixture.wait_for_waiting_permission("goal").await;
+    assert!(!workspace.join("result.txt").exists());
+    assert!(fixture.view("goal").todos.is_empty());
+    fixture.answer("goal", Answer::allow_once());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !workspace.join("result.txt").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.wait_for_waiting_permission("goal").await;
+    fixture.answer("goal", Answer::allow_once());
+    fixture.wait_for_status("goal", Status::Idle).await;
+    let goal = fixture.view("goal").goal.unwrap();
+    assert_eq!(goal.status, kyotoagent::goal::GoalStatus::Complete);
+    assert_eq!(goal.evaluations_since_resume, 2);
+    assert_eq!(goal.rounds, 1);
+    assert_eq!(goal.criteria.len(), 1);
+    assert_eq!(
+        fs::read_to_string(workspace.join("result.txt")).unwrap(),
+        "expected"
+    );
+    assert!(!fixture
+        .events("goal")
+        .iter()
+        .any(|event| event.kind == EventKind::Question));
+    let bodies = fixture.chat_bodies();
+    let evaluations: Vec<_> = bodies
+        .iter()
+        .filter(|body| body.contains("You are Kyoto's goal completion evaluator"))
+        .collect();
+    assert_eq!(evaluations.len(), 2);
+    assert!(evaluations[0].contains("investigate"));
+    assert!(evaluations[1].contains("result.txt"));
+}
+
+#[tokio::test]
+async fn goal_repeated_gaps_pause_and_skip_remaining_tool_calls() {
+    let gap = Canned::Json(tool_call_reply(vec![(
+        "finish",
+        serde_json::json!({"verified":false,"text":"Missing integration evidence."}),
+    )]));
+    let fixture = Fixture::new(
+        "goal-stalled",
+        vec![
+            goal_plan_reply(),
+            Canned::Json(text_reply("Done.")),
+            goal_evaluation_reply("candidate_complete", ""),
+            gap,
+            Canned::Json(tool_call_reply(vec![
+                ("finish", serde_json::json!({"text":"Done again."})),
+                (
+                    "todo",
+                    serde_json::json!({"items":[{"id":"bad","title":"Should not run","status":"done"}]}),
+                ),
+            ])),
+            goal_evaluation_reply("candidate_complete", ""),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"verified":false,"text":"Missing integration evidence."}),
+            )])),
+        ],
+    );
+    fixture.add_session("goal");
+    fixture.ask("goal", "/goal Prove the integration");
+    fixture.wait_for_turn_to_start("goal").await;
+    fixture.wait_for_status("goal", Status::Idle).await;
+    let goal = fixture.view("goal").goal.unwrap();
+    assert_eq!(goal.status, kyotoagent::goal::GoalStatus::Paused);
+    assert_eq!(goal.rounds, 2);
+    assert!(goal.verification.contains("same gap"));
+    assert!(fixture.view("goal").todos.is_empty());
+    let bodies = fixture.chat_bodies();
+    let reviewers: Vec<_> = bodies
+        .iter()
+        .filter(|body| body.contains("Independently verify"))
+        .collect();
+    assert_eq!(reviewers.len(), 2);
+    assert!(reviewers[1].contains("Missing integration evidence."));
+    assert!(reviewers[1].contains("New objections must identify a real defect"));
+}
+
+#[tokio::test]
+async fn goal_repeated_external_blocker_pauses_and_resume_keeps_outcomes() {
+    let mut replies = vec![goal_plan_reply()];
+    for _ in 0..3 {
+        replies.push(Canned::Json(text_reply("Missing credentials.")));
+        replies.push(goal_evaluation_reply("blocked", "missing_credentials"));
+    }
+    replies.push(Canned::Json(tool_call_reply(vec![(
+        "ask",
+        serde_json::json!({"text":"Which account?","choices":["A","B"]}),
+    )])));
+    let fixture = Fixture::new("goal-blocked", replies);
+    fixture.add_session("goal");
+    fixture.ask("goal", "/goal Check the remote result");
+    fixture.wait_for_turn_to_start("goal").await;
+    fixture.wait_for_status("goal", Status::Idle).await;
+    let before = fixture.view("goal").goal.unwrap();
+    assert_eq!(before.status, kyotoagent::goal::GoalStatus::Paused);
+    assert_eq!(before.blocked_streak, 3);
+    assert_eq!(before.rounds, 0);
+    assert!(before.verification.contains("Next user action"));
+    let session = Session::at(&fixture.root.join("session-goal"));
+    fixture
+        .runner
+        .reload(&[session.dir().to_path_buf()])
+        .unwrap();
+    fixture.ask("goal", "/goal resume");
+    fixture.wait_for_status("goal", Status::Waiting).await;
+    let after = fixture.view("goal").goal.unwrap();
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.criteria, before.criteria);
+    assert!(after.tokens_used > before.tokens_used);
+    assert_eq!(after.blocked_streak, 0);
+    assert_eq!(after.evaluations_since_resume, 0);
+    fixture.ask("goal", "/goal pause");
+    fixture.wait_for_status("goal", Status::Idle).await;
+    assert_eq!(
+        fixture
+            .chat_bodies()
+            .iter()
+            .filter(|body| body.contains("You are Kyoto's goal planner"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn goal_malformed_assessments_fail_closed() {
+    for planner in [true, false] {
+        let mut replies = Vec::new();
+        if !planner {
+            replies.push(goal_plan_reply());
+            replies.push(Canned::Json(text_reply("Done.")));
+        }
+        replies.push(Canned::Json(text_reply("Looks good.")));
+        let fixture = Fixture::new(
+            if planner {
+                "bad-goal-plan"
+            } else {
+                "bad-goal-eval"
+            },
+            replies,
+        );
+        fixture.add_session("goal");
+        fixture.ask("goal", "/goal Produce evidence");
+        fixture.wait_for_turn_to_start("goal").await;
+        fixture.wait_for_status("goal", Status::Idle).await;
+        let goal = fixture.view("goal").goal.unwrap();
+        assert_eq!(goal.status, kyotoagent::goal::GoalStatus::Paused);
+        assert!(goal.verification.contains(if planner {
+            "planning failed"
+        } else {
+            "evaluation failed"
+        }));
+        assert_eq!(goal.rounds, 0);
+    }
+}
+
+#[tokio::test]
+async fn goal_budget_counts_planner_executor_and_evaluator_before_verification() {
+    let replies = [
+        goal_plan_reply(),
+        Canned::Json(text_reply("Done.")),
+        goal_evaluation_reply("candidate_complete", ""),
+    ]
+    .into_iter()
+    .map(|reply| {
+        let Canned::Json(body) = reply else {
+            panic!("json");
+        };
+        let mut body: serde_json::Value = serde_json::from_str(&body).unwrap();
+        body["usage"] = serde_json::json!({"prompt_tokens":7,"completion_tokens":5});
+        Canned::Json(body.to_string())
+    })
+    .collect();
+    let fixture = Fixture::new("goal-assessment-budget", replies);
+    fixture.add_session("goal");
+    fixture.ask("goal", "/goal Produce evidence --budget 36");
+    fixture.wait_for_turn_to_start("goal").await;
+    fixture.wait_for_status("goal", Status::Idle).await;
+    let goal = fixture.view("goal").goal.unwrap();
+    assert_eq!(goal.status, kyotoagent::goal::GoalStatus::BudgetExhausted);
+    assert_eq!(goal.tokens_used, 36);
+    assert_eq!(goal.rounds, 0);
+    assert_eq!(goal.criteria.len(), 1);
+    assert!(!fixture
+        .chat_bodies()
+        .iter()
+        .any(|body| body.contains("Independently verify")));
+}
+
+fn goal_plan_reply() -> Canned {
+    Canned::Json(text_reply(
+        r#"[{"outcome":"The requested result is observable","verification":"Exercise the real entry point and check its output"}]"#,
+    ))
+}
+
+fn goal_evaluation_reply(decision: &str, blocker_key: &str) -> Canned {
+    Canned::Json(text_reply(
+        &serde_json::json!({
+            "decision": decision,
+            "evidence": "Observed current tool output",
+            "next_step": "Check the requested result",
+            "blocker_key": blocker_key,
+        })
+        .to_string(),
+    ))
+}
+
+#[tokio::test]
 async fn a_goal_requires_an_independent_successful_command() {
     let fixture = Fixture::new(
         "goal-verified",
         vec![
+            goal_plan_reply(),
             Canned::Json(text_reply("The file is ready.")),
+            goal_evaluation_reply("candidate_complete", ""),
             Canned::Json(tool_call_reply(vec![(
                 "run",
                 serde_json::json!({ "argv": ["sh", "-c", "test \"$(cat result.txt)\" = expected && printf verified"] }),
@@ -3434,7 +3684,9 @@ async fn a_goal_rejects_a_verdict_without_executed_evidence_and_continues() {
     let fixture = Fixture::new(
         "goal-no-evidence",
         vec![
+            goal_plan_reply(),
             Canned::Json(text_reply("Done.")),
+            goal_evaluation_reply("candidate_complete", ""),
             Canned::Json(tool_call_reply(vec![(
                 "finish",
                 serde_json::json!({ "verified": true, "text": "Looks fine." }),
@@ -3444,6 +3696,7 @@ async fn a_goal_rejects_a_verdict_without_executed_evidence_and_continues() {
                 serde_json::json!({ "text": "Need a check?" }),
             )])),
             Canned::Json(text_reply("Ready.")),
+            goal_evaluation_reply("candidate_complete", ""),
             Canned::Json(tool_call_reply(vec![(
                 "run",
                 serde_json::json!({ "argv": ["printf", "evidence"] }),
@@ -3508,10 +3761,13 @@ async fn a_goal_budget_stops_before_executing_more_tools() {
 async fn a_goal_can_pause_clear_and_report_status_while_waiting() {
     let fixture = Fixture::new(
         "goal-controls",
-        vec![Canned::Json(tool_call_reply(vec![(
-            "ask",
-            serde_json::json!({ "text": "Continue?" }),
-        )]))],
+        vec![
+            goal_plan_reply(),
+            Canned::Json(tool_call_reply(vec![(
+                "ask",
+                serde_json::json!({ "text": "Continue?" }),
+            )])),
+        ],
     );
     fixture.add_session("91bc");
     fixture.ask("91bc", "/goal Do something");
@@ -3561,11 +3817,13 @@ async fn a_goal_resumes_from_persisted_state_after_reloading_the_session() {
     let fixture = Fixture::new(
         "goal-resume",
         vec![
+            goal_plan_reply(),
             Canned::Json(tool_call_reply(vec![(
                 "ask",
                 serde_json::json!({ "text": "Continue?" }),
             )])),
             Canned::Json(text_reply("Ready.")),
+            goal_evaluation_reply("candidate_complete", ""),
             Canned::Json(tool_call_reply(vec![(
                 "run",
                 serde_json::json!({ "argv": ["printf", "done"] }),
@@ -3605,7 +3863,9 @@ async fn a_goal_pauses_when_the_independent_verifier_cannot_run() {
     let fixture = Fixture::new(
         "goal-verifier-error",
         vec![
+            goal_plan_reply(),
             Canned::Json(text_reply("Ready.")),
+            goal_evaluation_reply("candidate_complete", ""),
             Canned::Status(400, "verifier unavailable".to_string()),
         ],
     );
@@ -3665,8 +3925,11 @@ async fn a_goal_keeps_attached_images_in_its_initial_model_request() {
     fixture.wait_for_turn_to_start("91bc").await;
     fixture.wait_for_status("91bc", Status::Idle).await;
     let bodies = fixture.chat_bodies();
-    let posts = chat_posts(&bodies);
-    let request: serde_json::Value = serde_json::from_str(posts[0]).unwrap();
+    let planner = bodies
+        .iter()
+        .find(|body| body.contains("goal planner"))
+        .unwrap();
+    let request: serde_json::Value = serde_json::from_str(planner).unwrap();
     let messages = request["messages"].as_array().unwrap();
     assert!(messages.iter().any(|message| message["role"] == "user"
         && message["content"][1]["image_url"]["url"] == image.data_url()));
