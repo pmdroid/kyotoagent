@@ -805,7 +805,8 @@ impl Paint {
             self.push_image(label, pending.url, &label_text);
             return;
         }
-        let hit = http_url(&pending.url);
+        let hit = http_url(&pending.url)
+            .or_else(|| local_file_link(&pending.url).map(|_| pending.url.clone()));
         if label_text.is_empty() || label_text == pending.url {
             self.push(Piece::Text {
                 text: pending.url,
