@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct PhonePopup<Content: SwiftUI.View>: SwiftUI.View {
+    var detents: Set<PresentationDetent> = [.large]
     var onClose: () -> Void
     @ViewBuilder var content: () -> Content
 
@@ -11,9 +12,9 @@ struct PhonePopup<Content: SwiftUI.View>: SwiftUI.View {
                 onClose()
                 return .handled
             }
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
-        .accessibilityIdentifier("phone-popup")
+            .presentationDetents(detents)
+            .presentationDragIndicator(.visible)
+            .accessibilityIdentifier("phone-popup")
     }
 }
 
@@ -29,10 +30,11 @@ extension SwiftUI.View {
 
     func phonePopup<Item: Identifiable, Popup: SwiftUI.View>(
         item: Binding<Item?>,
+        detents: Set<PresentationDetent> = [.large],
         @ViewBuilder content: @escaping (Item) -> Popup
     ) -> some SwiftUI.View {
         sheet(item: item) { value in
-            PhonePopup(onClose: { item.wrappedValue = nil }) {
+            PhonePopup(detents: detents, onClose: { item.wrappedValue = nil }) {
                 content(value)
             }
         }
