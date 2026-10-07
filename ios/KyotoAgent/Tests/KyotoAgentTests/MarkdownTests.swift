@@ -2,6 +2,23 @@ import XCTest
 @testable import KyotoAgent
 
 final class MarkdownTests: XCTestCase {
+    func testLocalMarkdownLinksRouteToTheSessionFileViewer() throws {
+        for path in [".scratch/platform/issues/03-queue-definition.md", "/workspace/queue.md", "docs/queue definition.md", "docs/日本語.md"] {
+            let url = try XCTUnwrap(transcriptLinkURL(path))
+            XCTAssertEqual(transcriptFilePath(url), path)
+        }
+        let encoded = try XCTUnwrap(transcriptLinkURL("docs/queue%20definition.md"))
+        XCTAssertEqual(transcriptFilePath(encoded), "docs/queue definition.md")
+        let blocks = transcriptBlocks("[How a person defines the queue](.scratch/platform/issues/03-queue-definition.md)")
+        XCTAssertEqual(blocks, [.paragraph([TranscriptRun(text: "How a person defines the queue", link: ".scratch/platform/issues/03-queue-definition.md")])])
+        let web = try XCTUnwrap(transcriptLinkURL("https://example.com/docs"))
+        XCTAssertNil(transcriptFilePath(web))
+        XCTAssertEqual(web.absoluteString, "https://example.com/docs")
+        for destination in ["", "#queue", "//example.com/docs", "javascript:alert(1)", "mailto:a@example.com"] {
+            XCTAssertNil(transcriptLinkURL(destination))
+        }
+    }
+
     func testAResultFormatsBoldListAndCode() throws {
         let parts = transcriptCardText(.result(ResultCard(
             text: "**bold**\n\n- item\n\n`code`\n\n**`code`**",

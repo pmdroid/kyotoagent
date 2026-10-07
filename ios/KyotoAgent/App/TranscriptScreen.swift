@@ -13,6 +13,7 @@ struct TranscriptScreen: SwiftUI.View {
     @FocusState private var composerFocused: Bool
     @State private var goalOpen = false
     @State private var artifactsOpen = false
+    @State private var filePath: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some SwiftUI.View {
@@ -44,7 +45,9 @@ struct TranscriptScreen: SwiftUI.View {
         .navigationBarTitleDisplayMode(.inline)
         .phonePopup(item: cover, detents: coverDetents) { item in
             coverPage(item)
+                .environment(\.openURL, transcriptOpenURL)
         }
+        .environment(\.openURL, transcriptOpenURL)
         .onKeyPress(.escape) {
             handleEscape()
         }
@@ -419,6 +422,7 @@ struct TranscriptScreen: SwiftUI.View {
     }
 
     private var shownCover: ShownCover? {
+        if let filePath { return .file(filePath) }
         if let image = model.shownImage { return .image(image) }
         if let pastedText { return .pasted(pastedText) }
         if let expandedCard { return .text(expandedCard) }
@@ -455,6 +459,11 @@ struct TranscriptScreen: SwiftUI.View {
     @ViewBuilder
     private func coverPage(_ item: ShownCover) -> some SwiftUI.View {
         switch item {
+        case .file(let path):
+            NavigationStack {
+                FileDetail(model: model, path: path)
+            }
+            .accessibilityIdentifier("file-sheet")
         case .image(let image):
             ImagePreviewView(attachment: image)
         case .artifacts:
@@ -499,6 +508,10 @@ struct TranscriptScreen: SwiftUI.View {
     }
 
     private func releaseCover() {
+        if filePath != nil {
+            filePath = nil
+            return
+        }
         if model.shownImage != nil {
             model.closeImage()
             return
@@ -545,6 +558,16 @@ struct TranscriptScreen: SwiftUI.View {
         }
     }
 
+    private var transcriptOpenURL: OpenURLAction {
+        OpenURLAction { url in
+            guard let path = transcriptFilePath(url) else {
+                return .systemAction
+            }
+            filePath = path
+            return .handled
+        }
+    }
+
     private var sendDisabled: Bool {
         model.sending || (model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.images.isEmpty)
     }
@@ -552,6 +575,7 @@ struct TranscriptScreen: SwiftUI.View {
 }
 
 private enum ShownCover: Identifiable {
+    case file(String)
     case artifacts
     case goal
     case answer(AnswerSheet)
@@ -564,6 +588,8 @@ private enum ShownCover: Identifiable {
 
     var id: String {
         switch self {
+        case .file(let path):
+            "file-" + path
         case .image(let image):
             "image-" + image.id
         case .pasted:
@@ -947,7 +973,7 @@ struct MarkdownBlocksView: SwiftUI.View {
         if !intent.isEmpty {
             attributed.inlinePresentationIntent = intent
         }
-        if let link = run.link, let url = URL(string: link) {
+        if let link = run.link, let url = transcriptLinkURL(link) {
             attributed.link = url
         }
         if let heading, !run.code {
