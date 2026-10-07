@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_IMAGES: usize = 4;
 pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+pub const MAX_IMAGE_DIMENSION: u32 = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,27 +19,39 @@ pub struct ImageAttachment {
 
 impl ImageAttachment {
     pub fn from_file_bytes(name: &str, bytes: &[u8]) -> Result<Self, String> {
+        if let Ok(attachment) = Self::from_bytes(name, bytes) {
+            return Ok(attachment);
+        }
         let mut reader = ImageReader::new(Cursor::new(bytes))
             .with_guessed_format()
             .map_err(|error| error.to_string())?;
         let mut limits = Limits::default();
         limits.max_alloc = Some(64 * 1024 * 1024);
         reader.limits(limits);
-        let image = reader
-            .decode()
-            .map_err(|error| error.to_string())?
-            .thumbnail(1024, 1024);
-        let mut encoded = Cursor::new(Vec::new());
-        if image.color().has_alpha() {
-            image::DynamicImage::ImageRgba8(image.to_rgba8())
-                .write_to(&mut encoded, ImageFormat::Png)
-                .map_err(|error| error.to_string())?;
-        } else {
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, 75)
-                .encode_image(&image.to_rgb8())
-                .map_err(|error| error.to_string())?;
+        let mut image = reader.decode().map_err(|error| error.to_string())?;
+        if image.width() > MAX_IMAGE_DIMENSION || image.height() > MAX_IMAGE_DIMENSION {
+            image = image.thumbnail(MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION);
         }
-        Self::from_bytes(name, encoded.get_ref())
+        loop {
+            let mut encoded = Cursor::new(Vec::new());
+            if image.color().has_alpha() {
+                image::DynamicImage::ImageRgba8(image.to_rgba8())
+                    .write_to(&mut encoded, ImageFormat::Png)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, 75)
+                    .encode_image(&image.to_rgb8())
+                    .map_err(|error| error.to_string())?;
+            }
+            if encoded.get_ref().len() <= MAX_IMAGE_BYTES {
+                return Self::from_bytes(name, encoded.get_ref());
+            }
+            let scale = (MAX_IMAGE_BYTES as f64 / encoded.get_ref().len() as f64).sqrt();
+            image = image.thumbnail(
+                ((image.width() as f64 * scale) as u32).max(1),
+                ((image.height() as f64 * scale) as u32).max(1),
+            );
+        }
     }
 
     pub fn from_bytes(name: &str, bytes: &[u8]) -> Result<Self, String> {
@@ -87,8 +100,8 @@ impl ImageAttachment {
         }
         let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
         let mut limits = Limits::default();
-        limits.max_image_width = Some(4096);
-        limits.max_image_height = Some(4096);
+        limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+        limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
         limits.max_alloc = Some(64 * 1024 * 1024);
         reader.limits(limits);
         reader
@@ -115,6 +128,63 @@ pub fn validate_images(images: &[ImageAttachment]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_reads_preserve_supported_images_within_attachment_limits() {
+        let pixels = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(2048, 128, |x, y| {
+            image::Rgb([x as u8, y as u8, (x ^ y) as u8])
+        }));
+        for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::WebP] {
+            let mut bytes = Cursor::new(Vec::new());
+            pixels.write_to(&mut bytes, format).unwrap();
+            let attachment = ImageAttachment::from_file_bytes("image", bytes.get_ref()).unwrap();
+            assert!(
+                STANDARD.decode(&attachment.data).unwrap() == *bytes.get_ref(),
+                "{format:?} bytes changed"
+            );
+        }
+    }
+
+    #[test]
+    fn file_reads_fit_oversized_dimensions_to_attachment_limits() {
+        for (width, height, expected) in [(6144, 768, (4096, 512)), (768, 6144, (512, 4096))] {
+            let pixels = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                width,
+                height,
+                image::Rgb([24, 48, 96]),
+            ));
+            let mut bytes = Cursor::new(Vec::new());
+            pixels.write_to(&mut bytes, ImageFormat::Png).unwrap();
+            let attachment = ImageAttachment::from_file_bytes("image", bytes.get_ref()).unwrap();
+            let decoded =
+                image::load_from_memory(&STANDARD.decode(&attachment.data).unwrap()).unwrap();
+            assert_eq!((decoded.width(), decoded.height()), expected);
+            attachment.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn file_reads_reduce_oversized_bytes_without_returning_to_thumbnail_resolution() {
+        let mut random = 1u32;
+        let pixels =
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_fn(1536, 1024, |_, _| {
+                random ^= random << 13;
+                random ^= random >> 17;
+                random ^= random << 5;
+                image::Rgba(random.to_le_bytes())
+            }));
+        let mut bytes = Cursor::new(Vec::new());
+        pixels.write_to(&mut bytes, ImageFormat::Png).unwrap();
+        assert!(bytes.get_ref().len() > MAX_IMAGE_BYTES);
+        let attachment = ImageAttachment::from_file_bytes("image", bytes.get_ref()).unwrap();
+        let prepared = STANDARD.decode(&attachment.data).unwrap();
+        assert!(prepared.len() <= MAX_IMAGE_BYTES);
+        let decoded = image::load_from_memory(&prepared).unwrap();
+        assert!(decoded.width() > 1024 && decoded.width() < 1536);
+        assert!(decoded.height() < 1024);
+        assert!(decoded.color().has_alpha());
+        attachment.validate().unwrap();
+    }
 
     #[test]
     fn real_images_round_trip_and_invalid_uploads_are_rejected() {

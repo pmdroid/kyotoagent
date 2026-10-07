@@ -1,5 +1,5 @@
 use super::*;
-use crate::attachment::ImageAttachment;
+use crate::attachment::{ImageAttachment, MAX_IMAGE_DIMENSION};
 
 const MAX_DOCUMENT_BYTES: u64 = 50 * 1024 * 1024;
 
@@ -227,8 +227,14 @@ fn read_pdf(
                 ));
             }
             let render = pdf_oxide::rendering::RenderOptions::with_dpi(72).as_jpeg(75);
-            let image = pdf_oxide::rendering::render_page_fit(&doc, page, 1024, 1024, &render)
-                .map_err(|error| invalid(path, error.to_string()))?;
+            let image = pdf_oxide::rendering::render_page_fit(
+                &doc,
+                page,
+                MAX_IMAGE_DIMENSION,
+                MAX_IMAGE_DIMENSION,
+                &render,
+            )
+            .map_err(|error| invalid(path, error.to_string()))?;
             result.images.push(
                 ImageAttachment::from_file_bytes(
                     &format!(

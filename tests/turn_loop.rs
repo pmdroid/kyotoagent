@@ -584,7 +584,18 @@ async fn file_read_images_reach_the_next_request_and_survive_projection() {
         ],
     );
     let workspace = fixture.add_session("read-image");
-    fs::write(workspace.join("picture.txt"), kyotoagent::splash::PNG).unwrap();
+    let mut image_bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        2048,
+        512,
+        image::Rgb([24, 48, 96]),
+    ))
+    .write_to(&mut image_bytes, image::ImageFormat::Png)
+    .unwrap();
+    let expected_image =
+        kyotoagent::attachment::ImageAttachment::from_bytes("picture.txt", image_bytes.get_ref())
+            .unwrap();
+    fs::write(workspace.join("picture.txt"), image_bytes.get_ref()).unwrap();
     fs::write(
         workspace.join("document.bin"),
         pdf_fixture::document(&["Alpha document", "Beta document"]),
@@ -599,6 +610,9 @@ async fn file_read_images_reach_the_next_request_and_survive_projection() {
     let parts = sent.as_array().unwrap().last().unwrap()["content"]
         .as_array()
         .unwrap();
+    assert!(parts
+        .iter()
+        .any(|part| part["image_url"]["url"] == expected_image.data_url()));
     assert_eq!(
         parts
             .iter()
@@ -617,6 +631,7 @@ async fn file_read_images_reach_the_next_request_and_survive_projection() {
                 .unwrap()
         })
         .collect();
+    assert_eq!(results[0].images, vec![expected_image.clone()]);
     assert_eq!(
         results
             .iter()
@@ -628,6 +643,13 @@ async fn file_read_images_reach_the_next_request_and_survive_projection() {
     assert!(results[3].output.contains("pages must be a string"));
     let restored = kyotoagent::compact::projected_messages("system", &events, "/w");
     let restored = serde_json::to_value(restored).unwrap();
+    assert!(restored
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|message| message["content"].as_array())
+        .flatten()
+        .any(|part| part["image_url"]["url"] == expected_image.data_url()));
     let restored_parts = restored
         .as_array()
         .unwrap()
