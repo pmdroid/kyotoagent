@@ -185,8 +185,9 @@ pub(super) async fn execute_tool(
             let tools = tools.clone();
             let turn_id = turn_id.to_string();
             let config = config.clone();
+            let root = turn.root.clone();
             let result = tokio::task::spawn_blocking(move || {
-                tools.generate_image(&turn_id, &config, request)
+                tools.generate_image_in_root(&turn_id, &config, request, root.as_deref())
             })
             .await?;
             match result {

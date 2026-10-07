@@ -126,10 +126,11 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "generate_image",
-            "Generate one image with the active provider's OpenAI-compatible images/generations endpoint and save it to path. Specify an image model supported by that provider, not the chat model. Optional size, quality and response_format are sent only when supplied. Requires permission before generation and before writing. Use read_file to inspect and attach_artifact to publish the saved image.",
+            "Generate one image with a configured provider's OpenAI-compatible images/generations endpoint and save it to path. Set provider to a configured provider ID (for example grok) to use its saved API key or Grok login without switching the coding provider; otherwise uses the active provider. Specify an image model supported by that provider, not the chat model. Optional size, quality and response_format are sent only when supplied. Requires permission before generation and before writing. Use read_file to inspect and attach_artifact to publish the saved image.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "provider": { "type": "string", "minLength": 1 },
                     "prompt": { "type": "string", "minLength": 1 },
                     "model": { "type": "string", "minLength": 1 },
                     "path": { "type": "string", "minLength": 1 },
