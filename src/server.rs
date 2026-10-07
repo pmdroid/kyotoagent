@@ -1223,10 +1223,15 @@ async fn answer(
                 Err(source) => Err(ApiError::conflict(source.to_string())),
             }
         }
-        EventKind::Question => match state.runner.answer_question(&id, &body.choice) {
-            Ok(()) => Ok(StatusCode::NO_CONTENT),
-            Err(source) => Err(ApiError::conflict(source.to_string())),
-        },
+        EventKind::Question => {
+            match state
+                .runner
+                .answer_question_for(&id, Some(&body.id), &body.choice)
+            {
+                Ok(()) => Ok(StatusCode::NO_CONTENT),
+                Err(source) => Err(ApiError::conflict(source.to_string())),
+            }
+        }
         EventKind::Enhance => {
             match state
                 .runner
@@ -1909,6 +1914,7 @@ mod ios_fixtures {
                 QuestionBody {
                     text: "Which title?".into(),
                     choices: vec!["Kyoto Agent".into(), "Kyoto Agent CLI".into()],
+                    visuals: Vec::new(),
                 },
             ),
             event(
@@ -1917,6 +1923,7 @@ mod ios_fixtures {
                 QuestionBody {
                     text: "Keep the socket name?".into(),
                     choices: vec!["yes".into(), "no".into()],
+                    visuals: Vec::new(),
                 },
             ),
             event(

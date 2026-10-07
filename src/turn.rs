@@ -289,12 +289,20 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "ask",
-            "Ask the user a question and wait for the answer.",
+            "Ask one concise question and wait. Supply short selectable choices. Optional visuals show Mermaid diagrams, SVG files, or images beside the question. Include a plain-text alt explaining the decision; visuals illustrate proposals, not verified evidence.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "text": { "type": "string" },
                     "choices": { "type": "array", "items": { "type": "string" } },
+                    "visuals": { "type": "array", "maxItems": 2, "items": {
+                        "type": "object", "properties": {
+                            "title": { "type": "string", "maxLength": 80 },
+                            "alt": { "type": "string", "maxLength": 600 },
+                            "mermaid": { "type": "string", "description": "Mermaid source; provide this or path." },
+                            "path": { "type": "string", "description": "Workspace image, SVG, or Mermaid file; provide this or mermaid." }
+                        }, "required": ["title", "alt"]
+                    } },
                 },
                 "required": ["text"],
             }),
@@ -1559,6 +1567,15 @@ impl Runner {
 
     /// Answer the open question on a session.
     pub fn answer_question(&self, session_id: &str, text: &str) -> Result<(), AnswerError> {
+        self.answer_question_for(session_id, None, text)
+    }
+
+    pub fn answer_question_for(
+        &self,
+        session_id: &str,
+        question_id: Option<&str>,
+        text: &str,
+    ) -> Result<(), AnswerError> {
         let state = self
             .sessions
             .lock()
@@ -1567,7 +1584,10 @@ impl Runner {
             .cloned()
             .ok_or(AnswerError::NothingOpen)?;
         let held = state.tools.gate().is_held_open_question();
-        state.tools.gate().answer_question(text.to_string())?;
+        state
+            .tools
+            .gate()
+            .answer_question_for(question_id, text.to_string())?;
         if held {
             settle_held_question(&state.session, text)?;
         }
