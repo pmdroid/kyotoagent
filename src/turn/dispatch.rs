@@ -176,6 +176,31 @@ pub(super) async fn execute_tool(
                 },
             }
         }
+        "generate_image" => {
+            let request: crate::tools::ImageGeneration = match serde_json::from_value(args.clone())
+            {
+                Ok(request) => request,
+                Err(error) => return Ok(failed(format!("generate_image: {error}"))),
+            };
+            let tools = tools.clone();
+            let turn_id = turn_id.to_string();
+            let config = config.clone();
+            let root = turn.root.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                tools.generate_image_in_root(&turn_id, &config, request, root.as_deref())
+            })
+            .await?;
+            match result {
+                Ok(write) => ToolOutcome {
+                    is_error: false,
+                    images: Vec::new(),
+                    summary: write.summary(),
+                    wrote: (!write.denied).then(|| relative_to_workspace(&workspace, &write.path)),
+                    failure: None,
+                },
+                Err(error) => failed(error.to_string()),
+            }
+        }
         "web_fetch" => {
             let url = string_arg(args, "url").unwrap_or_default();
             let max_bytes = args.get("max_bytes").and_then(Value::as_u64);

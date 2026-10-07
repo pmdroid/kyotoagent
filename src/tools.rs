@@ -51,9 +51,11 @@ use crate::session::{Session, SessionError};
 use crate::task::{Tasks, MAX_TASK_TIMEOUT_SEC};
 
 mod file_read;
+mod image_generation;
 mod preparation;
 
 pub use file_read::ReadOptions;
+pub use image_generation::ImageGeneration;
 
 #[derive(Debug)]
 struct Approval {
@@ -541,16 +543,25 @@ impl Tools {
         path: &str,
         contents: &str,
     ) -> Result<WriteFile, ToolError> {
+        self.write_binary(turn_id, path, contents.as_bytes(), WRITE_LIMIT)
+    }
+
+    fn write_binary(
+        &self,
+        turn_id: &str,
+        path: &str,
+        new: &[u8],
+        limit: usize,
+    ) -> Result<WriteFile, ToolError> {
         let target = self.target(path)?;
         let name = display(&target.absolute);
-        if contents.len() > WRITE_LIMIT {
+        if new.len() > limit {
             return Err(ToolError::TooLarge {
                 path: target.absolute.clone(),
-                bytes: contents.len(),
-                limit: WRITE_LIMIT,
+                bytes: new.len(),
+                limit,
             });
         }
-        let new = contents.as_bytes();
         let parent = write_parent(&target.absolute)?;
         let file_name = target
             .absolute
