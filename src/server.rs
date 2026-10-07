@@ -378,6 +378,7 @@ impl Server {
                 "/v1/devices",
                 axum::routing::put(push::register).delete(push::unregister),
             )
+            .route("/v1/tui/heartbeat", post(push::tui_heartbeat))
             .route("/v1/https", get(https::status).post(https::enable))
             .route("/v1/share", post(https::share))
             .route(
