@@ -35,9 +35,11 @@ choice of socket or `--url` / `KYOTOAGENT_URL`.
 
 `doctor` checks authentication for every configured provider and queries each model
 catalog. It also checks the selected model and verifies configured Exa and
-Firecrawl keys through their account endpoints. Failed checks name the provider
-or environment variable and return a nonzero exit status. Credential values are
-never printed.
+Firecrawl keys through their account endpoints. The skills check lists every
+model-invocable skill with its description. It warns, and returns nonzero, when
+that list would exceed the catalog budget and descriptions would be shortened
+or names omitted. Failed checks name the provider or environment variable and
+return a nonzero exit status. Credential values are never printed.
 
 ## Reaching the server
 

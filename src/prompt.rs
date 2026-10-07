@@ -70,6 +70,61 @@ pub fn catalog_char_budget(context_length: Option<u64>) -> usize {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CatalogFit {
+    Fits,
+    DescriptionsShortened { kept: usize },
+    NamesOnly { listed: usize },
+    NamesDropped { listed: usize, omitted: usize },
+}
+
+pub fn catalog_fit(skills: &[SkillEntry], context_length: Option<u64>) -> CatalogFit {
+    let rendered = skills_catalog(skills, context_length);
+    let visible: Vec<&SkillEntry> = skills
+        .iter()
+        .filter(|skill| !skill.disable_model_invocation)
+        .collect();
+    if visible.is_empty() || rendered == render_block(&visible_owned(&visible), None) {
+        return CatalogFit::Fits;
+    }
+    let listed = rendered
+        .lines()
+        .filter(|line| line.starts_with("- "))
+        .count();
+    if rendered.contains(" more skills.") {
+        return CatalogFit::NamesDropped {
+            listed,
+            omitted: visible.len().saturating_sub(listed),
+        };
+    }
+    if rendered.lines().any(|line| line.contains(": ")) {
+        return CatalogFit::DescriptionsShortened {
+            kept: description_limit(&rendered),
+        };
+    }
+    CatalogFit::NamesOnly { listed }
+}
+
+fn visible_owned(skills: &[&SkillEntry]) -> Vec<SkillEntry> {
+    skills.iter().map(|skill| (*skill).clone()).collect()
+}
+
+fn description_limit(rendered: &str) -> usize {
+    rendered
+        .lines()
+        .filter_map(|line| line.strip_prefix("- "))
+        .filter_map(|line| line.split_once(": "))
+        .map(|(_, rest)| {
+            rest.strip_suffix(')')
+                .and_then(|rest| rest.rsplit_once(" (file: "))
+                .map(|(description, _)| description)
+                .unwrap_or(rest)
+        })
+        .map(|description| description.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
 pub fn skills_catalog(skills: &[SkillEntry], context_length: Option<u64>) -> String {
     let skills: Vec<SkillEntry> = skills
         .iter()
@@ -637,6 +692,30 @@ mod tests {
         assert!(block.chars().count() <= UNKNOWN_CATALOG_CHARS, "{block}");
         assert!(block.contains("alpha"), "{block}");
         assert!(!block.contains(&"a".repeat(8_000)), "{block}");
+    }
+
+    #[test]
+    fn catalog_fit_names_a_shortened_description_and_a_dropped_name() {
+        let short = vec![entry("alpha", "review a change")];
+        assert_eq!(catalog_fit(&short, Some(8_000)), CatalogFit::Fits);
+        let long = vec![
+            entry("alpha", &"a".repeat(500)),
+            entry("beta", &"b".repeat(500)),
+        ];
+        match catalog_fit(&long, Some(8_000)) {
+            CatalogFit::DescriptionsShortened { kept } => assert!(kept < 500 && kept > 0, "{kept}"),
+            other => panic!("expected shortened descriptions, got {other:?}"),
+        }
+        let many: Vec<SkillEntry> = (0..40)
+            .map(|index| entry(&format!("skill{index:02}"), "desc"))
+            .collect();
+        match catalog_fit(&many, Some(5_000)) {
+            CatalogFit::NamesDropped { listed, omitted } => {
+                assert!(listed > 0, "{listed}");
+                assert_eq!(listed + omitted, 40);
+            }
+            other => panic!("expected dropped names, got {other:?}"),
+        }
     }
 
     #[test]
