@@ -654,9 +654,19 @@ impl Session {
             path: path.clone(),
             source,
         })?;
-        file.write_all(line.as_bytes())
-            .and_then(|()| file.flush())
-            .map_err(|source| SessionError::Io { path, source })?;
+        if let Err(source) = file.write_all(line.as_bytes()).and_then(|()| file.flush()) {
+            cache.stamp = None;
+            file.set_len(before.len)
+                .and_then(|()| file.sync_all())
+                .map_err(|rollback| SessionError::Io {
+                    path: path.clone(),
+                    source: std::io::Error::new(
+                        rollback.kind(),
+                        format!("event append failed: {source}; rollback failed: {rollback}"),
+                    ),
+                })?;
+            return Err(SessionError::Io { path, source });
+        }
         let after = LogStamp::read(&file).map_err(|source| SessionError::Io {
             path: self.events_path(),
             source,
