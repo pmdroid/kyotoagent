@@ -343,6 +343,9 @@ impl SessionRow {
         if self.archived {
             return "archived".to_string();
         }
+        if self.compacting {
+            return "compacting".to_string();
+        }
         match (self.status, self.waiting) {
             (Status::Idle, _) => Status::Idle.label().to_string(),
             (Status::Working, _) => Status::Working.label().to_string(),
@@ -1260,13 +1263,13 @@ fn header_right(model: &ScreenModel) -> String {
         model.model.is_empty(),
         model.effort.as_deref(),
     ) {
-        (true, true, _) => format!("compact \u{00b7} {counts}"),
+        (true, true, _) => format!("compacting \u{00b7} {counts}"),
         (true, false, None | Some("")) => {
-            format!("compact \u{00b7} {} \u{00b7} {counts}", model.model)
+            format!("compacting \u{00b7} {} \u{00b7} {counts}", model.model)
         }
         (true, false, Some(effort)) => {
             format!(
-                "compact \u{00b7} {} {effort} \u{00b7} {counts}",
+                "compacting \u{00b7} {} {effort} \u{00b7} {counts}",
                 model.model
             )
         }
