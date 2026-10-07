@@ -246,7 +246,7 @@ async fn kyotoagent_bin(home: &Path, cwd: &Path, args: &[&str]) -> std::process:
 }
 
 #[tokio::test]
-async fn a_live_setup_prints_five_ok_lines() {
+async fn a_live_setup_prints_six_ok_lines() {
     let models = FakeModels::listing("grok-4.6", 256000);
     let (home, cwd) = temp_home("ok");
     write_grok_config(&home, &models.base_url());
@@ -273,6 +273,11 @@ async fn a_live_setup_prints_five_ok_lines() {
     assert!(lines[4].contains("2 items"), "{text}");
     assert!(text.contains("test  command  cargo test  src/**"), "{text}");
     assert!(text.contains("fmt  command  cargo fmt --check"), "{text}");
+    assert!(line(&text, "skills").starts_with("ok    skills"), "{text}");
+    assert!(
+        line(&text, "skills").contains("listed with descriptions"),
+        "{text}"
+    );
     assert_no_secrets(&text);
 
     let output = kyotoagent_bin(&home, &cwd, &["doctor"]).await;
@@ -287,7 +292,7 @@ async fn a_live_setup_prints_five_ok_lines() {
             .lines()
             .filter(|line| line.starts_with("ok    "))
             .count(),
-        5,
+        6,
         "{stdout}"
     );
     assert_no_secrets(&stdout);
