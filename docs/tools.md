@@ -56,9 +56,11 @@ evidence is not lost to a short card.
 ## Image generation
 
 `generate_image` sends `POST {base_url}/images/generations`. Set `provider` to a
-configured provider ID, such as `grok`, to use its endpoint and saved API key or
-Grok login while keeping your coding provider unchanged. Omit `provider` to use
-the active provider. Supply `prompt`, an image `model` supported by that provider,
+configured provider ID to override routing. Models beginning with `grok-imagine-`
+automatically use the configured `grok` provider and its saved API key or Grok
+login, even when Codex is selected for coding. Models beginning with `gpt-image-`
+use the configured `codex` provider and saved Codex login when available. Other
+models use the active provider. Image generation keeps your coding provider unchanged. Supply `prompt`, an image `model` supported by that provider,
 and an output `path`. The optional `size`, `quality`, and `response_format`
 (`b64_json` or `url`) fields are forwarded when supplied. The tool requests one
 image and accepts either base64 image bytes or a public image download URL.

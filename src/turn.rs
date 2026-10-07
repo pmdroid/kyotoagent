@@ -126,7 +126,7 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "generate_image",
-            "Generate one image with a configured provider's OpenAI-compatible images/generations endpoint and save it to path. Set provider to a configured provider ID (for example grok) to use its saved API key or Grok login without switching the coding provider; otherwise uses the active provider. Specify an image model supported by that provider, not the chat model. Optional size, quality and response_format are sent only when supplied. Requires permission before generation and before writing. Use read_file to inspect and attach_artifact to publish the saved image.",
+            "Generate one image with a configured provider's OpenAI-compatible images/generations endpoint and save it to path. Grok image models (grok-imagine-*) automatically use the configured grok provider and its saved API key or Grok login, even while coding with Codex. GPT image models (gpt-image-*) use the configured codex provider and saved Codex login when available. Other models use the active provider. Optional provider overrides automatic routing without changing the coding provider. Model names never change the coding provider. Specify an image model supported by that provider, not the chat model. Optional size, quality and response_format are sent only when supplied. Requires permission before generation and before writing. Use read_file to inspect and attach_artifact to publish the saved image.",
             serde_json::json!({
                 "type": "object",
                 "properties": {

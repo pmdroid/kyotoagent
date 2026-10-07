@@ -41,6 +41,26 @@ fn bounded_response(
 }
 
 impl ImageGeneration {
+    fn provider_config(
+        &self,
+        config: &crate::config::Config,
+    ) -> Result<crate::config::Config, ToolError> {
+        let provider = self.provider.as_deref().or_else(|| {
+            if self.model.starts_with("grok-imagine-") {
+                Some(crate::auth::GROK_PROVIDER)
+            } else if self.model.starts_with("gpt-image-") && config.providers.contains_key("codex")
+            {
+                Some("codex")
+            } else {
+                None
+            }
+        });
+        match provider {
+            Some(provider) => config.for_provider(provider).map_err(image_error),
+            None => Ok(config.clone()),
+        }
+    }
+
     fn body(&self) -> Result<Value, ToolError> {
         if self.prompt.trim().is_empty()
             || self.model.trim().is_empty()
@@ -90,15 +110,7 @@ impl Tools {
         root: Option<&Path>,
     ) -> Result<WriteFile, ToolError> {
         let body = request.body()?;
-        let config = match request.provider.as_deref() {
-            Some(provider) => config.for_provider(provider).map_err(image_error)?,
-            None => config.clone(),
-        };
-        if config.is_codex() {
-            return Err(image_error(
-                "specify an image provider, for example provider: grok, without switching your coding provider",
-            ));
-        }
+        let config = request.provider_config(config)?;
         let target = self.target(&request.path)?;
         let parent = write_parent(&target.absolute)?;
         write_bytes(&parent, &target.absolute)?;
@@ -106,8 +118,34 @@ impl Tools {
             "{}/images/generations",
             config.base_url.trim_end_matches('/')
         ))?;
-        let key = crate::auth::stored_provider_key(&config, root)
-            .map_err(|_| image_error("could not load image provider credentials"))?;
+        let codex_path = config
+            .is_codex()
+            .then(|| {
+                root.map(|root| root.join(crate::auth::CODEX_AUTH_FILE))
+                    .or_else(crate::auth::default_codex_path)
+                    .ok_or_else(|| image_error("Codex login is missing"))
+            })
+            .transpose()?;
+        let key = if let Some(path) = &codex_path {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| image_error("could not load Codex authentication"))?;
+            Some(
+                runtime
+                    .block_on(async {
+                        crate::auth::codex_access(
+                            &crate::auth::CodexAuth::at(crate::auth::CODEX_ISSUER),
+                            path,
+                        )
+                        .await
+                    })
+                    .map_err(|_| image_error("Codex login needs renewal"))?,
+            )
+        } else {
+            crate::auth::stored_provider_key(&config, root)
+                .map_err(|_| image_error("could not load image provider credentials"))?
+        };
         let key = if key.is_none() && config.provider.as_deref() == Some(crate::auth::GROK_PROVIDER)
         {
             let path = root
@@ -162,6 +200,17 @@ impl Tools {
             .build()
             .map_err(|_| image_error("could not create HTTP client"))?;
         let mut post = client.post(url).json(&body);
+        if let Some(path) = &codex_path {
+            let tokens = crate::auth::load_codex(path)
+                .map_err(|_| image_error("Codex login needs renewal"))?;
+            post = post
+                .header("originator", crate::auth::CODEX_ORIGINATOR)
+                .header("version", crate::auth::CODEX_CLIENT_VERSION)
+                .header("x-codex-image-turn-id", turn_id);
+            if !tokens.account_id.is_empty() {
+                post = post.header("chatgpt-account-id", tokens.account_id);
+            }
+        }
         if let Some(key) = key {
             post = post.bearer_auth(key);
         }
@@ -201,6 +250,41 @@ impl Tools {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_provider_override_wins_over_model_routing() {
+        let config = crate::config::Config::from_toml(
+            "provider = \"codex\"\n[providers.codex]\nkind = \"codex\"\nmodel = \"coding\"\n[providers.grok]\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"grok-chat\"\n[providers.proxy]\nbase_url = \"http://127.0.0.1:2/v1\"\nmodel = \"proxy-chat\"\n",
+        ).unwrap();
+        for model in [
+            "grok-imagine-image",
+            "grok-imagine-image-pro",
+            "grok-imagine-image-2.0",
+        ] {
+            let mut request: ImageGeneration = serde_json::from_value(
+                json!({"model": model, "prompt": "garden", "path": "garden.png"}),
+            )
+            .unwrap();
+            assert_eq!(
+                request
+                    .provider_config(&config)
+                    .unwrap()
+                    .provider
+                    .as_deref(),
+                Some("grok")
+            );
+            request.provider = Some("proxy".into());
+            assert_eq!(
+                request
+                    .provider_config(&config)
+                    .unwrap()
+                    .provider
+                    .as_deref(),
+                Some("proxy")
+            );
+        }
+        assert!(config.is_codex());
+    }
 
     #[test]
     fn separate_grok_provider_uses_saved_login_without_switching_codex() {
@@ -269,12 +353,99 @@ mod tests {
         });
         tools.gate().queue(crate::permit::Answer::allow_once());
         tools.gate().queue(crate::permit::Answer::allow_once());
-        let request = serde_json::from_value(json!({"provider": "grok", "model": "grok-imagine-image", "prompt": "garden", "path": "garden.png"})).unwrap();
+        let request = serde_json::from_value(
+            json!({"model": "grok-imagine-image", "prompt": "garden", "path": "garden.png"}),
+        )
+        .unwrap();
         let output = tools
             .generate_image_in_root("t1", &config, request, Some(&root))
             .unwrap();
         assert!(output.created);
         assert!(config.is_codex());
+        server.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn gpt_image_model_uses_saved_codex_login_while_coding_with_grok() {
+        let root =
+            std::env::temp_dir().join(format!("kyoto-codex-image-auth-{}", std::process::id()));
+        fs::create_dir_all(root.join("workspace")).unwrap();
+        let session = Session::at(&root.join("session"));
+        session
+            .create(&crate::session::SessionMeta::new(
+                "image-auth",
+                &root.join("workspace"),
+                "coding-model",
+                "2026-10-07T00:00:00.000Z",
+            ))
+            .unwrap();
+        let tools = Tools::at(&session).unwrap();
+        fs::write(
+            root.join(crate::auth::CODEX_AUTH_FILE),
+            serde_json::to_vec(&crate::auth::CodexTokens {
+                access_token: "fixture-codex-token".into(),
+                id_token: "fixture-id-token".into(),
+                account_id: "fixture-account".into(),
+                refresh_token: "fixture-refresh-token".into(),
+                expires_at: "2099-01-01T00:00:00.000Z".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let config = crate::config::Config::from_toml(&format!(
+            "provider = \"grok\"\n[providers.codex]\nkind = \"codex\"\nbase_url = \"http://{}/v1\"\nmodel = \"coding-model\"\n[providers.grok]\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"grok-chat\"\n", listener.local_addr().unwrap(),
+        )).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                headers.push(byte[0]);
+            }
+            let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
+            assert!(headers.starts_with("post /v1/images/generations "));
+            assert!(headers.contains("authorization: bearer fixture-codex-token"));
+            assert!(headers.contains("chatgpt-account-id: fixture-account"));
+            assert!(headers.contains("originator: codex_cli_rs"));
+            let length: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .unwrap()
+                .parse()
+                .unwrap();
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["model"], "gpt-image-2");
+            assert!(body.get("provider").is_none());
+            let mut image = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(1, 1)
+                .write_to(&mut image, image::ImageFormat::Png)
+                .unwrap();
+            let response = json!({"data": [{"b64_json": base64::engine::general_purpose::STANDARD.encode(image.into_inner())}]}).to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            )
+            .unwrap();
+        });
+        tools.gate().queue(crate::permit::Answer::allow_once());
+        tools.gate().queue(crate::permit::Answer::allow_once());
+        let request = serde_json::from_value(
+            json!({"model": "gpt-image-2", "prompt": "garden", "path": "garden.png"}),
+        )
+        .unwrap();
+        let output = tools
+            .generate_image_in_root("t1", &config, request, Some(&root))
+            .unwrap();
+        assert!(output.created);
+        assert_eq!(config.provider.as_deref(), Some("grok"));
         server.join().unwrap();
         fs::remove_dir_all(root).unwrap();
     }
