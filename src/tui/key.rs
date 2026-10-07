@@ -29,6 +29,21 @@ pub fn keystroke(app: &App, event: KeyEvent) -> Option<Effect> {
     if app.server_popup.is_some() || app.server_step.is_some() {
         return connections::key(app, event);
     }
+    if event.modifiers.contains(KeyModifiers::CONTROL) && event.code == KeyCode::Char('v') {
+        if let Some(visuals) = app.cards.iter().rev().find_map(|card| match card {
+            Card::Question { visuals, .. } if card.is_waiting() && !visuals.is_empty() => {
+                Some(visuals)
+            }
+            _ => None,
+        }) {
+            let next = app
+                .open_image
+                .as_ref()
+                .and_then(|image| visuals.iter().position(|v| &v.image == image))
+                .map_or(0, |i| (i + 1) % visuals.len());
+            return Some(Effect::OpenImage(visuals[next].image.clone()));
+        }
+    }
     if !app.overlay {
         let files: Vec<_> = app
             .cards
@@ -84,7 +99,11 @@ pub fn keystroke(app: &App, event: KeyEvent) -> Option<Effect> {
             _ => None,
         };
     }
-    if app.open_image.is_some() {
+    if app
+        .open_image
+        .as_ref()
+        .is_some_and(|image| visual_question(app, image).is_none())
+    {
         return match event.code {
             KeyCode::Esc => Some(Effect::CloseOverlay),
             KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {

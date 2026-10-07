@@ -32,6 +32,8 @@ mod file;
 mod hit;
 mod list;
 mod overlay;
+mod question;
+pub use question::question_preview_area;
 mod select;
 mod session;
 
@@ -377,6 +379,7 @@ pub enum Card {
         text: String,
         choices: Vec<Choice>,
         answer: Option<String>,
+        visuals: Vec<crate::question::QuestionVisual>,
     },
     Answer {
         text: String,
@@ -525,6 +528,12 @@ pub enum Bottom {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Overlay {
+    VisualQuestion {
+        text: String,
+        choices: Vec<Choice>,
+        prompt: String,
+        visual: crate::question::QuestionVisual,
+    },
     Queue {
         rows: Vec<String>,
         highlight: usize,

@@ -277,7 +277,10 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
         Effect::Paste(text) => {
             proof::focus(app, None);
             if app.queue_open
-                || app.open_image.is_some()
+                || app
+                    .open_image
+                    .as_ref()
+                    .is_some_and(|image| visual_question(app, image).is_none())
                 || app.open_text.is_some()
                 || app.open_file.is_some()
                 || app.delete_confirm.is_some()
@@ -1357,7 +1360,7 @@ pub(super) async fn submit(app: &mut App, client: &Client) -> Result<(), String>
             if app.selected.is_empty() || app.question_text.trim().is_empty() {
                 return Ok(());
             }
-            let Some(event_id) = open_event_id_of(client, &app.selected, "question").await? else {
+            let Some(event_id) = app.question_id.clone() else {
                 return Ok(());
             };
             let body =
@@ -1373,6 +1376,7 @@ pub(super) async fn submit(app: &mut App, client: &Client) -> Result<(), String>
                 app.question_text.clear();
                 app.pastes.retain(|paste| !paste.question);
                 app.overlay = false;
+                app.open_image = None;
             }
             poll(app, client).await?;
         }
@@ -1529,20 +1533,25 @@ pub(super) async fn answer_choice(
     if app.selected.is_empty() {
         return Ok(());
     }
-    let Some(event_id) = open_event_id_of(client, &app.selected, "question").await? else {
+    let Some(event_id) = app.question_id.clone() else {
         return Ok(());
     };
     let body = serde_json::json!({ "id": event_id, "choice": label }).to_string();
-    let _ = client
+    let (status, response) = client
         .request(
             "POST",
             &format!("/v1/sessions/{}/answers", app.selected),
             Some(&body),
         )
         .await?;
-    app.overlay = false;
-    app.question_text.clear();
-    app.pastes.retain(|paste| !paste.question);
+    if status == 204 {
+        app.overlay = false;
+        app.open_image = None;
+        app.question_text.clear();
+        app.pastes.retain(|paste| !paste.question);
+    } else {
+        app.notice = Some(response);
+    }
     poll(app, client).await?;
     Ok(())
 }
@@ -1946,6 +1955,7 @@ pub(super) fn to_screen_card(card: &view::Card) -> Option<Card> {
                 text,
                 choices,
                 answer,
+                visuals: serde_json::from_value(card.body["visuals"].clone()).unwrap_or_default(),
             }
         }
         CardKind::Answer => Card::Answer {

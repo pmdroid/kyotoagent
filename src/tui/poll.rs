@@ -246,6 +246,15 @@ pub(super) fn apply_poll(app: &mut App, data: PollData) {
         return;
     }
     if let Some(view) = data.view {
+        let visual_open = app
+            .open_image
+            .as_ref()
+            .is_some_and(|image| visual_question(app, image).is_some());
+        let next_question = waiting_question_id(&view.cards);
+        if next_question != app.question_id && visual_open {
+            app.open_image = None;
+            app.question_text.clear();
+        }
         let before = arrived_lists(app);
         app.cards.clear();
         app.card_event_ids.clear();
