@@ -13,6 +13,7 @@ editUrl: https://github.com/pmdroid/kyotoagent/edit/main/docs/tools.md
 | `list_dir` | One level of names, a link named as a link | 500 names |
 | `search_replace` | Replaces an exact string, then takes the write path | 256 KiB |
 | `write_file` | Replaces the file, through a temporary file beside it | 256 KiB |
+| `generate_image` | Generates an image with the active provider and saves it atomically | One image, 32 MiB, 300 s per HTTP request |
 | `run` | Runs an argv in the workspace, with no shell | 120 s by default, 600 s at most, 64 KiB back per stream |
 
 Every path is resolved first: relative to the workspace, then through every
@@ -51,6 +52,19 @@ A diff is kept whole up to 64 KiB, which is everything a person reads. A larger
 change keeps its first 400 lines on the card, and the path and the byte size
 still say how big it is. The log keeps every byte of what was proposed, so the
 evidence is not lost to a short card.
+
+## Image generation
+
+`generate_image` sends `POST {base_url}/images/generations` using the active
+provider's API key. Supply `prompt`, an image `model` supported by that provider,
+and an output `path`. The optional `size`, `quality`, and `response_format`
+(`b64_json` or `url`) fields are forwarded when supplied. The tool requests one
+image and accepts either base64 image bytes or a public image download URL.
+
+Generation asks for permission before contacting the provider. Saving uses the
+same permission and atomic-write checks as other file writes. The destination's
+parent directory must already exist. Use `read_file` to inspect the saved image
+and `attach_artifact` to share it.
 
 ## The turn loop
 

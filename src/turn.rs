@@ -65,6 +65,7 @@ pub fn known_tool_names() -> &'static [&'static str] {
     &[
         "read_file",
         "web_fetch",
+        "generate_image",
         "web_search",
         "grep",
         "list_dir",
@@ -121,6 +122,23 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
                     "max_bytes": { "type": "integer" },
                 },
                 "required": ["url"],
+            }),
+        ),
+        Tool::new(
+            "generate_image",
+            "Generate one image with the active provider's OpenAI-compatible images/generations endpoint and save it to path. Specify an image model supported by that provider, not the chat model. Optional size, quality and response_format are sent only when supplied. Requires permission before generation and before writing. Use read_file to inspect and attach_artifact to publish the saved image.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string", "minLength": 1 },
+                    "model": { "type": "string", "minLength": 1 },
+                    "path": { "type": "string", "minLength": 1 },
+                    "size": { "type": "string" },
+                    "quality": { "type": "string" },
+                    "response_format": { "type": "string", "enum": ["b64_json", "url"] }
+                },
+                "required": ["prompt", "model", "path"],
+                "additionalProperties": false
             }),
         ),
         Tool::new(
@@ -690,6 +708,7 @@ impl Flight {
             "grep" | "list_dir" | "web_search" => "Searching",
             "read_file" | "web_fetch" | "use_skill" | "get_closeout" => "Reading",
             "write_file" | "search_replace" => "Editing",
+            "generate_image" => "Generating image",
             "run" | "start_task" | "check_task" | "kill_task" => "Running",
             "run_closeout" => "Verifying",
             "spawn_subagent" => "Delegating",
@@ -1960,6 +1979,7 @@ mod tests {
         let expected = [
             ("read_file", "Reading"),
             ("web_fetch", "Reading"),
+            ("generate_image", "Generating image"),
             ("web_search", "Searching"),
             ("grep", "Searching"),
             ("list_dir", "Searching"),

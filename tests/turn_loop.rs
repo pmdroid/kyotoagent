@@ -55,6 +55,41 @@ async fn wait_for_proof_versions(
 }
 
 #[tokio::test]
+async fn image_generation_dispatch_waits_for_permission_and_returns_denial() {
+    let fixture = Fixture::new(
+        "image-generation-dispatch",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "generate_image",
+                serde_json::json!({
+                    "prompt": "A Kyoto garden",
+                    "model": "image-model",
+                    "path": "garden.png"
+                }),
+            )])),
+            Canned::Json(text_reply("Generation was denied")),
+        ],
+    );
+    let workspace = fixture.add_session("image-generation");
+    fixture.ask("image-generation", "Generate an image");
+    fixture
+        .wait_for_waiting_permission("image-generation")
+        .await;
+    fixture.answer("image-generation", kyotoagent::permit::Answer::deny());
+    fixture
+        .wait_for_status("image-generation", Status::Idle)
+        .await;
+    assert!(!workspace.join("garden.png").exists());
+    let events = fixture.events("image-generation");
+    let result = events
+        .iter()
+        .find(|event| event.kind == EventKind::ToolResult)
+        .unwrap();
+    assert_ne!(result.body["is_error"], true);
+    assert!(result.body.to_string().contains("was not written"));
+}
+
+#[tokio::test]
 async fn artifact_optional_placeholders_do_not_require_closeout_or_commit_metadata() {
     let fixture = Fixture::new(
         "artifact-placeholders",
