@@ -1314,15 +1314,26 @@ async fn run_loop(
         let area = match drawn {
             Ok(Ok(area)) => {
                 app.area = area;
-                let image = match &model.overlay {
-                    Some(Overlay::Image { image }) => Some(image),
-                    _ => None,
+                let pane = screen::split_of(&model, area).session;
+                let (image, image_pane) = match &model.overlay {
+                    Some(Overlay::Image { image }) => (Some(image), pane),
+                    Some(overlay @ Overlay::VisualQuestion { visual, .. }) => {
+                        match screen::question_preview_area(pane, overlay) {
+                            Some(rect) => (
+                                Some(&visual.image),
+                                Rect::new(
+                                    rect.x.saturating_sub(1),
+                                    rect.y.saturating_sub(1),
+                                    rect.width + 2,
+                                    rect.height + 2,
+                                ),
+                            ),
+                            None => (None, pane),
+                        }
+                    }
+                    _ => (None, pane),
                 };
-                if let Err(source) = preview.sync(
-                    &mut io::stdout(),
-                    image,
-                    screen::split_of(&model, area).session,
-                ) {
+                if let Err(source) = preview.sync(&mut io::stdout(), image, image_pane) {
                     notice_or_fatal(app, source.to_string())?;
                 }
                 Some(area)

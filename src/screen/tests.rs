@@ -1,6 +1,89 @@
 use super::*;
 
 #[test]
+fn visual_question_keeps_the_question_choices_and_draft_in_narrow_and_wide_frames() {
+    for width in [42, 120] {
+        let mut model = crate::mock::idle();
+        model.left_open = false;
+        model.right_open = false;
+        model.overlay = Some(Overlay::VisualQuestion {
+            text: "When should review happen?".into(),
+            choices: vec![
+                Choice {
+                    label: "Before PR".into(),
+                    marked: false,
+                },
+                Choice {
+                    label: "After PR".into(),
+                    marked: false,
+                },
+            ],
+            prompt: "My draft".into(),
+            visual: crate::question::QuestionVisual {
+                title: "Before PR".into(),
+                alt: "Implement → Review → PR".into(),
+                source: None,
+                image: crate::attachment::ImageAttachment::from_bytes(
+                    "Before PR",
+                    crate::splash::PNG,
+                )
+                .unwrap(),
+            },
+        });
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+        terminal
+            .draw(|frame| render(&model, frame.area(), frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let text = buffer
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        for expected in [
+            "When should review happen?",
+            "1  Before PR",
+            "2  After PR",
+            "My draft",
+        ] {
+            assert!(text.contains(expected), "{width}: {text}");
+        }
+    }
+}
+
+#[test]
+fn answered_visual_questions_do_not_offer_an_inactive_preview_shortcut() {
+    let mut card = Card::Question {
+        text: "Which route?".into(),
+        choices: Vec::new(),
+        answer: None,
+        visuals: vec![crate::question::QuestionVisual {
+            title: "Review first".into(),
+            alt: "Implement → Review → PR".into(),
+            source: None,
+            image: crate::attachment::ImageAttachment::from_bytes("route", crate::splash::PNG)
+                .unwrap(),
+        }],
+    };
+    assert!(card
+        .lines(76)
+        .iter()
+        .any(|line| line.to_string().contains("Ctrl-V")));
+    if let Card::Question { answer, .. } = &mut card {
+        *answer = Some("Review first".into());
+    }
+    let rendered = card
+        .lines(76)
+        .iter()
+        .map(Line::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Implement → Review → PR"));
+    assert!(!rendered.contains("Ctrl-V"));
+}
+
+#[test]
 fn question_markdown_styles_the_card_and_overlay_without_changing_answers() {
     let text = "# Choose\n\nUse **strong** *slanted* `cargo`\n\n- first\n- second";
     let card = Card::question(text, &[("**literal answer**", false)]);

@@ -246,7 +246,10 @@ fn overlay_frame(model: &ScreenModel, area: Rect, overlay: &Overlay) -> Rect {
     } else {
         split_of(model, area).session
     };
-    if matches!(overlay, Overlay::Image { .. }) {
+    if matches!(
+        overlay,
+        Overlay::Image { .. } | Overlay::VisualQuestion { .. }
+    ) {
         return crate::image_preview::popup(pane);
     }
     let width = overlay_inner_width(pane);

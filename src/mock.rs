@@ -206,6 +206,7 @@ pub fn answered() -> ScreenModel {
             text: "Which title should the heading use?".to_string(),
             choices: Vec::new(),
             answer: Some("Kyoto Agent".to_string()),
+            visuals: Vec::new(),
         },
     );
     model

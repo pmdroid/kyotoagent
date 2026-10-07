@@ -307,8 +307,10 @@ pub fn screen_model(app: &App) -> ScreenModel {
                 } else {
                     picker_overlay(app).or_else(|| {
                         if let Some(image) = &app.open_image {
-                            Some(Overlay::Image {
-                                image: image.clone(),
+                            visual_question(app, image).or_else(|| {
+                                Some(Overlay::Image {
+                                    image: image.clone(),
+                                })
                             })
                         } else if let Some(text) = &app.open_text {
                             Some(Overlay::Text { text: text.clone() })
@@ -631,10 +633,52 @@ pub(super) fn picker_matches(app: &App) -> Vec<&SkillEntry> {
     skills::matching(&app.skills, token)
 }
 
+pub(super) fn visual_question(
+    app: &App,
+    image: &crate::attachment::ImageAttachment,
+) -> Option<Overlay> {
+    app.cards.iter().rev().find_map(|card| match card {
+        Card::Question {
+            text,
+            choices,
+            visuals,
+            ..
+        } if card.is_waiting() => {
+            let visual = visuals.iter().find(|v| &v.image == image)?;
+            Some(Overlay::VisualQuestion {
+                text: text.clone(),
+                choices: choices.clone(),
+                prompt: app.question_text.clone(),
+                visual: visual.clone(),
+            })
+        }
+        _ => None,
+    })
+}
+
 pub(super) fn overlay_from(cards: &[Card], prompt: &str) -> Option<Overlay> {
     let waiting = cards.iter().rev().find_map(|card| match card {
-        Card::Question { text, choices, .. } if card.is_waiting() => Some(Overlay::Question {
-            text: text.clone(),
+        Card::Question {
+            text,
+            choices,
+            visuals,
+            ..
+        } if card.is_waiting() => Some(Overlay::Question {
+            text: std::iter::once(text.clone())
+                .chain(visuals.iter().enumerate().map(|(index, visual)| {
+                    format!(
+                        "{}\n{}\n{}",
+                        visual.title,
+                        visual.alt,
+                        if index == 0 {
+                            "Ctrl-V · View diagram"
+                        } else {
+                            "Ctrl-V · Next diagram"
+                        }
+                    )
+                }))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
             choices: choices.clone(),
             prompt: prompt.to_string(),
         }),
@@ -771,7 +815,16 @@ pub(super) fn maybe_open_question(app: &mut App) {
         app.open_todo = None;
         app.open_file = None;
         app.open_text = None;
-        app.open_image = None;
+        app.open_image = if crate::splash::detect() != crate::splash::Protocol::HalfBlocks {
+            app.cards.iter().rev().find_map(|card| match card {
+                Card::Question { visuals, .. } if card.is_waiting() => {
+                    visuals.first().map(|v| v.image.clone())
+                }
+                _ => None,
+            })
+        } else {
+            None
+        };
         app.overlay = true;
     }
 }
@@ -895,8 +948,8 @@ pub(super) fn close_overlay(app: &mut App) {
         app.overlay = false;
         return;
     }
-    if app.open_image.take().is_some() {
-        app.overlay = false;
+    if let Some(image) = app.open_image.take() {
+        app.overlay = visual_question(app, &image).is_some();
         return;
     }
     if app.delete_confirm.is_some() {

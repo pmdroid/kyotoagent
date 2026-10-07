@@ -24,6 +24,7 @@ impl Card {
                 })
                 .collect(),
             answer: None,
+            visuals: Vec::new(),
         }
     }
 
@@ -251,9 +252,25 @@ impl Card {
                 text,
                 choices,
                 answer,
+                visuals,
             } => {
                 body.extend(markdown_lines(preview_source(text), text_width));
                 self.clip_preview(&mut body);
+                for (index, visual) in visuals.iter().enumerate() {
+                    body.extend(wrapped(&visual.title, text_width, theme::body()));
+                    body.extend(wrapped(&visual.alt, text_width, theme::faint()));
+                    if answer.is_none() {
+                        body.extend(wrapped(
+                            if index == 0 {
+                                "Ctrl-V · View diagram"
+                            } else {
+                                "Ctrl-V · Next diagram"
+                            },
+                            text_width,
+                            theme::key(),
+                        ));
+                    }
+                }
                 if answer.is_none() {
                     for (index, choice) in choices.iter().enumerate() {
                         let marker = if choice.marked {

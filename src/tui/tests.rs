@@ -1,5 +1,67 @@
 use super::*;
 
+#[tokio::test]
+async fn visual_question_keeps_choice_keys_and_free_text_while_cycling_previews() {
+    let mut app = waiting_question("");
+    let client = Client::at(PathBuf::from("/tmp/absent-visual-test.sock"));
+    let mut image =
+        crate::attachment::ImageAttachment::from_bytes("A", crate::splash::PNG).unwrap();
+    let visual = crate::question::QuestionVisual {
+        title: "A".into(),
+        alt: "Plan then review".into(),
+        image: image.clone(),
+        source: None,
+    };
+    image.name = "B".into();
+    app.cards = vec![Card::Question {
+        text: "Which route?".into(),
+        choices: vec![
+            Choice {
+                label: "A".into(),
+                marked: false,
+            },
+            Choice {
+                label: "B".into(),
+                marked: false,
+            },
+        ],
+        answer: None,
+        visuals: vec![
+            visual,
+            crate::question::QuestionVisual {
+                title: "B".into(),
+                alt: "Review later".into(),
+                image,
+                source: None,
+            },
+        ],
+    }];
+    app.question_id = Some("q1".into());
+    let effect = keystroke(&app, ctrl('v')).unwrap();
+    apply(&mut app, &client, effect).await.unwrap();
+    assert!(matches!(
+        screen_model(&app).overlay,
+        Some(Overlay::VisualQuestion { .. })
+    ));
+    assert_eq!(
+        keystroke(&app, press(KeyCode::Char('1'))),
+        Some(Effect::Choose(0))
+    );
+    apply(&mut app, &client, Effect::Paste("Custom route".into()))
+        .await
+        .unwrap();
+    assert!(
+        matches!(screen_model(&app).overlay, Some(Overlay::VisualQuestion { prompt, .. }) if prompt == "Custom route")
+    );
+    let next = keystroke(&app, ctrl('v')).unwrap();
+    apply(&mut app, &client, next).await.unwrap();
+    assert_eq!(app.open_image.as_ref().unwrap().name, "B");
+    close_overlay(&mut app);
+    assert!(app.open_image.is_none());
+    assert!(app.overlay);
+    assert_eq!(app.question_text, "Custom route");
+}
+
 #[test]
 fn pane_close_buttons_hide_only_the_clicked_pane_and_allow_reopening() {
     for pane in RightPane::ORDER {
