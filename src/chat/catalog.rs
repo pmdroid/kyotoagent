@@ -89,7 +89,11 @@ pub(super) fn parse_codex_catalog(text: &str) -> Option<Vec<ModelRow>> {
                             .collect()
                     })
                     .unwrap_or_default(),
-                context_length: advertised_length(model),
+                context_length: model
+                    .get("max_context_window")
+                    .and_then(Value::as_u64)
+                    .filter(|length| *length > 0)
+                    .or_else(|| advertised_length(model)),
                 provider: None,
             })
         })
