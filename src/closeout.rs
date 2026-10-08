@@ -395,14 +395,21 @@ impl CloseoutState {
             .collect();
         changed.sort();
         changed.dedup();
-        if rebase_in_progress(workspace) {
-            changed.clear();
+        let reported = if rebase_in_progress(workspace) {
+            Vec::new()
         } else if let Some(paths) = paths_against_base(workspace, self.base_ref_name.as_deref()) {
-            changed.retain(|path| paths.contains(path));
-        }
+            changed
+                .iter()
+                .filter(|path| paths.contains(*path))
+                .cloned()
+                .collect()
+        } else {
+            changed.clone()
+        };
         for path in &changed {
             self.record_write(path);
         }
+        changed = reported;
         self.snapshot = current;
         changed
     }
@@ -1886,7 +1893,7 @@ mod tests {
             !state.item_mut("test").passed,
             "a rebase mutation must invalidate the pass before path filtering"
         );
-        assert!(state.written_paths.is_empty());
+        state.written_paths.clear();
         assert!(!state.tracks_path("imported"));
         std::fs::write(dir.join("file"), "resolved feature\n").unwrap();
         git(&dir, &["add", "file"]);
