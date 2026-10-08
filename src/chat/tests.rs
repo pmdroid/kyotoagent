@@ -1273,9 +1273,14 @@ async fn a_codex_catalog_requests_a_supported_version_and_keeps_visible_models()
     let server = FakeServer::start(vec![Canned::Json(serde_json::json!({
         "models": [
             {"slug": "gpt-6.1-sol", "visibility": "list", "supported_in_api": true,
-             "context_window": 272000, "max_context_window": 872000,
+             "context_window": 272000, "max_context_window": 1050000,
              "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}, {"effort": "ultra"}]},
-            {"slug": "codex-only", "visibility": "list", "supported_in_api": false},
+            {"slug": "codex-only", "visibility": "list", "supported_in_api": false,
+             "context_window": 128000},
+            {"slug": "zero-maximum", "visibility": "list",
+             "context_window": 64000, "max_context_window": 0},
+            {"slug": "invalid-maximum", "visibility": "list",
+             "context_window": 32000, "max_context_window": "unknown"},
             {"slug": "internal-review", "visibility": "hide", "supported_in_api": true},
             {"slug": "deprecated", "visibility": "unlisted"},
             {"slug": "missing-visibility"},
@@ -1290,10 +1295,18 @@ async fn a_codex_catalog_requests_a_supported_version_and_keeps_visible_models()
     let rows = client.catalog().await.expect("the Codex catalog parses");
     assert_eq!(
         rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
-        ["gpt-6.1-sol", "codex-only"]
+        [
+            "gpt-6.1-sol",
+            "codex-only",
+            "zero-maximum",
+            "invalid-maximum"
+        ]
     );
     assert_eq!(rows[0].reasoning_efforts, ["low", "high", "ultra"]);
-    assert_eq!(rows[0].context_length, Some(272000));
+    assert_eq!(rows[0].context_length, Some(1050000));
+    assert_eq!(rows[1].context_length, Some(128000));
+    assert_eq!(rows[2].context_length, Some(64000));
+    assert_eq!(rows[3].context_length, Some(32000));
     let request = server.one();
     assert_eq!(request.method, "GET");
     assert_eq!(request.path, "/models?client_version=0.160.0");
