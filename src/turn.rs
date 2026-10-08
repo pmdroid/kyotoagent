@@ -1340,20 +1340,35 @@ impl Runner {
         // The turn id is counted under the turn slot, so two asks cannot share
         // one even if the first task has not written its ask to the log yet.
         let turn_id = next_turn_id(&state.session);
-        if state.session.meta().is_ok_and(|meta| meta.archived) {
+        if state.session.meta().is_ok_and(|meta| meta.archived)
+            || state.retiring.load(Ordering::Acquire)
+        {
+            state.turn_idle.send_replace(true);
             return Ok(TurnStart::Busy);
         }
         state.tools.gate().reset_cancel();
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let session = state.session.clone();
         let tools = state.tools.clone();
-        let config = self.config_for_session(&state.session)?;
+        let config = match self.config_for_session(&state.session) {
+            Ok(config) => config,
+            Err(error) => {
+                state.turn_idle.send_replace(true);
+                return Err(error);
+            }
+        };
         let root = self
             .config_path
             .as_ref()
             .and_then(|path| path.parent())
             .map(Path::to_path_buf);
-        let client = ChatClient::in_root(&config, root.as_deref())?;
+        let client = match ChatClient::in_root(&config, root.as_deref()) {
+            Ok(client) => client,
+            Err(error) => {
+                state.turn_idle.send_replace(true);
+                return Err(error.into());
+            }
+        };
         let compact_percent = config.compact_percent;
         let workspace = state.tools.workspace().to_path_buf();
         let meta = state.session.meta().ok();
@@ -1408,6 +1423,7 @@ impl Runner {
         };
         if let Some(id) = schedule_id {
             if !state.tools.schedules().fire(id) {
+                state.turn_idle.send_replace(true);
                 return Ok(TurnStart::Spent);
             }
         }
