@@ -297,25 +297,7 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
             {
                 return Ok(true);
             }
-            let input = if question {
-                &mut app.question_text
-            } else {
-                &mut app.ask
-            };
-            app.pastes
-                .retain(|paste| paste.question != question || paste_matches(input, paste));
-            let start = input.len();
-            input.push_str(&text);
-            if text.chars().count() > 2048 || text.lines().count() > 12 {
-                app.pastes.push(PastedInput {
-                    start,
-                    text,
-                    question,
-                });
-            }
-            if !question {
-                after_ask_edit(app);
-            }
+            editor::insert(app, &text, true);
         }
         Effect::Type(c) => {
             proof::focus(app, None);
@@ -328,13 +310,7 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
             if app.picker.is_some() || matches!(app.command_ui, Some(CommandUi::Help { .. })) {
                 return Ok(true);
             }
-            match mode(app) {
-                Mode::QuestionText | Mode::Question { .. } => app.question_text.push(c),
-                _ => {
-                    app.ask.push(c);
-                    after_ask_edit(app);
-                }
-            }
+            editor::insert(app, &c.to_string(), false);
         }
         Effect::DeleteWord | Effect::DeleteLine => edit_delete(app, effect),
         Effect::Backspace => {
@@ -347,19 +323,13 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
             if app.picker.is_some() || matches!(app.command_ui, Some(CommandUi::Help { .. })) {
                 return Ok(true);
             }
-            match mode(app) {
-                Mode::QuestionText | Mode::Question { .. } => {
-                    if !delete_pasted_tail(&mut app.question_text, &mut app.pastes, true) {
-                        app.question_text.pop();
-                    }
-                }
-                _ => {
-                    if !delete_pasted_tail(&mut app.ask, &mut app.pastes, false) {
-                        app.ask.pop();
-                    }
-                    after_ask_edit(app);
-                }
-            }
+            editor::delete(app, Effect::Backspace);
+        }
+        Effect::MoveCursor(movement) => editor::move_cursor(app, movement),
+        Effect::SetCursor(position) => editor::set_display_cursor(app, position),
+        Effect::DeleteForward => editor::delete(app, Effect::DeleteForward),
+        Effect::Complete => {
+            fill_skill_picker(app);
         }
         Effect::Submit => {
             if app.delete_confirm.is_some() {
@@ -494,6 +464,7 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
         Effect::EnhanceEdit => {
             if let Some((text, source)) = enhance_draft(app) {
                 app.ask = if text.is_empty() { source } else { text };
+                app.ask_cursor = None;
             }
         }
         Effect::MenuItem(index) => run_menu(app, client, index).await?,
@@ -763,6 +734,7 @@ pub(super) async fn run_palette(app: &mut App, client: &Client) {
         CommandAction::OpenProviders => providers::open(app, client),
         CommandAction::Goal => {
             app.ask = "/goal ".to_string();
+            app.ask_cursor = None;
         }
         CommandAction::Compact => {
             if app.selected.is_empty() {
@@ -1105,6 +1077,7 @@ pub(super) enum SlashCommand<'a> {
 
 pub(super) fn run_pane_command(app: &mut App, pane: RightPane) {
     app.ask.clear();
+    app.ask_cursor = None;
     app.pastes.retain(|paste| paste.question);
     toggle_pane(app, pane);
 }
@@ -1123,6 +1096,7 @@ pub(super) async fn apply_enhance_slash(
 ) -> Result<(), String> {
     let next = flag.unwrap_or(!app.enhance);
     app.ask.clear();
+    app.ask_cursor = None;
     app.pastes.retain(|paste| paste.question);
     post_enhance(app, client, next).await?;
     poll(app, client).await?;
@@ -1148,9 +1122,11 @@ pub(super) async fn cancel_turn(app: &mut App, client: &Client) -> Result<(), St
             .any(|card| matches!(card, Card::Enhance { .. }))
         {
             app.ask.clear();
+            app.ask_cursor = None;
             app.pastes.retain(|paste| paste.question);
         } else {
             app.ask = text;
+            app.ask_cursor = None;
             app.overlay = false;
         }
         app.enhance_source = None;
@@ -1165,6 +1141,7 @@ pub(super) async fn apply_yolo_slash(
 ) -> Result<(), String> {
     let next = flag.unwrap_or(!app.yolo);
     app.ask.clear();
+    app.ask_cursor = None;
     app.pastes.retain(|paste| paste.question);
     post_yolo(app, client, next).await?;
     poll(app, client).await?;
@@ -1177,6 +1154,7 @@ pub(super) async fn apply_closeout_slash(
     show: bool,
 ) -> Result<(), String> {
     app.ask.clear();
+    app.ask_cursor = None;
     app.pastes.retain(|paste| paste.question);
     post_show_closeout(app, client, show).await?;
     poll(app, client).await?;
@@ -1193,8 +1171,10 @@ pub(super) async fn submit(app: &mut App, client: &Client) -> Result<(), String>
     if input.trim() == "/server" {
         if question {
             app.question_text.clear();
+            app.question_cursor = None;
         } else {
             app.ask.clear();
+            app.ask_cursor = None;
         }
         connections::open_server_picker(app);
         return Ok(());
@@ -1219,7 +1199,9 @@ pub(super) async fn submit(app: &mut App, client: &Client) -> Result<(), String>
             return Err(error_text(&response, status));
         }
         app.ask.clear();
+        app.ask_cursor = None;
         app.question_text.clear();
+        app.question_cursor = None;
         poll(app, client).await?;
         return Ok(());
     }
@@ -1232,30 +1214,35 @@ pub(super) async fn submit(app: &mut App, client: &Client) -> Result<(), String>
             match slash_command(&ask) {
                 Some(SlashCommand::OpenModel) => {
                     app.ask.clear();
+                    app.ask_cursor = None;
                     app.pastes.retain(|paste| paste.question);
                     open_model_picker(app, client).await;
                     return Ok(());
                 }
                 Some(SlashCommand::SetModel(id)) => {
                     app.ask.clear();
+                    app.ask_cursor = None;
                     app.pastes.retain(|paste| paste.question);
                     apply_model_id(app, client, id).await;
                     return Ok(());
                 }
                 Some(SlashCommand::SetEffort(effort)) => {
                     app.ask.clear();
+                    app.ask_cursor = None;
                     app.pastes.retain(|paste| paste.question);
                     apply_effort(app, client, effort).await;
                     return Ok(());
                 }
                 Some(SlashCommand::OpenEffort) => {
                     app.ask.clear();
+                    app.ask_cursor = None;
                     app.pastes.retain(|paste| paste.question);
                     open_effort_picker(app, client).await;
                     return Ok(());
                 }
                 Some(SlashCommand::Compact) => {
                     app.ask.clear();
+                    app.ask_cursor = None;
                     app.pastes.retain(|paste| paste.question);
                     let _ = client
                         .request(
@@ -1374,6 +1361,7 @@ pub(super) async fn submit(app: &mut App, client: &Client) -> Result<(), String>
                 .await?;
             if status == 204 {
                 app.question_text.clear();
+                app.question_cursor = None;
                 app.pastes.retain(|paste| !paste.question);
                 app.overlay = false;
                 app.open_image = None;
@@ -1423,6 +1411,7 @@ fn finish_send(app: &mut App, sent: &str, status: u16, response: &str, clear_ove
                 app.images.remove(&app.selected);
             }
             app.ask.clear();
+            app.ask_cursor = None;
             app.pastes.retain(|paste| paste.question);
             app.notice = None;
             app.enhance_source = None;
@@ -1434,6 +1423,7 @@ fn finish_send(app: &mut App, sent: &str, status: u16, response: &str, clear_ove
             app.images.remove(&app.selected);
             app.enhance_source = Some(sent.to_string());
             app.ask.clear();
+            app.ask_cursor = None;
             app.pastes.retain(|paste| paste.question);
             app.notice = None;
             app.overlay = false;
@@ -1487,6 +1477,7 @@ pub(super) async fn answer_enhance(
         .await?;
     if status == 204 {
         app.ask.clear();
+        app.ask_cursor = None;
         app.pastes.retain(|paste| paste.question);
         app.overlay = false;
         app.enhance_source = None;
@@ -1548,6 +1539,7 @@ pub(super) async fn answer_choice(
         app.overlay = false;
         app.open_image = None;
         app.question_text.clear();
+        app.question_cursor = None;
         app.pastes.retain(|paste| !paste.question);
     } else {
         app.notice = Some(response);
@@ -1763,6 +1755,7 @@ pub(super) async fn create_session(
         if let Some(id) = json["id"].as_str() {
             select_session(app, id.to_string());
             app.ask.clear();
+            app.ask_cursor = None;
             app.pastes.retain(|paste| paste.question);
         }
     } else {
@@ -2562,7 +2555,7 @@ pub(super) fn scroll_file(app: &mut App, up: bool, step: usize) -> bool {
     app.select = None;
     true
 }
-fn delete_tail(text: &mut String, line: bool) {
+pub(super) fn delete_tail(text: &mut String, line: bool) {
     let start = if line {
         text.rfind('\n').map_or(0, |i| i + 1)
     } else {
@@ -2623,19 +2616,8 @@ pub(super) fn edit_delete(app: &mut App, effect: Effect) {
     if app.picker.is_some() || app.open_file.is_some() {
         return;
     }
-    match mode(app) {
-        Mode::QuestionText | Mode::Question { .. } => {
-            if !delete_pasted_tail(&mut app.question_text, &mut app.pastes, true) {
-                delete_tail(&mut app.question_text, line);
-            }
-        }
-        Mode::Permission if app.ask.is_empty() => {}
-        _ => {
-            if !delete_pasted_tail(&mut app.ask, &mut app.pastes, false) {
-                delete_tail(&mut app.ask, line);
-            }
-            after_ask_edit(app);
-        }
+    if !matches!(mode(app), Mode::Permission) || !app.ask.is_empty() {
+        editor::delete(app, effect);
     }
 }
 
