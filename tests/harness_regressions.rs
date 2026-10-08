@@ -76,7 +76,11 @@ impl Fixture {
             )),
             requests: Arc::new(Mutex::new(Vec::new())),
         };
-        let router = Router::new().route("/v1/chat/completions", post(complete)).route("/v1/models", get(|| async { Json(json!({"data":[{"id":"default-model","context_length":1000000},{"id":"alternate-model","context_length":1000000}]})) })).with_state(model.clone());
+        let router = Router::new()
+            .route("/v1/chat/completions", post(complete))
+            .route("/v1/responses", post(complete))
+            .route("/v1/models", get(|| async { Json(json!({"data":[{"id":"default-model","context_length":1000000},{"id":"alternate-model","context_length":1000000}]})) }))
+            .with_state(model.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let config = Config::from_toml(&format!(
             "base_url = \"http://{}/v1\"\nmodel = \"default-model\"\ntitle_model = \"\"\n{extra}",
@@ -408,6 +412,102 @@ async fn rejected_finish_settles_every_call_before_next_request() {
     assert_eq!(
         call_ids, result_ids,
         "the next request contains unanswered tool calls"
+    );
+}
+
+#[tokio::test]
+async fn incomplete_provider_generations_execute_nothing() {
+    let call = json!({"id":"call_0","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"file\",\"contents\":\"secret\"}"}});
+    let chat_cases = [
+        (
+            "chat-json-failed",
+            "application/json",
+            json!({"choices":[{"finish_reason":"length","message":{"role":"assistant","tool_calls":[call]}}]}).to_string(),
+        ),
+        (
+            "chat-sse-eof",
+            "text/event-stream",
+            format!(
+                "data: {}\n\n",
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_0","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"file\",\"contents\":\"secret\"}"}}]}}]})
+            ),
+        ),
+        (
+            "chat-sse-error",
+            "text/event-stream",
+            format!(
+                "data: {}\n\ndata: {}\n\n",
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_0","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"file\",\"contents\":\"secret\"}"}}]}}]}),
+                json!({"error":{"message":"provider failed"}})
+            ),
+        ),
+    ];
+    for (name, content_type, body) in chat_cases {
+        let f = Fixture::new(name, vec![], "").await;
+        f.model
+            .replies
+            .lock()
+            .unwrap()
+            .push_back((content_type.into(), body));
+        f.ask();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            let events = f.session.events().unwrap();
+            if events.iter().any(|event| event.kind == EventKind::Result) {
+                break;
+            }
+            if events.iter().any(|event| event.kind == EventKind::Permission) {
+                let _ = f.runner.answer("s", Answer::deny());
+                break;
+            }
+            assert!(Instant::now() < deadline, "{name} never settled");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        f.wait_result().await;
+        let wrote = f.workspace.join("file").exists();
+        let kinds: Vec<_> = f
+            .session
+            .events()
+            .unwrap()
+            .iter()
+            .map(|event| event.kind.label())
+            .collect();
+        f.evidence(json!({"wrote":wrote,"kinds":kinds}));
+        assert!(!wrote, "{name} executed a tool");
+        assert!(
+            !kinds.contains(&"tool_call"),
+            "{name} exposed an executable tool call: {kinds:?}"
+        );
+    }
+
+    let f = Fixture::new("responses-json-incomplete", vec![], "").await;
+    let config = Config::from_toml(&format!(
+        "provider = \"codex\"\n\n[providers.codex]\nkind = \"codex\"\nbase_url = \"{}\"\nmodel = \"gpt-6.1-sol\"\n",
+        f.config.base_url.trim_end_matches("/v1")
+    ))
+    .unwrap();
+    fs::write(
+        f.root.join("codex-auth.json"),
+        r#"{"access_token":"access","refresh_token":"refresh","id_token":"id","account_id":"acc","expires_at":"2035-01-01T00:00:00.000Z"}"#,
+    )
+    .unwrap();
+    let runner = Runner::with_config_file(&config, &f.root).unwrap();
+    f.session
+        .update(|meta| {
+            meta.model = "gpt-6.1-sol".into();
+            true
+        })
+        .unwrap();
+    runner.add_session(&f.session).unwrap();
+    f.model.replies.lock().unwrap().push_back((
+        "application/json".into(),
+        json!({"object":"response","status":"incomplete","output":[{"type":"function_call","call_id":"call_0","name":"write_file","arguments":"{\"path\":\"file\",\"contents\":\"secret\"}"}]}).to_string(),
+    ));
+    runner.ask("s", "perform the task").unwrap();
+    f.wait_result().await;
+    assert!(
+        !f.workspace.join("file").exists(),
+        "an incomplete responses body executed a tool"
     );
 }
 
