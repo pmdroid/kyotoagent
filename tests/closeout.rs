@@ -736,6 +736,57 @@ async fn finish_before_a_pass_is_refused_and_after_a_pass_it_ends_the_turn() {
 }
 
 #[tokio::test]
+async fn a_candidate_edit_during_a_passing_check_cannot_finish() {
+    let replies = vec![
+        Canned::Json(tool_call_reply(vec![(
+            "run_closeout",
+            serde_json::json!({ "id": "test" }),
+        )])),
+        Canned::Json(tool_call_reply(vec![(
+            "finish",
+            serde_json::json!({ "text": "Done.", "proof": "never tested" }),
+        )])),
+    ];
+    let fixture = Fixture::new("mid-check", replies);
+    let workspace = fixture.add_session("91bc");
+    let barrier = workspace.join("barrier");
+    let ready = workspace.join("ready");
+    let source = workspace.join("source.txt");
+    fs::write(&source, "before").unwrap();
+    fixture.write_closeout(
+        &workspace,
+        &format!(
+            "cat source.txt >/dev/null; touch {}; while [ ! -f {} ]; do sleep 0.01; done; exit 0",
+            ready.display(),
+            barrier.display()
+        ),
+    );
+    fixture.ask("91bc", "Run the check and finish.");
+    fixture.wait_for_waiting_permission("91bc").await;
+    fixture.answer("91bc", Answer::allow_once());
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !ready.exists() {
+        assert!(Instant::now() < deadline, "the check did not read source");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    fs::write(&source, "after").unwrap();
+    fs::write(&barrier, "go").unwrap();
+    fixture.wait_for_log("91bc", "closeout_run").await;
+    let observed = fixture.log("91bc");
+    assert!(
+        observed.contains("\"passed\":false"),
+        "changed candidate accepted: {observed}"
+    );
+    fixture.wait_for_log("91bc", "Cannot finish yet").await;
+    let log = fixture.log("91bc");
+    assert!(
+        log.contains("\"passed\":false") || log.contains("stale"),
+        "a changed candidate was accepted: {log}"
+    );
+    assert!(!log.contains("\"kind\":\"result\""), "{log}");
+}
+
+#[tokio::test]
 async fn a_write_after_the_pass_makes_finish_wait_for_another_pass() {
     let replies = vec![
         Canned::Json(tool_call_reply(vec![(
