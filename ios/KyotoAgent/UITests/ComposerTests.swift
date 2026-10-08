@@ -15,22 +15,22 @@ final class ComposerTests: XCTestCase {
         let field = app.descendants(matching: .any)["composer-draft"].firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         field.tap()
-        field.typeText("/mod")
+        typeAtKeyboardPace("/mod", into: field)
         let command = app.buttons["slash-match-model"]
         XCTAssertTrue(command.waitForExistence(timeout: 5))
         capture("Command autocomplete")
         command.tap()
         XCTAssertEqual(field.value as? String, "/model ")
-        field.typeText("fixture-model")
+        typeAtKeyboardPace("fixture-model", into: field)
         XCTAssertEqual(field.value as? String, "/model fixture-model")
         app.buttons["composer-send"].tap()
         XCTAssertTrue(app.staticTexts["Model saved"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["composer-notice"].exists)
         field.tap()
-        field.typeText("hello world")
+        typeAtKeyboardPace("hello world", into: field)
         field.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
             .withOffset(CGVector(dx: 45, dy: 0)).tap()
-        field.typeText("ZZ")
+        typeAtKeyboardPace("ZZ", into: field)
         let edited = field.value as? String ?? ""
         XCTAssertEqual(edited.replacingOccurrences(of: "ZZ", with: ""), "hello world")
         XCTAssertTrue(edited.contains("ZZ"))
@@ -40,12 +40,18 @@ final class ComposerTests: XCTestCase {
         XCTAssertTrue(app.staticTexts[edited].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["composer-notice"].exists)
         field.tap()
-        field.typeText("/pre")
+        typeAtKeyboardPace("/pre", into: field)
         let skill = app.buttons["slash-match-preflight"]
         XCTAssertTrue(skill.waitForExistence(timeout: 5))
         skill.tap()
         XCTAssertEqual(field.value as? String, "/preflight ")
         capture("Skill autocomplete")
+    }
+
+    private func typeAtKeyboardPace(_ text: String, into field: XCUIElement) {
+        for character in text {
+            field.typeText(String(character))
+        }
     }
 
     private func capture(_ name: String) {
