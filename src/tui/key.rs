@@ -44,6 +44,33 @@ pub fn keystroke(app: &App, event: KeyEvent) -> Option<Effect> {
             return Some(Effect::OpenImage(visuals[next].image.clone()));
         }
     }
+    if editor::active(app) {
+        if event.code == KeyCode::Tab && picker_is_open(app) {
+            return Some(Effect::Complete);
+        }
+        let word = event
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL);
+        let movement = match event.code {
+            KeyCode::Left if word => Some(CursorMove::WordLeft),
+            KeyCode::Right if word => Some(CursorMove::WordRight),
+            KeyCode::Left if !editor::input(app).is_empty() => Some(CursorMove::Left),
+            KeyCode::Right if !editor::input(app).is_empty() => Some(CursorMove::Right),
+            KeyCode::Home => Some(CursorMove::Home),
+            KeyCode::End => Some(CursorMove::End),
+            KeyCode::Up if !picker_is_open(app) && !editor::input(app).is_empty() => {
+                Some(CursorMove::Up)
+            }
+            KeyCode::Down if !picker_is_open(app) && !editor::input(app).is_empty() => {
+                Some(CursorMove::Down)
+            }
+            KeyCode::Delete => return Some(Effect::DeleteForward),
+            _ => None,
+        };
+        if let Some(movement) = movement {
+            return Some(Effect::MoveCursor(movement));
+        }
+    }
     if !app.overlay {
         let files: Vec<_> = app
             .cards

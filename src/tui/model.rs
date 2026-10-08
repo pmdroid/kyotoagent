@@ -201,6 +201,7 @@ pub(super) fn select_session(app: &mut App, id: String) {
     app.notice = None;
     app.retry_status = None;
     app.question_text.clear();
+    app.question_cursor = None;
     app.pastes.retain(|paste| !paste.question);
     app.queue.clear();
     app.context = None;
@@ -257,11 +258,13 @@ pub fn screen_model(app: &App) -> ScreenModel {
         .iter()
         .any(|paste| paste.question == question && paste_matches(input, paste))
         .then(|| input.clone());
-    let bottom = if bottom_kind == Bottom::Prompt && bottom == *input {
-        display_pasted(input, &app.pastes, question)
-    } else {
-        bottom
-    };
+    let (bottom, bottom_cursor, pasted_ranges) =
+        if bottom_kind == Bottom::Prompt && bottom == *input {
+            let (text, cursor, ranges) = editor::display(app);
+            (text, Some(cursor), ranges)
+        } else {
+            (bottom, None, Vec::new())
+        };
     ScreenModel {
         sessions: servers::sessions(app),
         projects: servers::project_rows(app),
@@ -269,6 +272,8 @@ pub fn screen_model(app: &App) -> ScreenModel {
         cards: app.cards.clone(),
         scroll: display_scroll(app),
         bottom,
+        bottom_cursor,
+        pasted_ranges,
         toast: app.notice.clone(),
         bottom_kind,
         pasted_text,
@@ -404,15 +409,19 @@ pub(super) fn layout_model(app: &App) -> ScreenModel {
         .iter()
         .any(|paste| paste.question == question && paste_matches(input, paste))
         .then(|| input.clone());
-    let bottom = if bottom_kind == Bottom::Prompt && bottom == *input {
-        display_pasted(input, &app.pastes, question)
-    } else {
-        bottom
-    };
+    let (bottom, bottom_cursor, pasted_ranges) =
+        if bottom_kind == Bottom::Prompt && bottom == *input {
+            let (text, cursor, ranges) = editor::display(app);
+            (text, Some(cursor), ranges)
+        } else {
+            (bottom, None, Vec::new())
+        };
     ScreenModel {
         sessions: app.sessions.clone(),
         selected: app.selected.clone(),
         bottom,
+        bottom_cursor,
+        pasted_ranges,
         bottom_kind,
         pasted_text,
         pending_images: if matches!(mode(app), Mode::Idle | Mode::Working) {
@@ -603,19 +612,18 @@ pub(super) fn skill_picker_model(app: &App) -> Option<SkillPicker> {
     if rows.is_empty() {
         return None;
     }
+    let selected = app.skill_highlight.min(rows.len() - 1);
+    let limit = skills::PICKER_LIMIT
+        .min(usize::from(app.area.height.saturating_sub(7)))
+        .max(1);
+    let start = selected.saturating_sub(limit - 1);
     Some(SkillPicker {
-        selected: app.skill_highlight.min(rows.len() - 1),
-        rows: rows
-            .into_iter()
-            .map(|skill| SkillPickerRow {
-                name: skill.name.clone(),
-                description: skill.description.lines().next().unwrap_or("").to_string(),
-            })
-            .collect(),
+        selected: selected - start,
+        rows: rows.into_iter().skip(start).take(limit).collect(),
     })
 }
 
-pub(super) fn picker_matches(app: &App) -> Vec<&SkillEntry> {
+pub(super) fn picker_matches(app: &App) -> Vec<SkillPickerRow> {
     if app.overlay
         || app.picker.is_some()
         || app.command_ui.is_some()
@@ -627,10 +635,45 @@ pub(super) fn picker_matches(app: &App) -> Vec<&SkillEntry> {
     let Some(token) = skills::picker_token(&app.ask) else {
         return Vec::new();
     };
-    if token.eq_ignore_ascii_case("model") || token.eq_ignore_ascii_case("effort") {
+    let mut rows: Vec<_> = command_catalog(&[])
+        .into_iter()
+        .filter_map(|row| {
+            Some(SkillPickerRow {
+                name: row.line.name.strip_prefix('/')?.to_string(),
+                description: row.line.hint,
+            })
+        })
+        .collect();
+    for skill in app.skills.iter().filter(|skill| skill.user_invocable) {
+        if !rows
+            .iter()
+            .any(|row| row.name.eq_ignore_ascii_case(&skill.name))
+        {
+            rows.push(SkillPickerRow {
+                name: skill.name.clone(),
+                description: skill.description.lines().next().unwrap_or("").to_string(),
+            });
+        }
+    }
+    if app.ask.len() > token.len() + 1
+        && rows.iter().any(|row| row.name.eq_ignore_ascii_case(token))
+    {
         return Vec::new();
     }
-    skills::matching(&app.skills, token)
+    let needle = token.to_ascii_lowercase();
+    let prefix = rows
+        .iter()
+        .any(|row| row.name.to_ascii_lowercase().starts_with(&needle));
+    rows.retain(|row| {
+        let name = row.name.to_ascii_lowercase();
+        if prefix {
+            name.starts_with(&needle)
+        } else {
+            name.contains(&needle)
+        }
+    });
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    rows
 }
 
 pub(super) fn visual_question(
@@ -1052,40 +1095,6 @@ pub(super) fn open_question_choices(app: &App) -> Vec<String> {
 pub(super) fn paste_matches(input: &str, paste: &PastedInput) -> bool {
     input.get(paste.start..paste.start.saturating_add(paste.text.len()))
         == Some(paste.text.as_str())
-}
-
-fn display_pasted(input: &str, pastes: &[PastedInput], question: bool) -> String {
-    let mut out = String::new();
-    let mut cursor = 0;
-    for paste in pastes {
-        if paste.question != question || paste.start < cursor || !paste_matches(input, paste) {
-            continue;
-        }
-        out.push_str(&input[cursor..paste.start]);
-        out.push_str(&format!(
-            "[Pasted input: {} chars]",
-            paste.text.chars().count()
-        ));
-        cursor = paste.start + paste.text.len();
-    }
-    out.push_str(&input[cursor..]);
-    out
-}
-
-pub(super) fn delete_pasted_tail(
-    input: &mut String,
-    pastes: &mut Vec<PastedInput>,
-    question: bool,
-) -> bool {
-    let Some(index) = pastes.iter().position(|paste| {
-        paste.question == question
-            && paste.start + paste.text.len() == input.len()
-            && paste_matches(input, paste)
-    }) else {
-        return false;
-    };
-    input.truncate(pastes.remove(index).start);
-    true
 }
 
 pub(super) fn advance_notice(app: &mut App, now: Instant) {

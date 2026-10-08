@@ -42,6 +42,8 @@ mod apply;
 mod catalog;
 mod connections;
 mod deletion;
+mod editor;
+pub use editor::CursorMove;
 mod images;
 mod key;
 mod layout;
@@ -235,6 +237,10 @@ pub enum Effect {
     Type(char),
     Paste(String),
     Backspace,
+    DeleteForward,
+    MoveCursor(CursorMove),
+    SetCursor(usize),
+    Complete,
     DeleteWord,
     DeleteLine,
     Submit,
@@ -316,6 +322,8 @@ pub struct App {
     card_event_ids: Vec<String>,
     artifact_focus: Option<String>,
     pub ask: String,
+    ask_cursor: Option<usize>,
+    question_cursor: Option<usize>,
     pastes: Vec<PastedInput>,
     images: BTreeMap<String, Vec<crate::attachment::ImageAttachment>>,
     open_image: Option<crate::attachment::ImageAttachment>,
@@ -664,6 +672,18 @@ fn command_catalog(_skills: &[SkillEntry]) -> Vec<CatalogRow> {
             CommandAction::TogglePane(RightPane::Proof),
         ),
         catalog_row(
+            "/server",
+            "/server",
+            "manage saved servers",
+            CommandAction::OpenServer,
+        ),
+        catalog_row(
+            "/proof",
+            "/proof",
+            "show or hide artifacts",
+            CommandAction::TogglePane(RightPane::Proof),
+        ),
+        catalog_row(
             "/model",
             "/model",
             "open the model list",
@@ -774,6 +794,8 @@ impl App {
             card_event_ids: Vec::new(),
             artifact_focus: None,
             ask: String::new(),
+            ask_cursor: None,
+            question_cursor: None,
             pastes: Vec::new(),
             images: BTreeMap::new(),
             open_image: None,
