@@ -41,7 +41,7 @@ jobs:
           python3 ios/KyotoAgent/UITests/server.py --cert "$fixture/cert.pem" --key "$fixture/key.pem" --port-file "$fixture/port" > build/ios-composer/server.log 2>&1 &
           server=$!
           trap 'kill "$server"; rm -rf "$fixture"' EXIT
-          xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme "Kyoto Agent" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO build-for-testing
+          xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme "Kyoto Agent" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
           for attempt in {1..60}; do
             test -s "$fixture/port" && break
             kill -0 "$server" || { cat build/ios-composer/server.log; exit 1; }
@@ -62,7 +62,7 @@ jobs:
             fi
             export TEST_RUNNER_COMPOSER_PAIRING_URL="kyotoagent://127.0.0.1:$port?token=composer-ui-test"
             result=0
-            xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme "Kyoto Agent" -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath build/ios -resultBundlePath "build/ios-composer/$family.xcresult" -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test-without-building || result=$?
+            xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme "Kyoto Agent" -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath build/ios -resultBundlePath "build/ios-composer/$family.xcresult" -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test-without-building || result=$?
             xcrun simctl io "$device" screenshot "build/ios-composer/$family.png"
             xcrun xcresulttool export attachments --path "build/ios-composer/$family.xcresult" --output-path "build/ios-composer/$family-attachments"
             test "$result" -eq 0
