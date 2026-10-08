@@ -764,6 +764,37 @@ pub(super) fn open_question_id(session: &Session) -> Option<String> {
     open
 }
 
+pub(super) fn settle_recovered_cancel(state: &SessionState) -> Result<(), SessionError> {
+    let session = &state.session;
+    if let Some(id) = state.tools.gate().open_permission() {
+        settle_held_answer(session, &Answer::deny().for_permission(&id))?;
+    } else if state.tools.gate().open_question().is_some() {
+        settle_held_question(session, "Cancelled.")?;
+    }
+    let turn_id = session
+        .events()?
+        .last()
+        .map(|event| event.turn_id.clone())
+        .unwrap_or_else(|| next_turn_id(session));
+    let event = Event::new(
+        &session.next_event_id()?,
+        &now(),
+        &turn_id,
+        EventKind::Result,
+    )
+    .with_body(&ResultBody {
+        text: "Cancelled the recovered wait. The old action did not run.".into(),
+        note: String::new(),
+    })
+    .map_err(|source| SessionError::Json {
+        path: session.events_path(),
+        source,
+    })?;
+    session.append(&event)?;
+    state.tools.gate().cancel();
+    Ok(())
+}
+
 pub(super) fn settle_held_question(session: &Session, text: &str) -> Result<(), SessionError> {
     let events = session.events()?;
     let question = events

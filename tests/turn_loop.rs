@@ -827,6 +827,8 @@ impl FakeServer {
                     match listener.accept() {
                         Ok((stream, _)) => {
                             let _ = stream.set_nonblocking(false);
+                            let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+                            let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
                             serve_one(stream, &replies, &bodies, &stop);
                         }
                         Err(ref source) if source.kind() == std::io::ErrorKind::WouldBlock => {
@@ -866,7 +868,7 @@ fn serve_one(
     bodies: &Arc<Mutex<Vec<String>>>,
     stop: &Arc<AtomicBool>,
 ) {
-    let Some((path, body)) = read_request(&mut stream) else {
+    let Some((path, body)) = read_request(&mut stream, stop) else {
         return;
     };
     let request_body = body.clone();
@@ -962,14 +964,25 @@ fn content_event(text: &str) -> String {
     }))
 }
 
-fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
+fn read_request(stream: &mut TcpStream, stop: &AtomicBool) -> Option<(String, String)> {
     let mut raw = Vec::new();
     let mut chunk = [0_u8; 1024];
     let head_end = loop {
         if let Some(at) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
             break at;
         }
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
         match stream.read(&mut chunk) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) =>
+            {
+                continue
+            }
             Ok(0) | Err(_) => return None,
             Ok(n) => raw.extend_from_slice(&chunk[..n]),
         }
@@ -989,8 +1002,19 @@ fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
     }
     let mut body = raw[head_end + 4..].to_vec();
     while body.len() < length {
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
         match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) =>
+            {
+                continue
+            }
+            Ok(0) | Err(_) => return None,
             Ok(n) => body.extend_from_slice(&chunk[..n]),
         }
     }
@@ -1420,6 +1444,151 @@ async fn ask_with_two_choices_blocks_and_the_answer_shows_on_the_card() {
     assert!(fixture.events("91bc").iter().any(|event| {
         event.kind == EventKind::QuestionAnswer && event.body["answer"] == "Kyoto Agent"
     }));
+}
+
+#[test]
+fn fake_server_shutdown_interrupts_an_incomplete_request() {
+    let server = FakeServer::start(Vec::new());
+    let mut connection = TcpStream::connect(server.addr).unwrap();
+    connection
+        .write_all(b"POST /chat/completions HTTP/1.1\r\n")
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    let (done, received) = std::sync::mpsc::channel();
+    let shutdown = std::thread::spawn(move || {
+        drop(server);
+        done.send(()).unwrap();
+    });
+    let result = received.recv_timeout(Duration::from_secs(1));
+    drop(connection);
+    shutdown.join().unwrap();
+    assert!(
+        result.is_ok(),
+        "fake server shutdown blocked on an incomplete request"
+    );
+}
+
+#[tokio::test]
+async fn recovered_cancel_allows_a_new_permissioned_turn_to_finish() {
+    let fixture = Fixture::new(
+        "recovered-cancel-follow-up",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "write_file",
+                serde_json::json!({"path":"new.txt","contents":"approved"}),
+            )])),
+            Canned::Json(text_reply("Follow-up completed.")),
+        ],
+    );
+    let workspace = fixture.root.join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let session = Session::at(&fixture.root.join("session-recovered"));
+    let mut meta = SessionMeta::new("recovered", &workspace, "test/model", AT);
+    meta.status = Status::Waiting;
+    session.create(&meta).unwrap();
+    session
+        .append(
+            &Event::new("e1", AT, "t1", EventKind::UserAsk)
+                .with_body(&AskBody {
+                    images: Vec::new(),
+                    text: "Write old.txt".into(),
+                    context: String::new(),
+                    skill: String::new(),
+                    silent: false,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+    session
+        .append(
+            &Event::new("e2", AT, "t1", EventKind::Permission)
+                .with_body(&PermissionBody::write(
+                    "Write old.txt",
+                    workspace.join("old.txt").to_str().unwrap(),
+                    &["+old"],
+                ))
+                .unwrap(),
+        )
+        .unwrap();
+    fixture
+        .runner
+        .reload(&[session.dir().to_path_buf()])
+        .unwrap();
+    fixture.cancel("recovered");
+    assert_eq!(fixture.view("recovered").status, Status::Idle);
+    fixture.cancel("recovered");
+    fixture.ask("recovered", "Write new.txt instead.");
+    fixture.wait_for_waiting_permission("recovered").await;
+    assert!(!workspace.join("old.txt").exists());
+    assert!(!workspace.join("new.txt").exists());
+    fixture.answer("recovered", Answer::allow_once());
+    fixture.wait_for_status("recovered", Status::Idle).await;
+    assert_eq!(
+        fs::read_to_string(workspace.join("new.txt")).unwrap(),
+        "approved"
+    );
+    assert!(!workspace.join("old.txt").exists());
+    assert!(fixture
+        .events("recovered")
+        .iter()
+        .any(|event| event.body["text"] == "Follow-up completed."));
+}
+
+#[tokio::test]
+async fn recovered_question_cancel_finishes_a_follow_up_turn_after_reload() {
+    let fixture = Fixture::new(
+        "recovered-question-cancel",
+        vec![Canned::Json(text_reply("Follow-up completed."))],
+    );
+    let workspace = fixture.root.join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let session = Session::at(&fixture.root.join("session-recovered"));
+    let mut meta = SessionMeta::new("recovered", &workspace, "test/model", AT);
+    meta.status = Status::Waiting;
+    session.create(&meta).unwrap();
+    session
+        .append(
+            &Event::new("e1", AT, "t1", EventKind::Question)
+                .with_body(&kyotoagent::events::QuestionBody {
+                    text: "Which?".into(),
+                    choices: vec!["a".into(), "b".into()],
+                    visuals: Vec::new(),
+                })
+                .unwrap(),
+        )
+        .unwrap();
+    fixture
+        .runner
+        .reload(&[session.dir().to_path_buf()])
+        .unwrap();
+    fixture.cancel("recovered");
+    assert_eq!(fixture.view("recovered").status, Status::Idle);
+    let config = Config::from_toml(&format!(
+        "base_url = {:?}\ntitle_model = \"\"\nmodel = \"test/model\"\n",
+        fixture._server.base_url()
+    ))
+    .unwrap();
+    let runner = Runner::new(&config).unwrap();
+    runner.reload(&[session.dir().to_path_buf()]).unwrap();
+    assert_eq!(runner.view("recovered").unwrap().status, Status::Idle);
+    runner.ask("recovered", "Continue").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if runner
+                .view("recovered")
+                .unwrap()
+                .cards
+                .iter()
+                .any(|card| card.body["text"] == "Follow-up completed.")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(runner.view("recovered").unwrap().status, Status::Idle);
 }
 
 #[tokio::test]
