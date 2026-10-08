@@ -1317,7 +1317,11 @@ impl Runner {
         images: Vec<crate::attachment::ImageAttachment>,
     ) -> Result<TurnStart, TurnError> {
         let runner = self.me.upgrade().expect("the runner is still held");
-        if state.session.meta().is_ok_and(|meta| meta.archived) {
+        state.turn_idle.send_replace(false);
+        if state.session.meta().is_ok_and(|meta| meta.archived)
+            || state.retiring.load(Ordering::Acquire)
+        {
+            state.turn_idle.send_replace(true);
             return Ok(TurnStart::Busy);
         }
         let mut turn = state.turn.lock().expect("the turn slot is not poisoned");
@@ -1329,6 +1333,7 @@ impl Runner {
             || self.enhance_open(state)
             || self.enhance_running(state)
         {
+            state.turn_idle.send_replace(true);
             return Ok(TurnStart::Busy);
         }
 
