@@ -5,6 +5,89 @@
 	objectVersion = 77;
 	objects = {
 
+        B10000000000000000000001 = {
+            isa = PBXFileSystemSynchronizedRootGroup;
+            path = UITests;
+            sourceTree = "<group>";
+        };
+        B10000000000000000000002 = {
+            isa = PBXFileReference;
+            explicitFileType = wrapper.cfbundle;
+            includeInIndex = 0;
+            path = ComposerUITests.xctest;
+            sourceTree = BUILT_PRODUCTS_DIR;
+        };
+        B10000000000000000000003 = {
+            isa = PBXSourcesBuildPhase;
+            buildActionMask = 2147483647;
+            files = ();
+            runOnlyForDeploymentPostprocessing = 0;
+        };
+        B10000000000000000000004 = {
+            isa = PBXFrameworksBuildPhase;
+            buildActionMask = 2147483647;
+            files = ();
+            runOnlyForDeploymentPostprocessing = 0;
+        };
+        B10000000000000000000005 = {
+            isa = PBXNativeTarget;
+            buildConfigurationList = B10000000000000000000006;
+            buildPhases = (B10000000000000000000003, B10000000000000000000004);
+            buildRules = ();
+            dependencies = (B10000000000000000000009);
+            fileSystemSynchronizedGroups = (B10000000000000000000001);
+            name = ComposerUITests;
+            productName = ComposerUITests;
+            productReference = B10000000000000000000002;
+            productType = "com.apple.product-type.bundle.ui-testing";
+        };
+        B10000000000000000000006 = {
+            isa = XCConfigurationList;
+            buildConfigurations = (B10000000000000000000007, B10000000000000000000008);
+            defaultConfigurationIsVisible = 0;
+            defaultConfigurationName = Release;
+        };
+        B10000000000000000000007 = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                GENERATE_INFOPLIST_FILE = YES;
+                IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+                PRODUCT_BUNDLE_IDENTIFIER = sh.pascal.kyotoagent.composer-tests;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SDKROOT = iphoneos;
+                SWIFT_VERSION = 6.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+                TEST_TARGET_NAME = "Kyoto Agent";
+            };
+            name = Debug;
+        };
+        B10000000000000000000008 = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                GENERATE_INFOPLIST_FILE = YES;
+                IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+                PRODUCT_BUNDLE_IDENTIFIER = sh.pascal.kyotoagent.composer-tests;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SDKROOT = iphoneos;
+                SWIFT_VERSION = 6.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+                TEST_TARGET_NAME = "Kyoto Agent";
+            };
+            name = Release;
+        };
+        B10000000000000000000009 = {
+            isa = PBXTargetDependency;
+            target = A10000000000000000000007;
+            targetProxy = B1000000000000000000000A;
+        };
+        B1000000000000000000000A = {
+            isa = PBXContainerItemProxy;
+            containerPortal = A10000000000000000000008;
+            proxyType = 1;
+            remoteGlobalIDString = A10000000000000000000007;
+            remoteInfo = "Kyoto Agent";
+        };
+
 		A10000000000000000000001 = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Sources;
@@ -48,6 +131,7 @@
 			children = (
 				A10000000000000000000001,
 				A10000000000000000000002,
+                B10000000000000000000001,
 				A10000000000000000000006,
 			);
 			sourceTree = "<group>";
@@ -56,6 +140,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000003,
+                B10000000000000000000002,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -105,6 +190,7 @@
 			projectRoot = "";
 			targets = (
 				A10000000000000000000007,
+                B10000000000000000000005,
 			);
 		};
 		A10000000000000000000009 = {
