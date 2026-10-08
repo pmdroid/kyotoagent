@@ -46,7 +46,7 @@ jobs:
             sleep 0.1
           done
           port=$(cat "$fixture/port")
-          xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme Composer -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO build-for-testing
+          xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme "Kyoto Agent" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO build-for-testing
           for family in iPhone iPad; do
             device=$(xcrun simctl list devices available --json | FAMILY="$family" python3 -c 'import json, os, sys; print(next(d["udid"] for runtime, devices in json.load(sys.stdin)["devices"].items() if runtime.startswith("com.apple.CoreSimulator.SimRuntime.iOS-26-") for d in devices if d["name"].startswith(os.environ["FAMILY"])))')
             xcrun simctl boot "$device"
@@ -60,7 +60,7 @@ jobs:
             fi
             xcrun simctl openurl "$device" "kyotoagent://127.0.0.1:$port?token=composer-ui-test"
             sleep 5
-            xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme Composer -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath build/ios -resultBundlePath "build/ios-composer/$family.xcresult" -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test-without-building
+            xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme "Kyoto Agent" -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath build/ios -resultBundlePath "build/ios-composer/$family.xcresult" -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test-without-building
             xcrun simctl io "$device" screenshot "build/ios-composer/$family.png"
             xcrun simctl shutdown "$device"
           done
