@@ -2214,3 +2214,91 @@ async fn provider_titles_use_their_default_model_and_keep_foreground_effort() {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[tokio::test]
+async fn transient_completion_statuses_retry_the_same_request() {
+    for code in [500, 502, 503, 504] {
+        let server = FakeServer::start(vec![
+            Canned::Status(code, "upstream unavailable".into()),
+            Canned::Json(a_text_reply()),
+        ]);
+        let client = ChatClient::new(&config_for(&server, None)).unwrap();
+        assert!(client.complete(&a_conversation(), &[]).await.is_ok());
+        let requests = server.received();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].body, requests[1].body);
+    }
+}
+
+#[tokio::test]
+async fn failed_response_streams_retry_without_returning_partial_tools() {
+    let failed = sse_line(
+        serde_json::json!({"type":"response.reasoning_summary_text.delta", "delta":"Discard me"}),
+    ) + &sse_line(
+        serde_json::json!({"type":"response.output_item.done", "item":{"type":"function_call", "call_id":"failed-call", "name":"run", "arguments":"{}"}}),
+    ) + &sse_line(
+        serde_json::json!({"type":"response.failed", "response":{"error":{"code":"server_error", "message":"upstream disconnected"}}}),
+    );
+    let server = FakeServer::start(vec![
+        Canned::Raw(failed),
+        Canned::Raw(responses_stream(
+            serde_json::from_str(&a_responses_reply()).unwrap(),
+        )),
+    ]);
+    let root = grok_root("stream-recovery");
+    std::fs::write(root.join("config.toml"), codex_file(&server)).unwrap();
+    write_codex(&root, "access", "refresh", "2035-01-01T00:00:00.000Z");
+    let config = Config::load(&root.join("config.toml")).unwrap();
+    let client = ChatClient::in_root(&config, Some(&root)).unwrap();
+    let thoughts = Arc::new(Mutex::new("Earlier.".to_string()));
+    let reply = client
+        .complete_showing(&a_conversation(), &[], Some(&thoughts))
+        .await
+        .unwrap();
+    assert!(reply.tool_calls.iter().all(|call| call.id != "failed-call"));
+    assert_eq!(*thoughts.lock().unwrap(), "Earlier.Checking.");
+    let requests = server.received();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body, requests[1].body);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn transient_completion_retries_are_bounded() {
+    let server = FakeServer::start(vec![Canned::Status(502, "still unavailable".into()); 4]);
+    let client = ChatClient::new(&config_for(&server, None)).unwrap();
+    let error = client.complete(&a_conversation(), &[]).await.unwrap_err();
+    assert!(error.to_string().contains("still unavailable"));
+    assert_eq!(server.received().len(), 4);
+}
+
+#[test]
+fn response_stream_errors_preserve_nested_details_and_classify_permanent_failures() {
+    for (event, status, detail) in [
+        (
+            serde_json::json!({"type":"error", "error":{"code":"invalid_prompt", "message":"too large"}}),
+            400,
+            "invalid_prompt: too large",
+        ),
+        (
+            serde_json::json!({"type":"response.incomplete", "response":{"incomplete_details":{"reason":"max_output_tokens"}}}),
+            400,
+            "max_output_tokens",
+        ),
+        (
+            serde_json::json!({"type":"response.failed", "response":{"error":{"code":"server_error", "message":"disconnected"}}}),
+            502,
+            "server_error: disconnected",
+        ),
+        (
+            serde_json::json!({"type":"response.failed", "response":{"error":{"diagnostic":"upstream lost"}}}),
+            502,
+            "upstream lost",
+        ),
+    ] {
+        let error =
+            apply_response_event(&event.to_string(), &mut Partial::default(), None).unwrap_err();
+        assert!(matches!(&error, ChatError::Status { status: actual, .. } if *actual == status));
+        assert!(error.to_string().contains(detail));
+    }
+}
