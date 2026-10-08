@@ -136,10 +136,14 @@ async fn execute_closeout(
     let catalog = chat::model_catalog(&turn.config, turn.root.as_deref()).await;
     let author = chat::canonical_model(&catalog.models, &turn.config.model);
     let reviewer = chat::canonical_model(&catalog.models, model);
-    if review.as_ref().is_some_and(|review| {
-        review.independence.different_model
-            && (author.is_none() || reviewer.is_none() || author == reviewer)
-    }) {
+    let same_model = match (author, reviewer) {
+        (Some(author), Some(reviewer)) => author == reviewer,
+        _ => model.is_empty() || turn.config.model.is_empty() || model == turn.config.model,
+    };
+    if review
+        .as_ref()
+        .is_some_and(|review| review.independence.different_model && same_model)
+    {
         return Ok(format!("Review {id} requires a different model. Call run_closeout with model set to a different available model."));
     }
     let (argv, timeout) = if let Some(review) = &review {
