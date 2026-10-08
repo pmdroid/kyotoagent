@@ -104,27 +104,7 @@ pub(super) fn row_from_value(value: &Value) -> Option<ModelRow> {
     }
     let mut reasoning_efforts = string_list(value, "reasoning_efforts");
     if reasoning_efforts.is_empty() {
-        if let Some(efforts) = value
-            .pointer("/capabilities/effort")
-            .and_then(Value::as_object)
-        {
-            reasoning_efforts = efforts
-                .iter()
-                .filter(|(level, capability)| {
-                    !level.is_empty()
-                        && capability.get("supported").and_then(Value::as_bool) == Some(true)
-                })
-                .map(|(level, _)| level.clone())
-                .collect();
-            reasoning_efforts.sort_by_key(|level| {
-                [
-                    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
-                ]
-                .iter()
-                .position(|known| known == level)
-                .unwrap_or(usize::MAX)
-            });
-        }
+        reasoning_efforts = capability_efforts(value);
     }
     Some(ModelRow {
         id,
@@ -133,6 +113,37 @@ pub(super) fn row_from_value(value: &Value) -> Option<ModelRow> {
         context_length: advertised_length(value),
         provider: None,
     })
+}
+
+const EFFORT_ORDER: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
+
+fn capability_efforts(value: &Value) -> Vec<String> {
+    let Some(capabilities) = value.get("capabilities") else {
+        return Vec::new();
+    };
+    let mut efforts = string_list(capabilities, "reasoning_effort");
+    if efforts.is_empty() {
+        if let Some(levels) = capabilities.get("effort").and_then(Value::as_object) {
+            efforts = levels
+                .iter()
+                .filter(|(level, capability)| {
+                    !level.is_empty()
+                        && capability.get("supported").and_then(Value::as_bool) == Some(true)
+                })
+                .map(|(level, _)| level.clone())
+                .collect();
+        }
+    }
+    efforts.retain(|level| !level.is_empty());
+    efforts.sort_by_key(|level| {
+        EFFORT_ORDER
+            .iter()
+            .position(|known| known == level)
+            .unwrap_or(usize::MAX)
+    });
+    efforts
 }
 
 pub(super) fn string_list(value: &Value, key: &str) -> Vec<String> {
