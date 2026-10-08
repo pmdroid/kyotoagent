@@ -1328,6 +1328,43 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    static NEXT_FINGERPRINT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn executable_mode_changes_the_candidate_fingerprint() {
+        let root = std::env::temp_dir().join(format!(
+            "kyoto-fingerprint-{}-{}",
+            std::process::id(),
+            NEXT_FINGERPRINT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        let script = root.join("script");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        let before = workspace_snapshot(&root);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&script, permissions).unwrap();
+        }
+        let executable = workspace_snapshot(&root);
+        assert_ne!(before.get("script"), executable.get("script"));
+        let first = executable.clone();
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        assert_eq!(first, workspace_snapshot(&root));
+        std::fs::remove_file(&script).unwrap();
+        std::os::unix::fs::symlink("missing", &script).unwrap();
+        assert_ne!(first.get("script"), workspace_snapshot(&root).get("script"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn public_retry_requires_a_bounded_limit_and_scope() {
         for scope in ["task", "candidate"] {
