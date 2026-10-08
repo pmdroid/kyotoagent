@@ -178,6 +178,8 @@ impl Runner {
         }
         if caller != id {
             self.retire(id).await;
+        } else {
+            self.cancel(id);
         }
         match state.session.set_archived(true, &now()) {
             Ok(()) => format!("archived {id}"),
