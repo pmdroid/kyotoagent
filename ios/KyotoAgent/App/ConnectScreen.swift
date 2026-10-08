@@ -11,10 +11,7 @@ struct RootView: SwiftUI.View {
     var body: some SwiftUI.View {
         Group {
             if model.connected {
-                VStack(spacing: 0) {
-                    SessionBanners(model: model)
-                    sessionSplit
-                }
+                sessionSplit
             } else {
                 ConnectScreen(model: model)
             }
