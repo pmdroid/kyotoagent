@@ -443,6 +443,10 @@ impl CloseoutState {
     }
 }
 
+pub(crate) fn candidate_identity(workspace: &Path) -> String {
+    git_text(workspace, &["ls-files", "-z", "--stage"]).unwrap_or_default()
+}
+
 pub(crate) fn workspace_fingerprint(workspace: &Path, head: &str, status: &str) -> String {
     let paths: std::collections::BTreeMap<_, _> =
         workspace_snapshot(workspace).into_iter().collect();

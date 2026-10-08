@@ -206,6 +206,7 @@ async fn execute_closeout(
         })
     };
     let head = git_output(tools.workspace(), &["rev-parse", "HEAD"]);
+    let before_identity = crate::closeout::candidate_identity(tools.workspace());
     let (mut output, review_state) = if let Some(review) = &review {
         let (output, state) = review_output(
             turn,
@@ -250,9 +251,17 @@ async fn execute_closeout(
     refresh_closeout(tools, turn_id, closeout, &[])?;
     let exit = output.exit.unwrap_or(-1);
     let tail = crate::closeout::tail_of(&output);
-    let passed = output.exit == Some(0) && !output.timed_out && !head_changed && !*cancel.borrow();
+    let candidate_changed =
+        before_identity != crate::closeout::candidate_identity(tools.workspace());
+    let passed = output.exit == Some(0)
+        && !output.timed_out
+        && !head_changed
+        && !candidate_changed
+        && !*cancel.borrow();
     let evaluated = if *cancel.borrow() {
         "invalid"
+    } else if candidate_changed {
+        "stale"
     } else if head_changed && review.is_none() {
         "failed"
     } else if head_changed {

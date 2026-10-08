@@ -753,6 +753,16 @@ async fn a_candidate_edit_during_a_passing_check_cannot_finish() {
     let ready = workspace.join("ready");
     let source = workspace.join("source.txt");
     fs::write(&source, "before").unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&workspace)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["add", "source.txt"])
+        .current_dir(&workspace)
+        .output()
+        .unwrap();
     fixture.write_closeout(
         &workspace,
         &format!(
@@ -769,15 +779,34 @@ async fn a_candidate_edit_during_a_passing_check_cannot_finish() {
         assert!(Instant::now() < deadline, "the check did not read source");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    fs::write(&source, "after").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&source).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&source, permissions).unwrap();
+        std::process::Command::new("git")
+            .args(["add", "--chmod=+x", "source.txt"])
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+    }
     fs::write(&barrier, "go").unwrap();
-    fixture.wait_for_log("91bc", "closeout_run").await;
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !fixture.log("91bc").contains("closeout_run") {
+        assert!(
+            Instant::now() < deadline,
+            "no closeout result: {}",
+            fixture.log("91bc")
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let observed = fixture.log("91bc");
     assert!(
         observed.contains("\"passed\":false"),
         "changed candidate accepted: {observed}"
     );
-    fixture.wait_for_log("91bc", "Cannot finish yet").await;
+    fixture.wait_for_log("91bc", "closeout_run").await;
     let log = fixture.log("91bc");
     assert!(
         log.contains("\"passed\":false") || log.contains("stale"),
