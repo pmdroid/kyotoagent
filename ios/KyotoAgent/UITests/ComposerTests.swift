@@ -25,6 +25,7 @@ final class ComposerTests: XCTestCase {
         XCTAssertEqual(field.value as? String, "/model fixture-model")
         app.buttons["composer-send"].tap()
         XCTAssertTrue(app.staticTexts["Model saved"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["composer-notice"].exists)
         field.tap()
         field.typeText("hello world")
         field.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
@@ -37,6 +38,7 @@ final class ComposerTests: XCTestCase {
         capture("Native tap to edit")
         app.buttons["composer-send"].tap()
         XCTAssertTrue(app.staticTexts[edited].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["composer-notice"].exists)
         field.tap()
         field.typeText("/pre")
         let skill = app.buttons["slash-match-preflight"]

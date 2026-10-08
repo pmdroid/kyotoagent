@@ -319,6 +319,7 @@ struct TranscriptScreen: SwiftUI.View {
                 Text(notice)
                     .font(.caption)
                     .foregroundStyle(Ink.permission)
+                    .accessibilityIdentifier("composer-notice")
             }
             if let count = model.transcript.view?.queue.count, count > 0 {
                 Text("queued \(count)")

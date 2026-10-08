@@ -19,7 +19,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(json.dumps(value).encode())
+        if status != 204:
+            self.wfile.write(json.dumps(value).encode())
 
     def do_GET(self):
         if self.headers.get("Authorization") != "Bearer composer-ui-test":
@@ -51,7 +52,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         view["revision"] += 1
         view["cards"] = [{"id": str(view["revision"]), "kind": "ask", "at": "now", "body": {"text": text}}]
-        self.reply(202, {"turnId": "fixture"})
+        if self.path.endswith("/model/session"):
+            self.reply(204, {})
+        else:
+            self.reply(202, {"turnId": "fixture"})
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
