@@ -105,6 +105,9 @@ pub enum ToolError {
         limit: usize,
     },
     EmptyOldString,
+    MissingArgument {
+        name: &'static str,
+    },
     NoMatch {
         path: PathBuf,
     },
@@ -164,6 +167,7 @@ impl std::fmt::Display for ToolError {
                 path.display()
             ),
             ToolError::EmptyOldString => write!(f, "old_string is empty"),
+            ToolError::MissingArgument { name } => write!(f, "{name} is required"),
             ToolError::NoMatch { path } => {
                 write!(f, "{}: old_string was not found", path.display())
             }
@@ -264,6 +268,15 @@ impl Tools {
         &self.schedules
     }
 
+    fn requested(&self, path: &str) -> Result<PathBuf, ToolError> {
+        let raw = Path::new(path);
+        Ok(if raw.is_absolute() {
+            raw.to_path_buf()
+        } else {
+            self.workspace.join(raw)
+        })
+    }
+
     /// The workspace these tools are held to.
     pub fn workspace(&self) -> &Path {
         &self.workspace
@@ -362,7 +375,9 @@ impl Tools {
         path: &str,
         options: ReadOptions,
     ) -> Result<ReadFile, ToolError> {
+        let requested = self.requested(path)?;
         let target = self.target(path)?;
+        let approved = target.absolute.clone();
         let name = display(&target.absolute);
         if !target.inside && !self.allowed_outside_read(&name)? {
             let verdict = self.ask(
@@ -381,7 +396,21 @@ impl Tools {
             }
         }
 
-        let mut file = open(&target.absolute)?;
+        let current = fs::canonicalize(&requested).unwrap_or_else(|_| requested.clone());
+        let approved_now = fs::canonicalize(&approved).unwrap_or_else(|_| approved.clone());
+        if current != approved_now
+            || (!target.inside
+                && fs::symlink_metadata(&requested).is_ok_and(|meta| meta.file_type().is_symlink()))
+        {
+            return Err(ToolError::Io {
+                path: requested.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "the approved path changed before it was opened",
+                ),
+            });
+        }
+        let mut file = open_checked(&requested, &approved)?;
         if let Some(result) = file_read::read_document(&mut file, &target.absolute, &options)? {
             return Ok(result);
         }
@@ -392,7 +421,7 @@ impl Tools {
             ..
         } = options;
         if let Some(line) = line.or_else(|| offset.is_none().then_some(1)) {
-            let (text, next_line) = read_line_slice(&target.absolute, line, limit)?;
+            let (text, next_line) = read_line_slice(&mut file, &target.absolute, line, limit)?;
             return Ok(ReadFile {
                 path: name,
                 text,
@@ -479,7 +508,9 @@ impl Tools {
     /// A listing does not descend and does not follow anything: a name that is
     /// a link says so, rather than quietly reading through it.
     pub fn list_dir(&self, turn_id: &str, path: &str) -> Result<ListDir, ToolError> {
+        let requested = self.requested(path)?;
         let target = self.target(path)?;
+        let approved = target.absolute.clone();
         let name = display(&target.absolute);
         if !target.inside && !self.allowed_outside_read(&name)? {
             let verdict = self.ask(
@@ -498,6 +529,29 @@ impl Tools {
             }
         }
 
+        let current = fs::canonicalize(&requested).unwrap_or_else(|_| requested.clone());
+        if current != approved.canonicalize().unwrap_or_else(|_| approved.clone()) {
+            return Err(ToolError::Io {
+                path: requested,
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "the approved path changed before it was opened",
+                ),
+            });
+        }
+        let opened = open_checked(&requested, &approved)?;
+        if !opened
+            .metadata()
+            .map_err(|source| ToolError::Io {
+                path: target.absolute.clone(),
+                source,
+            })?
+            .is_dir()
+        {
+            return Err(ToolError::NoDirectory {
+                path: target.absolute,
+            });
+        }
         let reader = fs::read_dir(&target.absolute).map_err(|source| ToolError::Io {
             path: target.absolute.clone(),
             source,
@@ -525,6 +579,16 @@ impl Tools {
             truncated: more,
             denied: false,
         })
+    }
+
+    pub fn required_string<'a>(
+        args: &'a serde_json::Value,
+        name: &'static str,
+    ) -> Result<&'a str, ToolError> {
+        match args.get(name) {
+            Some(serde_json::Value::String(value)) => Ok(value),
+            _ => Err(ToolError::MissingArgument { name }),
+        }
     }
 
     /// Replace a file with `contents`, at most [`WRITE_LIMIT`] of them.
@@ -1600,6 +1664,73 @@ fn next_temp() -> u64 {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+fn open_checked(path: &Path, approved: &Path) -> Result<File, ToolError> {
+    if path.is_symlink() {
+        let resolved = path.canonicalize().map_err(|source| ToolError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let approved = approved
+            .canonicalize()
+            .unwrap_or_else(|_| approved.to_path_buf());
+        if resolved != approved {
+            return Err(ToolError::Io {
+                path: path.to_path_buf(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "the approved path changed before it was opened",
+                ),
+            });
+        }
+    }
+    match open_nofollow(path) {
+        Ok(file) => Ok(file),
+        Err(error) if error.to_string().contains("symbolic link") => {
+            let resolved = path.canonicalize().map_err(|_| error)?;
+            let approved = approved
+                .canonicalize()
+                .unwrap_or_else(|_| approved.to_path_buf());
+            if resolved != approved {
+                return Err(ToolError::Io {
+                    path: path.to_path_buf(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "the approved path changed before it was opened",
+                    ),
+                });
+            }
+            File::open(resolved).map_err(|source| ToolError::Io {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn open_nofollow(path: &Path) -> Result<File, ToolError> {
+    let mut directory = File::open("/").map_err(|source| ToolError::Io {
+        path: PathBuf::from("/"),
+        source,
+    })?;
+    let mut parts = path.components().peekable();
+    while let Some(part) = parts.next() {
+        let std::path::Component::Normal(name) = part else {
+            continue;
+        };
+        let flags = if parts.peek().is_none() {
+            libc::O_RDONLY | libc::O_NONBLOCK
+        } else {
+            libc::O_RDONLY | libc::O_DIRECTORY
+        };
+        directory = open_at(&directory, name, flags, 0).map_err(|source| ToolError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+    Ok(directory)
+}
+
 fn open(path: &Path) -> Result<File, ToolError> {
     File::open(path).map_err(|source| ToolError::Io {
         path: path.to_path_buf(),
@@ -1968,6 +2099,7 @@ fn match_count(hay: &str, needle: &str) -> usize {
 }
 
 fn read_line_slice(
+    file: &mut File,
     path: &Path,
     line: u64,
     limit: Option<u64>,
@@ -1978,7 +2110,10 @@ fn read_line_slice(
     if limit == Some(0) {
         return Err(ToolError::BadLimit { limit: 0 });
     }
-    let file = open(path)?;
+    file.rewind().map_err(|source| ToolError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let mut reader = BufReader::new(file);
     let mut buf = String::new();
     let mut current = 0u64;

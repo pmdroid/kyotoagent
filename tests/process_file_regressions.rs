@@ -70,6 +70,65 @@ async fn write_preserves_executable_mode() {
     assert_eq!(mode, 0o755, "editing an executable makes it non-executable");
 }
 
+#[test]
+fn outside_read_rejects_a_symlink_after_approval() {
+    let f = Fixture::new("read-symlink");
+    let approved = f.root.join("approved.txt");
+    let secret = f.root.join("secret.txt");
+    fs::write(&approved, "approved\n").unwrap();
+    fs::write(&secret, "secret\n").unwrap();
+    let tools = Tools::at(&f.session).unwrap();
+    tools.gate().queue(Answer::allow_once());
+    let _ = tools
+        .read_file("t0", approved.to_str().unwrap(), None, None, None)
+        .unwrap();
+    tools.gate().queue(Answer::allow_once());
+    fs::remove_file(&approved).unwrap();
+    std::os::unix::fs::symlink(&secret, &approved).unwrap();
+    let error = tools
+        .read_file("t1", approved.to_str().unwrap(), None, None, None)
+        .unwrap_err();
+    f.evidence(
+        json!({"error":error.to_string(),"secret_leaked":error.to_string().contains("secret")}),
+    );
+    assert!(!error.to_string().contains("secret"));
+}
+
+#[tokio::test]
+async fn missing_write_contents_does_not_erase_an_approved_file() {
+    let f = Fixture::new("missing-contents");
+    let file = f.workspace.join("data.txt");
+    fs::write(&file, "kept\n").unwrap();
+    f.session
+        .update(|meta| {
+            meta.allow
+                .remember(Some(file.to_str().unwrap()), None, None);
+            true
+        })
+        .unwrap();
+    let missing = serde_json::json!({"path":"data.txt"});
+    let error = kyotoagent::tools::Tools::required_string(&missing, "contents").unwrap_err();
+    assert_eq!(fs::read_to_string(file).unwrap(), "kept\n");
+    assert!(error.to_string().contains("contents"));
+}
+
+#[tokio::test]
+async fn reading_a_fifo_returns_without_a_writer() {
+    let f = Fixture::new("fifo-read");
+    let pipe = f.workspace.join("pipe");
+    let name = std::ffi::CString::new(pipe.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let tools = Tools::at(&f.session).unwrap();
+    let started = Instant::now();
+    let error = tokio::task::spawn_blocking(move || {
+        tools.read_file("t1", "pipe", None, None, None).unwrap_err()
+    })
+    .await
+    .unwrap();
+    f.evidence(json!({"elapsed_millis":started.elapsed().as_millis(),"error":error.to_string()}));
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
 #[tokio::test]
 async fn background_task_kills_descendants() {
     let f = Fixture::new("task-descendant");
