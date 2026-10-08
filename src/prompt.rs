@@ -773,6 +773,21 @@ mod tests {
     }
 
     #[test]
+    fn parents_and_children_keep_verification_out_of_operator_configuration() {
+        for prompt in [
+            system_prompt("/w", &[], None, "", None),
+            subagent_prompt("/w", &[], None, "", None),
+        ] {
+            assert!(prompt.contains("Never edit, replace, delete"));
+            assert!(prompt.contains("including explicitly requested configuration edits"));
+            assert!(prompt.contains("fresh temporary directory for each run"));
+            assert!(prompt.contains("Never inherit the operator's KYOTOAGENT_ROOT"));
+            assert!(prompt.contains("Never stop, restart, kill, replace, or reconfigure"));
+            assert!(prompt.contains("Never use broad process matching to stop servers"));
+        }
+    }
+
+    #[test]
     fn the_parent_prompt_tells_the_model_to_spawn_near_the_start() {
         let prompt = system_prompt("/w", &[], None, "", None);
         assert!(

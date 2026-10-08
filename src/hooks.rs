@@ -476,9 +476,11 @@ fn reason(stderr: String, fallback: &str) -> String {
 
 async fn invoke(command: &str, home: &Path, workspace: &Path, payload: &str) -> RunEnd {
     let command = expand_home(command, home);
-    let mut child = match TokioCommand::new("sh")
-        .arg("-c")
-        .arg(&command)
+    let command = match crate::operator_config::command("sh", &["-c".into(), command]) {
+        Ok(command) => command,
+        Err(error) => return RunEnd::Crash(error.to_string()),
+    };
+    let mut child = match TokioCommand::from(command)
         .current_dir(workspace)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())

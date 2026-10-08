@@ -205,8 +205,13 @@ impl Tasks {
     ) -> Result<Started, ToolError> {
         let program = argv.first().cloned().ok_or(ToolError::NoCommand)?;
         let id = self.new_id()?;
-        let mut child = TokioCommand::new(&program)
-            .args(&argv[1..])
+        let command = crate::operator_config::command(&program, &argv[1..]).map_err(|source| {
+            ToolError::Spawn {
+                program: program.clone(),
+                source,
+            }
+        })?;
+        let mut child = TokioCommand::from(command)
             .current_dir(&self.workspace)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
