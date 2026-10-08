@@ -63,6 +63,41 @@ struct Notice {
     session_id: String,
     event_id: String,
     kind: EventKind,
+    alert: serde_json::Value,
+}
+
+fn alert(meta: &SessionMeta, event: &Event) -> serde_json::Value {
+    let (reason, field) = match event.kind {
+        EventKind::Question => ("Question needs your answer", "text"),
+        EventKind::Permission => ("Permission approval required", "action"),
+        _ => ("Session finished", "text"),
+    };
+    let title = meta
+        .title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or(&meta.id);
+    let text = event
+        .body
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let body = if text.trim().is_empty() { reason } else { text };
+    serde_json::json!({
+        "title": preview(title, 100),
+        "subtitle": reason,
+        "body": preview(body, 400),
+    })
+}
+
+fn preview(text: &str, limit: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut characters = normalized.chars();
+    let mut preview: String = characters.by_ref().take(limit).collect();
+    if characters.next().is_some() {
+        preview.push('…');
+    }
+    preview
 }
 
 impl Push {
@@ -223,6 +258,7 @@ impl Push {
                         session_id: meta.id.clone(),
                         event_id: event.id.clone(),
                         kind: event.kind,
+                        alert: alert(&meta, event),
                     });
                 }
             }
@@ -256,7 +292,7 @@ impl Push {
                 return;
             };
             let payload = serde_json::json!({
-                "aps": { "alert": { "title": "Kyoto Agent", "body": if notice.kind == EventKind::Result { "A session has finished." } else { "A session needs your attention." } }, "sound": "default" },
+                "aps": { "alert": notice.alert, "sound": "default" },
                 "serverId": device.server_id, "sessionId": notice.session_id,
                 "eventId": notice.event_id, "kind": notice.kind.label()
             });
@@ -632,6 +668,64 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn alerts_explain_the_event_and_preview_its_content() {
+        let mut meta = SessionMeta::new("s1", Path::new("/tmp"), "model", &now());
+        meta.title = Some("Software Updates".into());
+        for (kind, body, subtitle, text) in [
+            (
+                EventKind::Question,
+                serde_json::json!({"text": "Which device should update?"}),
+                "Question needs your answer",
+                "Which device should update?",
+            ),
+            (
+                EventKind::Permission,
+                serde_json::json!({"action": "Run cargo test", "contents": "secret"}),
+                "Permission approval required",
+                "Run cargo test",
+            ),
+            (
+                EventKind::Result,
+                serde_json::json!({"text": "Updates page created."}),
+                "Session finished",
+                "Updates page created.",
+            ),
+        ] {
+            let event = Event::new("e1", &now(), "t1", kind)
+                .with_body(&body)
+                .unwrap();
+            let alert = alert(&meta, &event);
+            assert_eq!(alert["title"], "Software Updates");
+            assert_eq!(alert["subtitle"], subtitle);
+            assert_eq!(alert["body"], text);
+            assert!(!alert.to_string().contains("secret"));
+        }
+    }
+
+    #[test]
+    fn alert_previews_bound_unicode_and_escaped_payloads() {
+        let mut meta = SessionMeta::new("s1", Path::new("/tmp"), "model", &now());
+        meta.title = Some("🦊".repeat(500));
+        for text in ["🦊".repeat(5000), "\u{0000}".repeat(5000)] {
+            let event = Event::new("e1", &now(), "t1", EventKind::Question)
+                .with_body(&serde_json::json!({"text": text}))
+                .unwrap();
+            let alert = alert(&meta, &event);
+            assert_eq!(alert["body"].as_str().unwrap().chars().count(), 401);
+            assert!(alert["body"].as_str().unwrap().ends_with('…'));
+            assert!(serde_json::to_vec(&alert).unwrap().len() < 3500);
+        }
+        assert_eq!(
+            preview("  First\nsecond\tthird  ", 400),
+            "First second third"
+        );
+        meta.title = Some(" ".into());
+        let event = Event::new("e1", &now(), "t1", EventKind::Permission);
+        assert_eq!(alert(&meta, &event)["title"], "s1");
+        assert_eq!(alert(&meta, &event)["body"], "Permission approval required");
+    }
+
     #[tokio::test]
     async fn fake_http2_apns_checks_headers_payload_retry_and_gone() {
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -677,6 +771,7 @@ mod tests {
                 session_id: "s1".into(),
                 event_id: "e1".into(),
                 kind: EventKind::Result,
+                alert: alert(&session.meta().unwrap(), &session.events().unwrap()[0]),
             },
         )
         .await;
@@ -694,6 +789,9 @@ mod tests {
             .starts_with("Bearer "));
         assert_eq!(payload["serverId"], device().server_id);
         assert_eq!(payload["eventId"], "e1");
+        assert_eq!(payload["aps"]["alert"]["title"], "s1");
+        assert_eq!(payload["aps"]["alert"]["subtitle"], "Session finished");
+        assert_eq!(payload["aps"]["alert"]["body"], "Session finished");
         assert_eq!(payload.as_object().unwrap().len(), 5);
         server.abort();
         fs::remove_dir_all(root).unwrap();
