@@ -446,7 +446,7 @@ fn payload(tool: &str, input: &Value, result: Option<&str>) -> Value {
         Value::Object(map) => map.clone(),
         _ => Map::new(),
     };
-    if tool == "run" && !tool_input.contains_key("command") {
+    if tool == "run" {
         if let Some(argv) = tool_input.get("argv").and_then(Value::as_array) {
             let command = argv
                 .iter()
