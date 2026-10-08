@@ -40,6 +40,11 @@ pub(super) fn render_overlay(model: &ScreenModel, screen: Rect, pane: Rect, fram
         crate::image_preview::render(image, pane, frame);
         return;
     }
+    if matches!(overlay, Overlay::VisualQuestion { .. }) {
+        dim_outside(frame, screen, crate::image_preview::popup(pane));
+        super::question::render_visual_question(overlay, pane, frame);
+        return;
+    }
     let mut lines = overlay_lines(overlay, inner_width);
     if let Overlay::Pairing { title, qr } = overlay {
         if lines.len() > usize::from(pane.height.saturating_sub(4))
@@ -138,7 +143,7 @@ pub(in crate::screen) fn overlay_lines(overlay: &Overlay, width: usize) -> Vec<L
             lines.extend(wrapped(title, width, theme::body()));
             lines.extend(qr.lines().map(|line| Line::from(line.to_string())));
         }
-        Overlay::Image { .. } => {}
+        Overlay::Image { .. } | Overlay::VisualQuestion { .. } => {}
         Overlay::Question {
             text,
             choices,

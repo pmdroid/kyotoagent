@@ -1,5 +1,29 @@
 import Foundation
 
+nonisolated public func transcriptLinkURL(_ link: String) -> URL? {
+    guard !link.isEmpty, !link.hasPrefix("#"), !link.hasPrefix("//") else {
+        return nil
+    }
+    if link.contains(":") {
+        return safariURL(link)
+    }
+    guard let path = link.removingPercentEncoding else {
+        return nil
+    }
+    var components = URLComponents()
+    components.scheme = "kyoto-file"
+    components.queryItems = [URLQueryItem(name: "path", value: path)]
+    return components.url
+}
+
+nonisolated public func transcriptFilePath(_ url: URL) -> String? {
+    guard url.scheme == "kyoto-file" else {
+        return nil
+    }
+    return URLComponents(url: url, resolvingAgainstBaseURL: false)?
+        .queryItems?.first { $0.name == "path" }?.value
+}
+
 nonisolated struct TranscriptRun: Equatable, Sendable {
     var text: String
     var bold: Bool

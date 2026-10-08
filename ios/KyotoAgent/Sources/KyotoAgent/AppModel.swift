@@ -663,11 +663,11 @@ public final class AppModel {
         await refreshOpenView()
     }
 
-    public func answer(_ choice: String) async {
+    public func answer(_ choice: String, eventId expectedEventId: String? = nil) async {
         guard connected, !answering, !choice.isEmpty, let id = selection, let client else {
             return
         }
-        guard let eventId = answerSheet?.eventId else {
+        guard let eventId = answerSheet?.eventId, expectedEventId == nil || expectedEventId == eventId else {
             return
         }
         answering = true

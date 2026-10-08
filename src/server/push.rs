@@ -47,6 +47,7 @@ pub(super) struct Push {
     root: PathBuf,
     devices: Mutex<Vec<Device>>,
     provider: Option<Provider>,
+    tui_seen: Mutex<Option<std::time::Instant>>,
 }
 
 pub(super) struct Worker(Vec<tokio::task::JoinHandle<()>>);
@@ -160,6 +161,7 @@ impl Push {
             root: root.to_owned(),
             devices: Mutex::new(devices),
             provider,
+            tui_seen: Mutex::new(None),
         })
     }
 
@@ -234,8 +236,15 @@ impl Push {
         Worker(vec![poll, worker])
     }
 
+    fn tui_active(&self) -> bool {
+        self.tui_seen
+            .lock()
+            .is_ok_and(|seen| seen.is_some_and(|at| at.elapsed() < Duration::from_secs(15)))
+    }
+
     fn scan(&self, seen: &mut HashMap<String, HashSet<String>>, baseline: bool) -> Vec<Notice> {
         let mut notices = Vec::new();
+        let suppressed = self.tui_active();
         for dir in session_dirs(&self.root) {
             let session = Session::at(&dir);
             let (Ok(meta), Ok(events)) = (session.meta(), session.events()) else {
@@ -244,6 +253,8 @@ impl Push {
             let ids = seen.entry(meta.id.clone()).or_default();
             for event in &events {
                 if baseline
+                    || suppressed
+                    || meta.parent_id.is_some()
                     || !matches!(
                         event.kind,
                         EventKind::Permission | EventKind::Question | EventKind::Result
@@ -267,7 +278,7 @@ impl Push {
     }
 
     fn current(&self, device: &Device, notice: &Notice) -> bool {
-        if !self.devices.lock().is_ok_and(|v| v.contains(device)) {
+        if self.tui_active() || !self.devices.lock().is_ok_and(|v| v.contains(device)) {
             return false;
         }
         let session = Session::at(&session_dir(&self.root, &notice.session_id));
@@ -332,6 +343,9 @@ impl Push {
 }
 
 fn eligible(event: &Event, events: &[Event], meta: &SessionMeta) -> bool {
+    if meta.parent_id.is_some() {
+        return false;
+    }
     match event.kind {
         EventKind::Result => true,
         EventKind::Permission | EventKind::Question => {
@@ -428,6 +442,13 @@ pub(super) async fn register(
         devices.push(device);
     })?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(super) async fn tui_heartbeat(State(state): State<AppState>) -> StatusCode {
+    if let Ok(mut seen) = state.push.tui_seen.lock() {
+        *seen = Some(std::time::Instant::now());
+    }
+    StatusCode::NO_CONTENT
 }
 
 pub(super) async fn unregister(
@@ -726,6 +747,74 @@ mod tests {
         assert_eq!(alert(&meta, &event)["body"], "Permission approval required");
     }
 
+    #[test]
+    fn subagents_never_produce_notices() {
+        let root = root();
+        let session = Session::at(&root.join("sessions/child"));
+        let mut meta = SessionMeta::new("child", &root, "model", &now());
+        meta.parent_id = Some("parent".into());
+        meta.status = Status::Waiting;
+        session.create(&meta).unwrap();
+        let push = Push::new(&root, None).unwrap();
+        for kind in [
+            EventKind::Permission,
+            EventKind::Question,
+            EventKind::Result,
+        ] {
+            let event = Event::new(&generate_id(), &now(), "t1", kind);
+            session.append(&event).unwrap();
+            assert!(!eligible(&event, &session.events().unwrap(), &meta));
+        }
+        assert!(push.scan(&mut HashMap::new(), false).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn tui_heartbeat_suppresses_server_and_expires_without_replay() {
+        let root = root();
+        let server = Server::new(&root, &Config::default()).unwrap();
+        let session = Session::at(&root.join("sessions/s1"));
+        session
+            .create(&SessionMeta::new("s1", &root, "model", &now()))
+            .unwrap();
+        server.push.update(|v| v.push(device())).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/tui/heartbeat", listener.local_addr().unwrap());
+        let task = tokio::spawn(axum::serve(listener, server.router()).into_future());
+        assert_eq!(
+            reqwest::Client::new()
+                .post(url)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        let event = Event::new("e1", &now(), "t1", EventKind::Result);
+        session.append(&event).unwrap();
+        let notice = Notice {
+            session_id: "s1".into(),
+            event_id: "e1".into(),
+            kind: EventKind::Result,
+            alert: alert(&session.meta().unwrap(), &event),
+        };
+        let mut seen = HashMap::new();
+        assert!(server.push.tui_active());
+        assert!(server.push.scan(&mut seen, false).is_empty());
+        assert!(!server.push.current(&device(), &notice));
+        *server.push.tui_seen.lock().unwrap() =
+            Some(std::time::Instant::now() - Duration::from_secs(16));
+        assert!(!server.push.tui_active());
+        assert!(server.push.scan(&mut seen, false).is_empty());
+        session
+            .append(&Event::new("e2", &now(), "t2", EventKind::Result))
+            .unwrap();
+        assert_eq!(server.push.scan(&mut seen, false).len(), 1);
+        assert!(server.push.current(&device(), &notice));
+        task.abort();
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn fake_http2_apns_checks_headers_payload_retry_and_gone() {
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -764,6 +853,7 @@ mod tests {
             root: root.clone(),
             devices: Mutex::new(vec![device()]),
             provider: Some(p),
+            tui_seen: Mutex::new(None),
         };
         push.deliver(
             &device(),

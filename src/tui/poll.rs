@@ -45,7 +45,8 @@ pub(super) struct PollData {
 }
 
 pub(super) async fn fetch(context: &PollContext, client: &Client) -> Result<PollData, String> {
-    let (info, sessions, projects, layout) = tokio::join!(
+    let (_, info, sessions, projects, layout) = tokio::join!(
+        client.request("POST", "/v1/tui/heartbeat", None),
         async {
             if context.server.is_some() {
                 client.server_info().await.map(Some)
@@ -246,6 +247,16 @@ pub(super) fn apply_poll(app: &mut App, data: PollData) {
         return;
     }
     if let Some(view) = data.view {
+        let visual_open = app
+            .open_image
+            .as_ref()
+            .is_some_and(|image| visual_question(app, image).is_some());
+        let next_question = waiting_question_id(&view.cards);
+        if next_question != app.question_id && visual_open {
+            app.open_image = None;
+            app.question_text.clear();
+            app.question_cursor = None;
+        }
         let before = arrived_lists(app);
         app.cards.clear();
         app.card_event_ids.clear();
@@ -572,7 +583,7 @@ pub(super) fn fill_skill_picker(app: &mut App) -> bool {
     if app.overlay {
         return false;
     }
-    let rows: Vec<SkillEntry> = picker_matches(app).into_iter().cloned().collect();
+    let rows = picker_matches(app);
     if rows.is_empty() {
         return false;
     }
@@ -582,7 +593,13 @@ pub(super) fn fill_skill_picker(app: &mut App) -> bool {
     if token.eq_ignore_ascii_case(&name) {
         return false;
     }
-    app.ask = skills::fill_slash(&name);
+    let end = token.len() + 1;
+    let replacement = if end == app.ask.len() {
+        skills::fill_slash(&name)
+    } else {
+        format!("/{name}")
+    };
+    editor::replace(app, 0..end, &replacement);
     after_ask_edit(app);
     true
 }
@@ -825,6 +842,7 @@ mod background_tests {
         ));
         app.overlay = false;
         app.question_text.clear();
+        app.question_cursor = None;
         apply_poll(&mut app, question_data(false));
         assert!(matches!(
             screen_model(&app).overlay,

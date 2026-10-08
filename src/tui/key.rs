@@ -29,6 +29,48 @@ pub fn keystroke(app: &App, event: KeyEvent) -> Option<Effect> {
     if app.server_popup.is_some() || app.server_step.is_some() {
         return connections::key(app, event);
     }
+    if event.modifiers.contains(KeyModifiers::CONTROL) && event.code == KeyCode::Char('v') {
+        if let Some(visuals) = app.cards.iter().rev().find_map(|card| match card {
+            Card::Question { visuals, .. } if card.is_waiting() && !visuals.is_empty() => {
+                Some(visuals)
+            }
+            _ => None,
+        }) {
+            let next = app
+                .open_image
+                .as_ref()
+                .and_then(|image| visuals.iter().position(|v| &v.image == image))
+                .map_or(0, |i| (i + 1) % visuals.len());
+            return Some(Effect::OpenImage(visuals[next].image.clone()));
+        }
+    }
+    if editor::active(app) {
+        if event.code == KeyCode::Tab && picker_is_open(app) {
+            return Some(Effect::Complete);
+        }
+        let word = event
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL);
+        let movement = match event.code {
+            KeyCode::Left if word => Some(CursorMove::WordLeft),
+            KeyCode::Right if word => Some(CursorMove::WordRight),
+            KeyCode::Left if !editor::input(app).is_empty() => Some(CursorMove::Left),
+            KeyCode::Right if !editor::input(app).is_empty() => Some(CursorMove::Right),
+            KeyCode::Home => Some(CursorMove::Home),
+            KeyCode::End => Some(CursorMove::End),
+            KeyCode::Up if !picker_is_open(app) && !editor::input(app).is_empty() => {
+                Some(CursorMove::Up)
+            }
+            KeyCode::Down if !picker_is_open(app) && !editor::input(app).is_empty() => {
+                Some(CursorMove::Down)
+            }
+            KeyCode::Delete => return Some(Effect::DeleteForward),
+            _ => None,
+        };
+        if let Some(movement) = movement {
+            return Some(Effect::MoveCursor(movement));
+        }
+    }
     if !app.overlay {
         let files: Vec<_> = app
             .cards
@@ -84,7 +126,11 @@ pub fn keystroke(app: &App, event: KeyEvent) -> Option<Effect> {
             _ => None,
         };
     }
-    if app.open_image.is_some() {
+    if app
+        .open_image
+        .as_ref()
+        .is_some_and(|image| visual_question(app, image).is_none())
+    {
         return match event.code {
             KeyCode::Esc => Some(Effect::CloseOverlay),
             KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {

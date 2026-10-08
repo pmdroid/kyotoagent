@@ -30,6 +30,39 @@ use kyotoagent::view;
 const AT: &str = "2026-09-29T00:00:00.000Z";
 
 #[test]
+fn question_visuals_read_files_through_the_permission_gate() {
+    let f = fixture("question-visuals");
+    let source = "flowchart LR\n A[Plan] --> B[Decide]";
+    fs::write(f.workspace.join("flow.mmd"), source).unwrap();
+    fs::write(f.workspace.join("flow.svg"), r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><rect width="80" height="40" fill="blue"/></svg>"#).unwrap();
+    image::RgbImage::new(20, 10)
+        .save(f.workspace.join("preview.png"))
+        .unwrap();
+    for path in ["flow.mmd", "flow.svg", "preview.png"] {
+        let visuals = kyotoagent::question::prepare(&f.tools, "t1", &serde_json::json!({"visuals":[{"title":"Route","alt":"Plan then decide","path":path}]})).unwrap();
+        visuals[0].image.validate().unwrap();
+    }
+    let outside = f.root.join("private.svg");
+    fs::write(&outside, "private").unwrap();
+    f.tools.gate().queue(Answer::deny());
+    assert!(kyotoagent::question::prepare(
+        &f.tools,
+        "t1",
+        &serde_json::json!({"visuals":[{"title":"Route","alt":"Private","path":outside}]})
+    )
+    .unwrap_err()
+    .contains("denied"));
+    assert_eq!(f.permissions().len(), 1);
+    assert!(kyotoagent::question::prepare(
+        &f.tools,
+        "t1",
+        &serde_json::json!({"visuals":[{},{},{}]})
+    )
+    .is_err());
+    assert!(kyotoagent::question::prepare(&f.tools, "t1", &serde_json::json!({"visuals":[{"title":"Route","alt":"Plan","path":"flow.svg","mermaid":source}]})).is_err());
+}
+
+#[test]
 fn outside_proof_files_require_read_permission_and_allow_session_remembers_that_path() {
     let f = fixture("proof-outside-allow");
     let path = f.root.join("evidence.bin");
