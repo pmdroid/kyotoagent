@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::events::{
@@ -562,6 +563,9 @@ pub(crate) fn workspace_snapshot(workspace: &Path) -> HashMap<String, u64> {
             let full = workspace.join(&path);
             let metadata = std::fs::symlink_metadata(&full).ok()?;
             let mut hash = std::collections::hash_map::DefaultHasher::new();
+            metadata.file_type().is_symlink().hash(&mut hash);
+            metadata.file_type().is_file().hash(&mut hash);
+            metadata.permissions().mode().hash(&mut hash);
             if metadata.file_type().is_symlink() {
                 std::fs::read_link(full).ok()?.hash(&mut hash);
             } else if metadata.is_file() {
