@@ -434,7 +434,10 @@ async fn duplicate_tool_call_ids_execute_nothing() {
         if events.iter().any(|event| event.kind == EventKind::Result) {
             break;
         }
-        if events.iter().any(|event| event.kind == EventKind::Permission) {
+        if events
+            .iter()
+            .any(|event| event.kind == EventKind::Permission)
+        {
             let _ = f.runner.answer("s", Answer::allow_once());
         }
         assert!(Instant::now() < deadline, "duplicate ids never settled");
@@ -451,6 +454,37 @@ async fn duplicate_tool_call_ids_execute_nothing() {
     f.evidence(json!({"marker":marker,"kinds":kinds}));
     assert!(marker.is_empty(), "duplicate ids executed: {marker}");
     assert!(!kinds.contains(&"tool_call"), "{kinds:?}");
+
+    let f = Fixture::new("distinct-call-ids", vec![text("done")], "").await;
+    let body = json!({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[
+        {"id":"call_one","type":"function","function":{"name":"run","arguments":"{\"argv\":[\"sh\",\"-c\",\"printf one >> marker\"]}"}}
+        ,{"id":"call_two","type":"function","function":{"name":"run","arguments":"{\"argv\":[\"sh\",\"-c\",\"printf one >> marker\"]}"}}
+    ]}}]}).to_string();
+    f.model
+        .replies
+        .lock()
+        .unwrap()
+        .push_front(("application/json".into(), body));
+    f.ask();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let events = f.session.events().unwrap();
+        if events
+            .iter()
+            .any(|event| event.kind == EventKind::Permission)
+        {
+            let _ = f.runner.answer("s", Answer::allow_once());
+        }
+        if events.iter().any(|event| event.kind == EventKind::Result) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "distinct ids never settled");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        fs::read_to_string(f.workspace.join("marker")).unwrap_or_default(),
+        "oneone"
+    );
 }
 
 #[tokio::test]
