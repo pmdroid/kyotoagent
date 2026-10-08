@@ -1317,6 +1317,9 @@ impl Runner {
         images: Vec<crate::attachment::ImageAttachment>,
     ) -> Result<TurnStart, TurnError> {
         let runner = self.me.upgrade().expect("the runner is still held");
+        if state.session.meta().is_ok_and(|meta| meta.archived) {
+            return Ok(TurnStart::Busy);
+        }
         let mut turn = state.turn.lock().expect("the turn slot is not poisoned");
         if state.retiring.load(Ordering::Acquire)
             || state.session.meta().is_ok_and(|meta| meta.archived)
@@ -1332,6 +1335,9 @@ impl Runner {
         // The turn id is counted under the turn slot, so two asks cannot share
         // one even if the first task has not written its ask to the log yet.
         let turn_id = next_turn_id(&state.session);
+        if state.session.meta().is_ok_and(|meta| meta.archived) {
+            return Ok(TurnStart::Busy);
+        }
         state.tools.gate().reset_cancel();
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let session = state.session.clone();

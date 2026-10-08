@@ -178,7 +178,8 @@ impl Runner {
         }
         if caller != id {
             self.retire(id).await;
-        } else {
+        } else if let Some(state) = self.session_state(id) {
+            state.retiring.store(true, Ordering::Release);
             self.cancel(id);
         }
         match state.session.set_archived(true, &now()) {
