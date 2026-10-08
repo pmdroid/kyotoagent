@@ -416,6 +416,44 @@ async fn rejected_finish_settles_every_call_before_next_request() {
 }
 
 #[tokio::test]
+async fn duplicate_tool_call_ids_execute_nothing() {
+    let f = Fixture::new("duplicate-call-ids", vec![], "").await;
+    let body = json!({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[
+        {"id":"call_same","type":"function","function":{"name":"run","arguments":"{\"argv\":[\"sh\",\"-c\",\"printf one >> marker\"]}"}}
+        ,{"id":"call_same","type":"function","function":{"name":"run","arguments":"{\"argv\":[\"sh\",\"-c\",\"printf two >> marker\"]}"}}
+    ]}}]}).to_string();
+    f.model
+        .replies
+        .lock()
+        .unwrap()
+        .push_back(("application/json".into(), body));
+    f.ask();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let events = f.session.events().unwrap();
+        if events.iter().any(|event| event.kind == EventKind::Result) {
+            break;
+        }
+        if events.iter().any(|event| event.kind == EventKind::Permission) {
+            let _ = f.runner.answer("s", Answer::allow_once());
+        }
+        assert!(Instant::now() < deadline, "duplicate ids never settled");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let marker = fs::read_to_string(f.workspace.join("marker")).unwrap_or_default();
+    let kinds: Vec<_> = f
+        .session
+        .events()
+        .unwrap()
+        .iter()
+        .map(|event| event.kind.label())
+        .collect();
+    f.evidence(json!({"marker":marker,"kinds":kinds}));
+    assert!(marker.is_empty(), "duplicate ids executed: {marker}");
+    assert!(!kinds.contains(&"tool_call"), "{kinds:?}");
+}
+
+#[tokio::test]
 async fn incomplete_provider_generations_execute_nothing() {
     let call = json!({"id":"call_0","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"file\",\"contents\":\"secret\"}"}});
     let chat_cases = [
