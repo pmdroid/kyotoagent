@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use kyotoagent::config::Config;
 use kyotoagent::events::{Event, EventKind, TaskStartBody};
 use kyotoagent::screen::Status;
-use kyotoagent::server::{Server, ServerError, SOCKET_FILE, SESSIONS_DIR};
+use kyotoagent::server::{Server, ServerError, SESSIONS_DIR, SOCKET_FILE};
 use kyotoagent::session::{github_origin, Session, SessionMeta};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -760,8 +760,9 @@ async fn a_rejected_second_server_leaves_the_live_session_unchanged() {
     ));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("the root exists");
-    let config = Config::from_toml("base_url = \"http://127.0.0.1:1/v1\"\nmodel = \"test/model\"\n")
-        .expect("the config parses");
+    let config =
+        Config::from_toml("base_url = \"http://127.0.0.1:1/v1\"\nmodel = \"test/model\"\n")
+            .expect("the config parses");
     let owner = Server::new(&root, &config).expect("the owner is built");
     let handle = tokio::spawn({
         let owner = owner;

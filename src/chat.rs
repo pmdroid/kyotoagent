@@ -1166,7 +1166,10 @@ fn decode_message(text: &str) -> Result<Reply, ChatError> {
             status: 502,
             body: format!(
                 "the model generation ended with {}",
-                choice.finish_reason.as_deref().unwrap_or("no finish reason")
+                choice
+                    .finish_reason
+                    .as_deref()
+                    .unwrap_or("no finish reason")
             ),
         });
     }
@@ -1540,7 +1543,10 @@ fn apply_sse_line(
         .pointer("/error/message")
         .or_else(|| value.get("message"))
         .and_then(Value::as_str)
-        .filter(|_| value.get("error").is_some() || value.get("type").and_then(Value::as_str) == Some("error"))
+        .filter(|_| {
+            value.get("error").is_some()
+                || value.get("type").and_then(Value::as_str) == Some("error")
+        })
     {
         return Err(ChatError::Status {
             status: 502,

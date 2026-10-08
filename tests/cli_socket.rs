@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use kyotoagent::config::Config;
 use kyotoagent::events::{Event, EventKind, TaskStartBody};
 use kyotoagent::screen::Status;
-use kyotoagent::server::{Server, SOCKET_FILE, SESSIONS_DIR};
+use kyotoagent::server::{Server, SESSIONS_DIR, SOCKET_FILE};
 use kyotoagent::session::{Session, SessionMeta};
 
 /// Run the `kyotoagent` binary with `HOME` in the test home, and return its output.

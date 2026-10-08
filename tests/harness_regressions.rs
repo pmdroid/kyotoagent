@@ -456,7 +456,10 @@ async fn incomplete_provider_generations_execute_nothing() {
             if events.iter().any(|event| event.kind == EventKind::Result) {
                 break;
             }
-            if events.iter().any(|event| event.kind == EventKind::Permission) {
+            if events
+                .iter()
+                .any(|event| event.kind == EventKind::Permission)
+            {
                 let _ = f.runner.answer("s", Answer::deny());
                 break;
             }
