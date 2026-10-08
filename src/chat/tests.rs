@@ -1254,7 +1254,7 @@ async fn a_codex_catalog_requests_a_supported_version_and_keeps_visible_models()
     let server = FakeServer::start(vec![Canned::Json(serde_json::json!({
         "models": [
             {"slug": "gpt-6.1-sol", "visibility": "list", "supported_in_api": true,
-             "context_window": 272000, "max_context_window": 872000,
+             "context_window": 272000, "max_context_window": 1050000,
              "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}, {"effort": "ultra"}]},
             {"slug": "codex-only", "visibility": "list", "supported_in_api": false},
             {"slug": "internal-review", "visibility": "hide", "supported_in_api": true},
@@ -1274,7 +1274,7 @@ async fn a_codex_catalog_requests_a_supported_version_and_keeps_visible_models()
         ["gpt-6.1-sol", "codex-only"]
     );
     assert_eq!(rows[0].reasoning_efforts, ["low", "high", "ultra"]);
-    assert_eq!(rows[0].context_length, Some(272000));
+    assert_eq!(rows[0].context_length, Some(1050000));
     let request = server.one();
     assert_eq!(request.method, "GET");
     assert_eq!(request.path, "/models?client_version=0.160.0");
