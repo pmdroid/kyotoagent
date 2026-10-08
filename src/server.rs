@@ -268,7 +268,6 @@ impl Server {
                 crate::auth::CodexAuth::at(crate::auth::CODEX_ISSUER),
             )),
         };
-        server.reload()?;
         Ok(server)
     }
 
@@ -307,6 +306,7 @@ impl Server {
         if socket_is_live(&socket_path) {
             return Err(ServerError::AlreadyServing);
         }
+        self.reload()?;
         let _lifetime = https::Lifetime(Arc::clone(&self.https));
         let https = match &self.listen {
             Some(listen) => Some(self.bind_https(listen).await?),
