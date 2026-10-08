@@ -28,6 +28,18 @@ impl ModelRow {
     pub fn matches(&self, model: &str) -> bool {
         self.id == model || self.aliases.iter().any(|alias| alias == model)
     }
+
+    pub fn canonical(&self) -> String {
+        match &self.provider {
+            Some(provider) => format!("{provider}/{}", self.id),
+            None => self.id.clone(),
+        }
+    }
+}
+
+pub fn canonical_model(rows: &[ModelRow], model: &str) -> Option<String> {
+    let matches: Vec<_> = rows.iter().filter(|row| row.matches(model)).collect();
+    (matches.len() == 1).then(|| matches[0].canonical())
 }
 
 pub fn fallback_models(config: &Config) -> Vec<ModelRow> {
