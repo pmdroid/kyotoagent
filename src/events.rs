@@ -507,6 +507,12 @@ pub struct CloseoutRunBody {
     pub attempt: u32,
     pub exit: i32,
     pub tail: String,
+    #[serde(
+        default,
+        rename = "workspaceFingerprint",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub workspace_fingerprint: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -944,6 +950,7 @@ mod tests {
             attempt: 1,
             exit: 0,
             tail: "test result: ok".to_string(),
+            workspace_fingerprint: String::new(),
         })
         .expect("a body serializes");
         let line = serde_json::to_string(&event).expect("an event serializes");
