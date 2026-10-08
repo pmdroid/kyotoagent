@@ -1252,6 +1252,9 @@ impl Runner {
     }
 
     fn drain_asks(self: &Arc<Self>, state: &Arc<SessionState>) {
+        if state.session.meta().is_ok_and(|meta| meta.archived) {
+            return;
+        }
         if self.waiting(state)
             || self.occupied(state)
             || self.enhance_open(state)
@@ -1316,6 +1319,7 @@ impl Runner {
         let runner = self.me.upgrade().expect("the runner is still held");
         let mut turn = state.turn.lock().expect("the turn slot is not poisoned");
         if state.retiring.load(Ordering::Acquire)
+            || state.session.meta().is_ok_and(|meta| meta.archived)
             || turn.is_some()
             || state.tools.gate().open_permission().is_some()
             || state.tools.gate().open_question().is_some()
