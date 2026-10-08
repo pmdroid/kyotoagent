@@ -60,10 +60,12 @@ jobs:
               xcrun simctl ui "$device" appearance dark
               xcrun simctl ui "$device" content_size accessibility-large
             fi
-            xcrun simctl openurl "$device" "kyotoagent://127.0.0.1:$port?token=composer-ui-test"
-            sleep 5
-            xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme "Kyoto Agent" -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath build/ios -resultBundlePath "build/ios-composer/$family.xcresult" -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test-without-building
+            export TEST_RUNNER_COMPOSER_PAIRING_URL="kyotoagent://127.0.0.1:$port?token=composer-ui-test"
+            result=0
+            xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme "Kyoto Agent" -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath build/ios -resultBundlePath "build/ios-composer/$family.xcresult" -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test-without-building || result=$?
             xcrun simctl io "$device" screenshot "build/ios-composer/$family.png"
+            xcrun xcresulttool export attachments --path "build/ios-composer/$family.xcresult" --output-path "build/ios-composer/$family-attachments"
+            test "$result" -eq 0
             xcrun simctl shutdown "$device"
           done
       - uses: actions/upload-artifact@v4

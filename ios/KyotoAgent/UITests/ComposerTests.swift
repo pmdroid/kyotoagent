@@ -2,11 +2,15 @@ import XCTest
 
 @MainActor
 final class ComposerTests: XCTestCase {
-    func testCommandCompletionAndNativeCursorEditing() {
+    func testCommandCompletionAndNativeCursorEditing() throws {
+        continueAfterFailure = false
+        let pairing = try XCTUnwrap(ProcessInfo.processInfo.environment["COMPOSER_PAIRING_URL"])
+        let url = try XCTUnwrap(URL(string: pairing))
         let app = XCUIApplication()
         app.launch()
+        app.open(url)
         let session = app.buttons.containing(.staticText, identifier: "Composer UI test").firstMatch
-        XCTAssertTrue(session.waitForExistence(timeout: 20))
+        XCTAssertTrue(session.waitForExistence(timeout: 30), app.debugDescription)
         session.tap()
         let field = app.descendants(matching: .any)["composer-draft"].firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 10))
