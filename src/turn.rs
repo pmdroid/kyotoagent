@@ -1283,6 +1283,19 @@ impl Runner {
                 .lock()
                 .expect("the ask queue is not poisoned")
                 .push_front(queued);
+            return;
+        }
+        if let Ok(event_id) = state.session.next_event_id() {
+            if let Ok(event) = Event::new(
+                &event_id,
+                &crate::events::now(),
+                "queue",
+                EventKind::AskDequeued,
+            )
+            .with_body(&crate::events::ScheduleCancelBody { id: queued.id })
+            {
+                let _ = state.session.append(&event);
+            }
         }
     }
 
