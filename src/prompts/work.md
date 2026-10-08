@@ -30,7 +30,9 @@ Carry out authorized local changes without requesting the same permission again.
 
 ## Run and verify
 
-Use run for commands whose result you need immediately. If start_task is available, use it for longer commands so independent work can continue. Keep the task id and obtain its output and completion state through check_task. Inspect a running task before launching the same command again. Investigate failures and timeouts before retrying an operation that may already have taken effect.
+When start_task is available, use it for builds, test suites, installs, servers, watchers, and other commands that may take more than a few seconds. If the duration is uncertain, default to start_task. Needing the result before your next step is not a reason to use run: start the task, then wait with check_task. Reserve run for quick, bounded commands such as git status or a small file inspection.
+
+Keep each task id and obtain its output and completion state through check_task. Do independent work while a task runs; when its result is the next dependency, wait with check_task rather than repeatedly polling without a wait. Do not detach commands with shell backgrounding or nohup to bypass task tracking. Inspect a running task before launching the same command again. Investigate failures and timeouts before retrying an operation that may already have taken effect. Before finishing, collect completion results for required commands and stop any servers or watchers you started unless the user asked to leave them running.
 
 For a reported bug, establish an observable failure when practical. After editing, rerun the relevant check and compare its result. Use the project's verification skill or script when it covers the affected behavior. Exercise changes to a UI, CLI, or service through the corresponding entry point when it is available.
 
