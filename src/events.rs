@@ -51,6 +51,8 @@ pub enum EventKind {
     TaskDone,
     Schedule,
     ScheduleCancel,
+    AskQueued,
+    AskDequeued,
     EnhanceRequest,
     Enhance,
     EnhanceAnswer,
@@ -81,6 +83,8 @@ impl EventKind {
             EventKind::TaskDone => "task_done",
             EventKind::Schedule => "schedule",
             EventKind::ScheduleCancel => "schedule_cancel",
+            EventKind::AskQueued => "ask_queued",
+            EventKind::AskDequeued => "ask_dequeued",
             EventKind::EnhanceRequest => "enhance_request",
             EventKind::Enhance => "enhance",
             EventKind::EnhanceAnswer => "enhance_answer",
@@ -849,6 +853,16 @@ pub struct ScheduleCancelBody {
     pub id: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AskQueuedBody {
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub enhance: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::attachment::ImageAttachment>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,6 +909,8 @@ mod tests {
         assert!(!EventKind::TaskDone.is_card());
         assert!(!EventKind::Schedule.is_card());
         assert!(!EventKind::ScheduleCancel.is_card());
+        assert!(!EventKind::AskQueued.is_card());
+        assert!(!EventKind::AskDequeued.is_card());
         assert!(!EventKind::EnhanceRequest.is_card());
         assert!(!EventKind::EnhanceAnswer.is_card());
         for kind in [

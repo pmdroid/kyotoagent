@@ -1054,6 +1054,31 @@ impl Runner {
             if yolo_open {
                 let _ = self.answer(&session_id, Answer::allow_once());
             }
+            if let Ok(events) = session.events() {
+                let mut queued = VecDeque::new();
+                let mut removed = std::collections::HashSet::new();
+                for event in events.iter().rev() {
+                    if event.kind == EventKind::AskDequeued {
+                        if let Ok(body) = event.body_as::<crate::events::ScheduleCancelBody>() {
+                            removed.insert(body.id);
+                        }
+                    }
+                    if event.kind == EventKind::AskQueued {
+                        if let Ok(body) = event.body_as::<crate::events::AskQueuedBody>() {
+                            if removed.contains(&body.id) {
+                                continue;
+                            }
+                            queued.push_front(QueuedAsk {
+                                id: body.id,
+                                text: body.text,
+                                enhance: body.enhance,
+                                images: body.images,
+                            });
+                        }
+                    }
+                }
+                *state.ask_queue.lock().expect("ask queue") = queued;
+            }
             let _ = state.tools.tasks().settle_orphans();
             if !meta.archived {
                 state.tools.schedules().arm_pending();
@@ -1176,12 +1201,26 @@ impl Runner {
             .as_nanos();
         let count = QUEUED_COUNTER.fetch_add(1, Ordering::Relaxed);
         let id = format!("{nanos:x}-{count:x}");
-        queue.push_back(QueuedAsk {
+        let queued = QueuedAsk {
             id: id.clone(),
             text: text.to_string(),
             enhance,
             images,
-        });
+        };
+        let event = Event::new(
+            &state.session.next_event_id()?,
+            &crate::events::now(),
+            "queue",
+            EventKind::AskQueued,
+        )
+        .with_body(&crate::events::AskQueuedBody {
+            id: queued.id.clone(),
+            text: queued.text.clone(),
+            enhance: queued.enhance,
+            images: queued.images.clone(),
+        })?;
+        state.session.append(&event)?;
+        queue.push_back(queued);
         Ok(id)
     }
 
@@ -1201,6 +1240,14 @@ impl Runner {
             return Ok(false);
         };
         queue.remove(index);
+        let event = Event::new(
+            &state.session.next_event_id()?,
+            &crate::events::now(),
+            "queue",
+            EventKind::AskDequeued,
+        )
+        .with_body(&crate::events::ScheduleCancelBody { id: id.to_string() })?;
+        state.session.append(&event)?;
         Ok(true)
     }
 
