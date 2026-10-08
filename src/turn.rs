@@ -174,7 +174,7 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "run",
-            "Run a command in the workspace.",
+            "Run a quick, bounded command in the workspace. Use start_task for builds, test suites, installs, servers, or commands with uncertain duration, even when you need their result next.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -186,7 +186,7 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "start_task",
-            "Start a command in the workspace and return while it still runs.",
+            "Start a command in the workspace and return while it still runs. Use for builds, test suites, installs, servers, and commands that may take more than a few seconds. Default to this when duration is uncertain; use check_task to wait for results.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
