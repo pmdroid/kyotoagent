@@ -41,12 +41,14 @@ jobs:
           python3 ios/KyotoAgent/UITests/server.py --cert "$fixture/cert.pem" --key "$fixture/key.pem" --port-file "$fixture/port" > build/ios-composer/server.log 2>&1 &
           server=$!
           trap 'kill "$server"; rm -rf "$fixture"' EXIT
-          for attempt in {1..50}; do
-            test -s "$fixture/port" && break
-            sleep 0.1
-          done
-          port=$(cat "$fixture/port")
           xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme "Kyoto Agent" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO build-for-testing
+          for attempt in {1..60}; do
+            test -s "$fixture/port" && break
+            kill -0 "$server" || { cat build/ios-composer/server.log; exit 1; }
+            sleep 1
+          done
+          test -s "$fixture/port" || { cat build/ios-composer/server.log; exit 1; }
+          port=$(cat "$fixture/port")
           for family in iPhone iPad; do
             device=$(xcrun simctl list devices available --json | FAMILY="$family" python3 -c 'import json, os, sys; print(next(d["udid"] for runtime, devices in json.load(sys.stdin)["devices"].items() if runtime.startswith("com.apple.CoreSimulator.SimRuntime.iOS-26-") for d in devices if d["name"].startswith(os.environ["FAMILY"])))')
             xcrun simctl boot "$device"
