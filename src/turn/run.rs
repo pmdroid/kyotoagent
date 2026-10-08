@@ -266,6 +266,15 @@ pub(super) async fn run_turn(
             if *cancel.borrow() || tools.gate().rejected() {
                 stopped = true;
             }
+            if turn.goal_run && !stopped && !finished && !turn_stop {
+                session.update(|meta| {
+                    if let Some(goal) = &mut meta.goal {
+                        goal.begin_tool_call();
+                        return true;
+                    }
+                    false
+                })?;
+            }
             if !finished {
                 if let Some(reason) = goal::goal_stop(turn)? {
                     result_text = reason;
@@ -282,10 +291,32 @@ pub(super) async fn run_turn(
             }
             if batch::parallel(&call.name) && !(closeout.file.is_some() && call.name == "run") {
                 let mut group = vec![call];
-                while calls.peek().is_some_and(|next| {
-                    batch::parallel(&next.name) && !(closeout.file.is_some() && next.name == "run")
-                }) {
+                let remaining = if turn.goal_run {
+                    session.meta()?.goal.map_or(0, |goal| {
+                        crate::goal::MAX_TOOL_CALLS_PER_RESUME
+                            .saturating_sub(goal.tool_calls_since_resume)
+                    }) as usize
+                } else {
+                    usize::MAX
+                };
+                while group.len() - 1 < remaining
+                    && calls.peek().is_some_and(|next| {
+                        batch::parallel(&next.name)
+                            && !(closeout.file.is_some() && next.name == "run")
+                    })
+                {
                     group.push(calls.next().unwrap());
+                }
+                if turn.goal_run && group.len() > 1 {
+                    session.update(|meta| {
+                        if let Some(goal) = &mut meta.goal {
+                            for _ in 1..group.len() {
+                                goal.begin_tool_call();
+                            }
+                            return true;
+                        }
+                        false
+                    })?;
                 }
                 let outcomes = batch::execute(turn, &group, &cancel, &closeout).await?;
                 let written: Vec<String> = outcomes
@@ -522,6 +553,15 @@ pub(super) async fn run_turn(
     }
 
     goal::pause_unfinished(turn, &result_text)?;
+    if turn.goal_run
+        && session.meta()?.goal.is_some_and(|goal| {
+            goal.status == crate::goal::GoalStatus::Paused
+                && goal.tool_calls_since_resume >= crate::goal::MAX_TOOL_CALLS_PER_RESUME
+        })
+    {
+        tools.tasks().cancel_all();
+        tools.tasks().wait_idle().await;
+    }
 
     // A turn that ended any way but finish still owes a result event.
     if !finished {

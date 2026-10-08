@@ -3538,6 +3538,107 @@ async fn reload_during_an_enhance_rewrite_goes_idle_without_a_stopped_result() {
 }
 
 #[tokio::test]
+async fn goal_tool_loop_pauses_without_a_finish_attempt_and_skips_late_writes() {
+    let fixture = Fixture::new(
+        "goal-tool-loop",
+        vec![Canned::Json(tool_call_reply(vec![
+            ("read_file", serde_json::json!({"path":"missing.txt"})),
+            (
+                "write_file",
+                serde_json::json!({"path":"late.txt","contents":"must not run"}),
+            ),
+        ]))],
+    );
+    let workspace = fixture.add_session("goal");
+    let session = Session::at(&fixture.root.join("session-goal"));
+    let mut value =
+        serde_json::to_value(kyotoagent::goal::Goal::new("Fix the failure", None)).unwrap();
+    value["tool_calls_since_resume"] = serde_json::json!(99);
+    value["criteria"] =
+        serde_json::json!([{"outcome":"Works","verification":"Run the regression"}]);
+    session
+        .update(|meta| {
+            meta.yolo = true;
+            meta.goal = Some(serde_json::from_value(value.clone()).unwrap());
+            true
+        })
+        .unwrap();
+    fixture.ask("goal", "Continue the goal.");
+    fixture.wait_for_turn_to_start("goal").await;
+    let paused = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let view = fixture.view("goal");
+            if view.status == Status::Idle
+                && view.goal.as_ref().unwrap().status == kyotoagent::goal::GoalStatus::Paused
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    fixture.cancel("goal");
+    assert!(
+        paused.is_ok(),
+        "a tool-only loop must pause without asking to finish"
+    );
+    assert!(!workspace.join("late.txt").exists());
+    let goal = fixture.view("goal").goal.unwrap();
+    assert!(goal.verification.contains("100 tool calls"));
+    assert_eq!(goal.rounds, 0);
+    assert_eq!(goal.evaluations_since_resume, 0);
+}
+
+#[tokio::test]
+async fn goal_parallel_calls_share_the_limit_and_stop_background_tasks() {
+    let fixture = Fixture::new(
+        "goal-parallel-limit",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "start_task",
+                serde_json::json!({"argv":["sleep","30"]}),
+            )])),
+            Canned::Json(tool_call_reply(vec![
+                ("read_file", serde_json::json!({"path":"missing-one"})),
+                ("read_file", serde_json::json!({"path":"missing-two"})),
+                ("read_file", serde_json::json!({"path":"missing-three"})),
+            ])),
+        ],
+    );
+    fixture.add_session("goal");
+    let session = Session::at(&fixture.root.join("session-goal"));
+    session
+        .update(|meta| {
+            let mut goal = kyotoagent::goal::Goal::new("Fix", None);
+            goal.tool_calls_since_resume = 97;
+            goal.criteria = vec![kyotoagent::goal::GoalCriterion {
+                outcome: "Works".into(),
+                verification: "Run tests".into(),
+            }];
+            meta.goal = Some(goal);
+            meta.yolo = true;
+            true
+        })
+        .unwrap();
+    fixture.ask("goal", "Continue");
+    fixture.wait_for_turn_to_start("goal").await;
+    fixture.wait_for_status("goal", Status::Idle).await;
+    let goal = fixture.view("goal").goal.unwrap();
+    assert_eq!(goal.status, kyotoagent::goal::GoalStatus::Paused);
+    assert_eq!(goal.tool_calls_since_resume, 100);
+    let events = fixture.events("goal");
+    assert!(events
+        .iter()
+        .any(|event| event.kind == EventKind::TaskDone && event.body["state"] == "stopped"));
+    let results: Vec<_> = events
+        .iter()
+        .filter(|event| event.kind == EventKind::ToolResult && event.body["tool"] == "read_file")
+        .collect();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[2].body["output"], "Skipped because the turn ended.");
+}
+
+#[tokio::test]
 async fn goal_evaluation_continues_with_flexible_todos_and_real_output() {
     let fixture = Fixture::new(
         "goal-continue",
