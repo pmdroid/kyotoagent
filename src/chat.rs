@@ -702,6 +702,40 @@ impl ChatClient {
         thoughts: Option<&Arc<Mutex<String>>>,
         status: Option<&RetryStatus>,
     ) -> Result<Reply, ChatError> {
+        let guard = retry::StatusGuard(status);
+        let thought_length = thoughts.map(|sink| sink.lock().unwrap().len());
+        for attempt in 0..=retry::MAX_RETRIES {
+            let result = self
+                .complete_attempt(messages, tools, thoughts, status)
+                .await;
+            if !matches!(
+                &result,
+                Err(ChatError::Status {
+                    status: 500 | 502 | 503 | 504,
+                    ..
+                })
+            ) || attempt == retry::MAX_RETRIES
+            {
+                return result;
+            }
+            if let (Some(sink), Some(length)) = (thoughts, thought_length) {
+                sink.lock().unwrap().truncate(length);
+            }
+            let delay = Duration::from_secs(1 << attempt);
+            guard.set(delay);
+            tokio::time::sleep(delay).await;
+            guard.clear();
+        }
+        unreachable!()
+    }
+
+    async fn complete_attempt(
+        &self,
+        messages: &[Message],
+        tools: &[Tool],
+        thoughts: Option<&Arc<Mutex<String>>>,
+        status: Option<&RetryStatus>,
+    ) -> Result<Reply, ChatError> {
         let url = self.request_url(&self.model);
         if self.posts_responses(&self.model) {
             let body = responses_body(
@@ -1556,7 +1590,8 @@ fn apply_response_event(
     thoughts: Option<&Arc<Mutex<String>>>,
 ) -> Result<(), ChatError> {
     let event: Value = serde_json::from_str(payload).map_err(ChatError::Decode)?;
-    match event.get("type").and_then(Value::as_str).unwrap_or("") {
+    let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
+    match kind {
         "response.completed" => {
             let mut response = event
                 .get("response")
@@ -1601,15 +1636,31 @@ fn apply_response_event(
             }
         }
         "response.failed" | "response.incomplete" | "error" => {
-            let message = event
-                .pointer("/response/error/message")
+            let error = event
+                .pointer("/response/error")
+                .or_else(|| event.get("error"))
+                .unwrap_or(&event);
+            let code = error.get("code").and_then(Value::as_str);
+            let message = error
+                .get("message")
                 .or_else(|| event.pointer("/response/incomplete_details/reason"))
                 .or_else(|| event.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or("the model stream failed");
+                .and_then(Value::as_str);
+            let status = match (kind, code) {
+                ("response.incomplete", _) => 400,
+                (_, Some("rate_limit_exceeded")) => 429,
+                (_, Some("server_error" | "internal_server_error")) => 502,
+                (_, Some(_)) => 400,
+                _ => 502,
+            };
             return Err(ChatError::Status {
-                status: 502,
-                body: message.to_string(),
+                status,
+                body: match (code, message) {
+                    (Some(code), Some(message)) => format!("{code}: {message}"),
+                    (Some(code), None) => code.to_string(),
+                    (None, Some(message)) => message.to_string(),
+                    (None, None) => format!("{kind}: {event}"),
+                },
             });
         }
         _ => {}
