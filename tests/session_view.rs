@@ -616,7 +616,9 @@ fn every_kind_round_trips_through_the_log() {
                 }
                 EventKind::CloseoutChanged
                 | EventKind::CloseoutStarted
-                | EventKind::CloseoutOutput => Ok(serde_json::json!({})),
+                | EventKind::CloseoutOutput
+                | EventKind::AskQueued
+                | EventKind::AskDequeued => Ok(serde_json::json!({})),
             }
             .expect("a body serializes");
             event(&id, *kind, body)

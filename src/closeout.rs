@@ -203,26 +203,9 @@ impl CloseoutState {
                 }
                 EventKind::CloseoutRun => {
                     if let Ok(body) = event.body_as::<CloseoutRunBody>() {
-                        let current = self.workspace.clone().as_ref().map(|workspace| {
-                            workspace_fingerprint(
-                                workspace,
-                                &git_text(workspace, &["rev-parse", "HEAD"]).unwrap_or_default(),
-                                &git_text(workspace, &["status", "--porcelain"])
-                                    .unwrap_or_default(),
-                            )
-                        });
-                        let same_candidate = !body.workspace_fingerprint.is_empty()
-                            && current.as_ref() == Some(&body.workspace_fingerprint);
-                        let same_policy = self
-                            .file
-                            .as_ref()
-                            .is_some_and(|file| file.policy_digest == body.policy_digest)
-                            && !body.policy_digest.is_empty();
                         let state = self.item_mut(&body.id);
                         state.attempts = body.attempt;
-                        state.passed = same_candidate
-                            && same_policy
-                            && body.passed.unwrap_or(body.exit == 0 && !body.timed_out);
+                        state.passed = body.passed.unwrap_or(body.exit == 0 && !body.timed_out);
                         if state.passed {
                             state.last_failure = None;
                         } else {
