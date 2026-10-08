@@ -213,9 +213,15 @@ impl CloseoutState {
                         });
                         let same_candidate = !body.workspace_fingerprint.is_empty()
                             && current.as_ref() == Some(&body.workspace_fingerprint);
+                        let same_policy = self
+                            .file
+                            .as_ref()
+                            .is_some_and(|file| file.policy_digest == body.policy_digest)
+                            && !body.policy_digest.is_empty();
                         let state = self.item_mut(&body.id);
                         state.attempts = body.attempt;
                         state.passed = same_candidate
+                            && same_policy
                             && body.passed.unwrap_or(body.exit == 0 && !body.timed_out);
                         if state.passed {
                             state.last_failure = None;
@@ -1328,6 +1334,7 @@ pub fn run_body(id: &str, attempt: u32, output: &RunOutput) -> CloseoutRunBody {
         exit: output.exit.unwrap_or(-1),
         tail: tail_of(output),
         workspace_fingerprint: String::new(),
+        policy_digest: String::new(),
     }
 }
 

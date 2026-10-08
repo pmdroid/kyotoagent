@@ -571,6 +571,7 @@ fn every_kind_round_trips_through_the_log() {
                         exit: 0,
                         tail: "test result: ok".into(),
                         workspace_fingerprint: String::new(),
+                        policy_digest: String::new(),
                     })
                 }
                 EventKind::TaskStart => serde_json::to_value(TaskStartBody {

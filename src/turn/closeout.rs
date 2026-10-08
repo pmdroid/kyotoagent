@@ -307,6 +307,11 @@ async fn execute_closeout(
     let mut body = crate::closeout::run_body(id, attempt, &output);
     body.transcript = Some(file.clone());
     body.passed = Some(passed);
+    body.policy_digest = closeout
+        .file
+        .as_ref()
+        .map(|file| file.policy_digest.clone())
+        .unwrap_or_default();
     body.workspace_fingerprint = crate::closeout::workspace_fingerprint(
         tools.workspace(),
         &git_output(tools.workspace(), &["rev-parse", "HEAD"]),

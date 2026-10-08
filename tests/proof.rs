@@ -306,6 +306,7 @@ async fn remote_proof_history_and_downloads_preserve_versions_after_workspace_de
                     exit: 1,
                     tail: "failed check".into(),
                     workspace_fingerprint: String::new(),
+                    policy_digest: String::new(),
                 })
                 .unwrap(),
         )
