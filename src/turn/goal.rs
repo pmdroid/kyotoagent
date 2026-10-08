@@ -44,7 +44,8 @@ impl Runner {
                         let _ = self.answer(&id, Answer::deny());
                     }
                     if state.tools.gate().open_question().is_some() {
-                        let _ = self.answer_question(&id, "");
+                        let question = state.tools.gate().open_question().unwrap_or_default();
+                        let _ = self.answer_question(&id, &question, "");
                     }
                 } else {
                     let text = if command == "clear" {

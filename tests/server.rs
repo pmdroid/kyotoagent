@@ -958,6 +958,14 @@ async fn restarting_leaves_an_unanswered_permission_waiting() {
     );
     client2.wait_for_status(&id, "idle").await;
 
+    let (status, response) = client2.message(&id, "Create the other file.").await;
+    assert_eq!(status, 202, "{response}");
+    client2.wait_for_status(&id, "idle").await;
+    assert!(
+        !workspace.join("notes.md").exists(),
+        "settling the recovered permission must not perform its write"
+    );
+
     // The first server's turn is still blocked on its gate. Answer it, so it
     // finishes and the runtime can shut down.
     runner.release_all();

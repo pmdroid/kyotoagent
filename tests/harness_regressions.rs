@@ -145,7 +145,20 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         self.runner.cancel("s");
         let _ = self.runner.answer("s", Answer::deny());
-        let _ = self.runner.answer_question("s", "cancelled");
+        let question = self
+            .runner
+            .view("s")
+            .ok()
+            .and_then(|view| {
+                view.cards
+                    .into_iter()
+                    .rev()
+                    .find(|card| card.kind == kyotoagent::view::CardKind::Question)
+            })
+            .and_then(|card| card.body["eventId"].as_str().map(str::to_string));
+        if let Some(question) = question {
+            let _ = self.runner.answer_question("s", &question, "cancelled");
+        }
         self.server.abort();
     }
 }

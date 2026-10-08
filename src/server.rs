@@ -1223,7 +1223,7 @@ async fn answer(
                 Err(source) => Err(ApiError::conflict(source.to_string())),
             }
         }
-        EventKind::Question => match state.runner.answer_question(&id, &body.choice) {
+        EventKind::Question => match state.runner.answer_question(&id, &body.id, &body.choice) {
             Ok(()) => Ok(StatusCode::NO_CONTENT),
             Err(source) => Err(ApiError::conflict(source.to_string())),
         },

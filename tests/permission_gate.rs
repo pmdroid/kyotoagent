@@ -864,7 +864,7 @@ fn yolo_still_waits_on_a_question() {
     }
     f.tools
         .gate()
-        .answer_question("continue".into())
+        .answer_question(&f.tools.gate().open_question().unwrap(), "continue".into())
         .expect("the question is open");
     let answer = turn.join().expect("the ask finished").expect("the answer");
     assert_eq!(answer, "continue");
