@@ -261,6 +261,16 @@ public final class AppModel {
         updateDraft((pastedInput ?? "") + text)
     }
 
+    public var composerSuggestions: [CommandEntry] {
+        guard pastedInput == nil else { return [] }
+        return slashSuggestions(transcript.view?.skills ?? [], draft: draft)
+    }
+
+    public func completeSlash(_ entry: CommandEntry) {
+        guard composerSuggestions.contains(entry) else { return }
+        updateDraft(completedSlash(entry, draft: draft))
+    }
+
     public func removePastedInput() {
         let suffix = composerDraft
         pastedDraft = nil
@@ -862,6 +872,10 @@ public final class AppModel {
             if let id {
                 await setArchived(id, archived: false)
             }
+            return .finished
+        case .goal:
+            updateDraft("/goal ")
+            dismissOverlay()
             return .finished
         case .skill(let name):
             updateDraft(filledSkill(name))

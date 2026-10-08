@@ -168,7 +168,7 @@ final class SessionStateTests: XCTestCase {
         XCTAssertTrue(transcript.contains("composer-queue"))
         XCTAssertTrue(transcript.contains("axis: .vertical"))
         XCTAssertFalse(transcript.contains("dock-todos"))
-        XCTAssertTrue(transcript.contains("skill-match-"))
+        XCTAssertTrue(transcript.contains("slash-match-"))
         let root = try String(contentsOf: packageRoot().appendingPathComponent("App/ConnectScreen.swift"), encoding: .utf8)
         XCTAssertTrue(root.contains("NavigationSplitView"))
         XCTAssertTrue(root.contains("columnPlan"))
@@ -366,7 +366,7 @@ final class SessionStateTests: XCTestCase {
         XCTAssertTrue(transcript.contains("TapGesture(count: 2)"))
         XCTAssertTrue(transcript.contains("axis: .vertical"))
         XCTAssertTrue(transcript.contains("composer-send"))
-        XCTAssertTrue(transcript.contains("skill-match-"))
+        XCTAssertTrue(transcript.contains("slash-match-"))
         XCTAssertFalse(transcript.contains("\"More\""))
     }
 

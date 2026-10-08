@@ -30,6 +30,7 @@ public enum CommandKind: Equatable, Sendable {
     case unarchiveSession
     case help
     case skill(String)
+    case goal
 }
 
 public struct CommandEntry: Equatable, Sendable, Identifiable {
@@ -183,6 +184,7 @@ public func commandCatalog(skills: [Skill]) -> [CommandEntry] {
         CommandEntry(id: "slash-effort", title: "/effort", hint: "set the reasoning effort", kind: .openEffort),
         CommandEntry(id: "slash-compact", title: "/compact", hint: "summarize the older transcript", kind: .compact),
         CommandEntry(id: "slash-yolo", title: "/yolo", hint: "turn yolo on or off", kind: .yolo),
+        CommandEntry(id: "slash-goal", title: "/goal", hint: "set a goal, or status, pause, resume, clear", kind: .goal),
     ]
     for skill in skills where skill.user_invocable {
         let hint = skill.description.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
@@ -222,20 +224,28 @@ func slashless(_ text: String) -> String {
     return value.lowercased()
 }
 
-public func skillMatches(_ skills: [Skill], draft: String) -> [Skill] {
+public func slashSuggestions(_ skills: [Skill], draft: String) -> [CommandEntry] {
     let trimmed = draft.drop(while: \.isWhitespace)
-    guard trimmed.hasPrefix("/"), !trimmed.contains(where: \.isWhitespace) else {
+    guard trimmed.hasPrefix("/") else { return [] }
+    let token = trimmed.dropFirst().prefix(while: { !$0.isWhitespace }).lowercased()
+    var names = Set<String>()
+    let entries = commandCatalog(skills: skills).filter {
+        $0.title.hasPrefix("/") && names.insert($0.title.lowercased()).inserted
+    }
+    if trimmed.contains(where: \.isWhitespace), entries.contains(where: { $0.title.lowercased() == "/" + token }) {
         return []
     }
-    let rest = trimmed.dropFirst()
-    let token = rest.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? ""
-    let invocable = skills.filter(\.user_invocable)
-    let needle = token.lowercased()
-    var found = invocable.filter { $0.name.lowercased().hasPrefix(needle) }
-    if found.isEmpty {
-        found = invocable.filter { $0.name.lowercased().contains(needle) }
-    }
-    return Array(found.sorted { $0.name < $1.name }.prefix(8))
+    let prefix = entries.filter { $0.title.dropFirst().lowercased().hasPrefix(token) }
+    let matches = prefix.isEmpty ? entries.filter { $0.title.dropFirst().lowercased().contains(token) } : prefix
+    return matches.sorted { $0.title < $1.title }
+}
+
+public func completedSlash(_ entry: CommandEntry, draft: String) -> String {
+    let start = draft.firstIndex(where: { !$0.isWhitespace }) ?? draft.endIndex
+    guard draft[start...].hasPrefix("/") else { return draft }
+    let end = draft[start...].firstIndex(where: \.isWhitespace) ?? draft.endIndex
+    let suffix = end == draft.endIndex ? " " : String(draft[end...])
+    return String(draft[..<start]) + entry.title + suffix
 }
 
 public func filledSkill(_ name: String) -> String {

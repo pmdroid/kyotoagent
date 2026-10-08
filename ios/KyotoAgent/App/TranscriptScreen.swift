@@ -11,6 +11,7 @@ struct TranscriptScreen: SwiftUI.View {
     @State private var thinkingOpen = false
     @State private var contextOpen = false
     @FocusState private var composerFocused: Bool
+    @State private var composerSelection: TextSelection?
     @State private var goalOpen = false
     @State private var artifactsOpen = false
     @State private var filePath: String?
@@ -41,6 +42,7 @@ struct TranscriptScreen: SwiftUI.View {
             composer
         }
         .background(Ink.canvas)
+        .onChange(of: sessionId) { _, _ in composerSelection = nil }
         .navigationTitle(bar.title)
         .navigationBarTitleDisplayMode(.inline)
         .phonePopup(item: cover, detents: coverDetents) { item in
@@ -306,7 +308,7 @@ struct TranscriptScreen: SwiftUI.View {
             if model.displayedStatus == .working || model.contextSheet != nil || yoloWord != nil {
                 activityRow
             }
-            skillSuggestions
+            slashSuggestions
             if let failure = model.transcriptFailure {
                 Text(failure)
                     .font(.caption)
@@ -353,6 +355,7 @@ struct TranscriptScreen: SwiftUI.View {
                                 get: { model.composerDraft },
                                 set: { model.updateComposerDraft($0) }
                             ),
+                            selection: $composerSelection,
                             axis: .vertical
                         )
                         .lineLimit(1...6)
@@ -383,17 +386,23 @@ struct TranscriptScreen: SwiftUI.View {
     }
 
     @ViewBuilder
-    private var skillSuggestions: some SwiftUI.View {
-        let matches = skillMatches(model.transcript.view?.skills ?? [], draft: model.draft)
+    private var slashSuggestions: some SwiftUI.View {
+        let matches = model.composerSuggestions
         if !matches.isEmpty {
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
-                    ForEach(matches, id: \.name) { skill in
-                        Button("/" + skill.name) {
-                            model.updateDraft(filledSkill(skill.name))
+                    ForEach(matches) { entry in
+                        Button {
+                            model.completeSlash(entry)
+                            composerSelection = TextSelection(insertionPoint: model.composerDraft.endIndex)
+                            composerFocused = true
+                        } label: {
+                            Text(entry.title)
+                                .frame(minWidth: 44, minHeight: 44)
                         }
                         .buttonStyle(.glass)
-                        .accessibilityIdentifier("skill-match-" + skill.name)
+                        .accessibilityHint(entry.hint)
+                        .accessibilityIdentifier("slash-match-" + String(entry.title.dropFirst()))
                     }
                 }
                 .padding(.vertical, 4)
