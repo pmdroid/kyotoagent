@@ -318,6 +318,18 @@ fn a_catalog_row_keeps_advertised_context_length() {
 }
 
 #[test]
+fn catalog_xai_reasoning_effort_lists_are_kept_in_picker_order() {
+    let row = parse_model(
+        r#"{"id":"grok-4.6","capabilities":{"reasoning_effort":["xhigh","low","","high","medium"],"default_reasoning_effort":"high"}}"#,
+    )
+    .unwrap();
+    assert_eq!(row.reasoning_efforts, ["low", "medium", "high", "xhigh"]);
+    assert!(row.takes_effort());
+    let image = parse_model(r#"{"id":"grok-imagine-image"}"#).unwrap();
+    assert!(image.reasoning_efforts.is_empty());
+}
+
+#[test]
 fn catalog_effort_capabilities_keep_every_supported_level() {
     let row = parse_model(
         r#"{"id":"opus","capabilities":{"effort":{"supported":true,"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},"xhigh":{"supported":true},"max":{"supported":true},"ultra":{"supported":true},"custom":{"supported":true},"disabled":{"supported":false},"missing":{},"malformed":{"supported":"true"}}}}"#,
@@ -348,7 +360,14 @@ fn catalog_explicit_efforts_take_precedence_over_capabilities() {
 
 #[test]
 fn catalog_malformed_effort_capabilities_leave_efforts_empty() {
-    for capabilities in ["null", "{}", r#"{"effort":true}"#, r#"{"effort":[]}"#] {
+    for capabilities in [
+        "null",
+        "{}",
+        r#"{"effort":true}"#,
+        r#"{"effort":[]}"#,
+        r#"{"reasoning_effort":"high"}"#,
+        r#"{"reasoning_effort":[""]}"#,
+    ] {
         let row =
             parse_model(&format!(r#"{{"id":"opus","capabilities":{capabilities}}}"#,)).unwrap();
         assert!(row.reasoning_efforts.is_empty());
