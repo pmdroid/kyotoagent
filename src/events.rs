@@ -54,6 +54,8 @@ pub enum EventKind {
     EnhanceRequest,
     Enhance,
     EnhanceAnswer,
+    BtwRequest,
+    BtwResult,
 }
 
 impl EventKind {
@@ -84,6 +86,8 @@ impl EventKind {
             EventKind::EnhanceRequest => "enhance_request",
             EventKind::Enhance => "enhance",
             EventKind::EnhanceAnswer => "enhance_answer",
+            EventKind::BtwRequest => "btw_request",
+            EventKind::BtwResult => "btw_result",
         }
     }
 
@@ -101,6 +105,7 @@ impl EventKind {
                 | EventKind::Proof
                 | EventKind::Artifact
                 | EventKind::Enhance
+                | EventKind::BtwRequest
         )
     }
 }

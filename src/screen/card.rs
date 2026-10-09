@@ -86,6 +86,7 @@ impl Card {
             Card::Answer { .. } => "answer",
             Card::Permission { .. } => "permission",
             Card::Result { .. } => "result",
+            Card::Btw { .. } => "btw",
             Card::Proof { .. } => "proof",
             Card::Artifact { .. } => "artifact",
             Card::Enhance { .. } => "enhance",
@@ -99,6 +100,7 @@ impl Card {
             Card::Ask { .. } | Card::Answer { .. } => theme::ask(),
             Card::Question { .. } => theme::question(),
             Card::Result { .. } => theme::good(),
+            Card::Btw { .. } => theme::attention(),
             Card::Proof { .. } | Card::Artifact { .. } => theme::proof(),
             Card::Enhance { .. } => theme::attention(),
             Card::Permission { decision, .. } => match decision.as_deref() {
@@ -133,7 +135,10 @@ impl Card {
 
     pub fn preview_text(&self) -> Option<&str> {
         let text = match self {
-            Card::Result { text } | Card::Proof { text, .. } | Card::Question { text, .. } => text,
+            Card::Btw { text }
+            | Card::Result { text }
+            | Card::Proof { text, .. }
+            | Card::Question { text, .. } => text,
             _ => return None,
         };
         (text.chars().take(2049).count() > 2048 || text.lines().take(13).count() > 12)
@@ -172,7 +177,7 @@ impl Card {
                 }
                 return lines;
             }
-            Card::Result { text } | Card::Proof { text, .. } => {
+            Card::Btw { text } | Card::Result { text } | Card::Proof { text, .. } => {
                 body.extend(markdown_lines_between(
                     preview_source(text),
                     text_width,

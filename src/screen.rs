@@ -405,6 +405,9 @@ pub enum Card {
     Result {
         text: String,
     },
+    Btw {
+        text: String,
+    },
     Proof {
         text: String,
         items: Vec<ItemRun>,

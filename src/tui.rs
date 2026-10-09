@@ -477,6 +477,7 @@ enum CommandAction {
     OpenProviders,
     Compact,
     Goal,
+    Btw,
     ToggleYolo,
     ToggleEnhance,
     ToggleLeft,
@@ -700,6 +701,12 @@ fn command_catalog(_skills: &[SkillEntry]) -> Vec<CatalogRow> {
             "/goal",
             "set a goal, or status, pause, resume, clear",
             CommandAction::Goal,
+        ),
+        catalog_row(
+            "/btw",
+            "/btw",
+            "ask a side question, cancel, or retry",
+            CommandAction::Btw,
         ),
         catalog_row(
             "/compact",

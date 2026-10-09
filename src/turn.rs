@@ -46,6 +46,7 @@ use crate::tools::{RunOutput, ToolError, Tools};
 use crate::view;
 
 mod batch;
+mod btw;
 mod closeout;
 mod compact;
 mod dispatch;
@@ -551,6 +552,7 @@ pub enum AskOutcome {
     Queued(String),
     Ignored,
     Enhancing(String),
+    Btw(String),
 }
 
 /// One running turn's cancel handle.
@@ -777,6 +779,7 @@ struct SessionState {
     turn: Mutex<Option<RunningTurn>>,
     compact: Arc<CompactSlot>,
     enhance: Arc<enhance::EnhanceSlot>,
+    btw: btw::BtwSlot,
     pending_wakes: Mutex<VecDeque<PendingWake>>,
     ask_queue: Mutex<VecDeque<QueuedAsk>>,
     flight: Arc<Flight>,
@@ -933,6 +936,7 @@ impl Runner {
             turn: Mutex::new(None),
             compact: CompactSlot::new(),
             enhance: enhance::EnhanceSlot::new(),
+            btw: Mutex::new(None),
             pending_wakes: Mutex::new(VecDeque::new()),
             ask_queue: Mutex::new(VecDeque::new()),
             flight: Flight::new(),
@@ -1018,6 +1022,7 @@ impl Runner {
                     })?;
                 }
             }
+            btw::recover(&session)?;
             let tools = Tools::with_clock(&session, self.clock.clone())?;
             tools.schedules().listen(&meta.id, self.schedule_tx.clone());
             let state = Arc::new(SessionState {
@@ -1026,6 +1031,7 @@ impl Runner {
                 turn: Mutex::new(None),
                 compact: CompactSlot::new(),
                 enhance: enhance::EnhanceSlot::new(),
+                btw: Mutex::new(None),
                 pending_wakes: Mutex::new(VecDeque::new()),
                 ask_queue: Mutex::new(VecDeque::new()),
                 flight: Flight::new(),
@@ -1094,6 +1100,16 @@ impl Runner {
             .ok_or(TurnError::NoSession)?;
         if state.session.meta().is_ok_and(|meta| meta.archived) {
             return Err(TurnError::Archived);
+        }
+        if let Some(question) = text
+            .trim()
+            .strip_prefix("/btw")
+            .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        {
+            if !images.is_empty() {
+                return Err(TurnError::Goal("Side questions take text only.".into()));
+            }
+            return self.btw(session_id, question).map(AskOutcome::Btw);
         }
         if let Some(command) = text
             .trim()
@@ -1434,6 +1450,10 @@ impl Runner {
             return;
         };
         state.retiring.store(true, Ordering::Release);
+        btw::cancel(&state);
+        while state.btw.lock().expect("btw slot").is_some() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         self.cancel(session_id);
         let mut idle = state.turn_idle.subscribe();
         loop {
@@ -1487,6 +1507,7 @@ impl Runner {
             .expect("the session map is not poisoned")
             .remove(session_id);
         if let Some(state) = removed {
+            btw::cancel(&state);
             state.tools.schedules().abort_live();
             state.tools.tasks().cancel_all();
         }
@@ -1534,6 +1555,9 @@ impl Runner {
             .sessions
             .lock()
             .expect("the session map is not poisoned");
+        for state in sessions.values() {
+            btw::cancel(state);
+        }
         let open: Vec<(String, &'static str)> = sessions
             .iter()
             .map(|(id, state)| {

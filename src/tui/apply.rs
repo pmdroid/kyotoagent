@@ -732,6 +732,15 @@ pub(super) async fn run_palette(app: &mut App, client: &Client) {
             catalog::open(app, client, catalog::Target::ManageProjects);
         }
         CommandAction::OpenProviders => providers::open(app, client),
+        CommandAction::Btw => {
+            if editor::question(app) {
+                app.question_text = "/btw ".to_string();
+                app.question_cursor = None;
+            } else {
+                app.ask = "/btw ".to_string();
+                app.ask_cursor = None;
+            }
+        }
         CommandAction::Goal => {
             app.ask = "/goal ".to_string();
             app.ask_cursor = None;
@@ -1162,6 +1171,45 @@ pub(super) async fn apply_closeout_slash(
 }
 
 pub(super) async fn submit(app: &mut App, client: &Client) -> Result<(), String> {
+    let side_in_question = editor::question(app);
+    if let Some(question) = editor::input(app)
+        .trim()
+        .strip_prefix("/btw")
+        .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+    {
+        if app
+            .images
+            .get(&app.selected)
+            .is_some_and(|images| !images.is_empty())
+        {
+            app.notice = Some("Side questions take text only.".into());
+            return Ok(());
+        }
+        let body = serde_json::json!({"text": question.trim()}).to_string();
+        let (status, response) = client
+            .request(
+                "POST",
+                &format!("/v1/sessions/{}/btw", app.selected),
+                Some(&body),
+            )
+            .await?;
+        if status == 202 {
+            if side_in_question {
+                app.question_text.clear();
+                app.question_cursor = None;
+            } else {
+                app.ask.clear();
+                app.ask_cursor = None;
+            }
+            app.pastes
+                .retain(|paste| paste.question != side_in_question);
+            app.notice = None;
+        } else {
+            app.notice = Some(error_text(&response, status));
+        }
+        return poll(app, client).await;
+    }
+
     let question = matches!(mode(app), Mode::QuestionText | Mode::Question { .. });
     let input = if question {
         &app.question_text
@@ -1922,6 +1970,9 @@ pub(super) fn to_screen_card(card: &view::Card) -> Option<Card> {
         CardKind::Ask => Card::Ask {
             text: text_field(&card.body, "text"),
             images: serde_json::from_value(card.body["images"].clone()).unwrap_or_default(),
+        },
+        CardKind::Btw => Card::Btw {
+            text: text_field(&card.body, "text"),
         },
         CardKind::Result => Card::Result {
             text: text_field(&card.body, "text"),

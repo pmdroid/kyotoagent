@@ -3900,3 +3900,56 @@ async fn saved_layout_is_global_and_preserves_other_server_configuration() {
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }
 }
+
+#[tokio::test]
+async fn btw_http_answers_without_changing_a_waiting_work_turn() {
+    let fixture = Fixture::new("btw-http", vec![
+        Canned::Json(tool_call_reply(vec![("write_file", serde_json::json!({"path":"main.txt", "contents":"main"}))])),
+        Canned::Json(serde_json::json!({"choices":[{"message":{"role":"assistant","content":"A separate answer."}}]}).to_string()),
+    ]).await;
+    let id = fixture.add_session("s").await;
+    assert_eq!(fixture.client.message(&id, "Write main.txt").await.0, 202);
+    fixture.client.wait_for_status(&id, "waiting").await;
+    let permission = fixture.client.open_permission_id(&id).await;
+    let (status, accepted) = fixture
+        .client
+        .request(
+            "POST",
+            &format!("/v1/sessions/{id}/btw"),
+            Some(r#"{"text":"Why this change?"}"#),
+        )
+        .await;
+    assert_eq!(status, 202, "{accepted}");
+    assert!(accepted.contains("btwId"));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let (_, body) = fixture
+                .client
+                .request("GET", &format!("/v1/sessions/{id}/view"), None)
+                .await;
+            let view: Value = serde_json::from_str(&body).unwrap();
+            if view["cards"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|card| card["kind"] == "btw" && card["body"]["state"] == "answered")
+            {
+                assert_eq!(view["status"], "waiting");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fixture.client.open_permission_id(&id).await, permission);
+    assert!(!fixture.workspace("s").join("main.txt").exists());
+    assert_eq!(
+        fixture
+            .client
+            .request("DELETE", &format!("/v1/sessions/{id}/btw"), None)
+            .await
+            .0,
+        400
+    );
+}

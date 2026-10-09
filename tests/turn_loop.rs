@@ -4637,3 +4637,230 @@ async fn tool_batches_invalid_typed_arguments_return_errors_without_permission()
         ],
     );
 }
+
+#[tokio::test]
+async fn btw_answers_while_permission_waits_without_steering_the_main_turn() {
+    let fixture = Fixture::new(
+        "btw-isolation",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "write_file",
+                serde_json::json!({"path":"main.txt", "contents":"main work"}),
+            )])),
+            Canned::Json(text_reply("SIDE-ANSWER-ONLY")),
+            Canned::Json(text_reply("Main done.")),
+        ],
+    );
+    let workspace = fixture.add_session("s");
+    fixture.ask("s", "Write the main file.");
+    fixture.wait_for_waiting_permission("s").await;
+    fixture.runner.btw("s", "SIDE-QUESTION-ONLY").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if fixture
+                .events("s")
+                .iter()
+                .any(|event| event.kind == EventKind::BtwResult)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fixture.runner.view("s").unwrap().status, Status::Waiting);
+    assert!(!workspace.join("main.txt").exists());
+    let side = fixture.chat_requests()[1].clone();
+    assert!(side
+        .get("tools")
+        .is_none_or(|tools| tools.as_array().is_some_and(|tools| tools.is_empty())));
+    assert_eq!(side["messages"].as_array().unwrap().len(), 2);
+    let view = fixture.runner.view("s").unwrap();
+    assert!(view
+        .cards
+        .iter()
+        .any(|card| card.kind == CardKind::Btw && card.body["state"] == "answered"));
+    fixture.answer("s", Answer::allow_once());
+    fixture.wait_for_status("s", Status::Idle).await;
+    let main = fixture.chat_requests()[2].to_string();
+    assert!(!main.contains("SIDE-QUESTION-ONLY"));
+    assert!(!main.contains("SIDE-ANSWER-ONLY"));
+    let compact = serde_json::to_string(&kyotoagent::compact::compact_request_messages(
+        &fixture.events("s"),
+    ))
+    .unwrap();
+    assert!(!compact.contains("SIDE-QUESTION-ONLY"));
+    assert!(!compact.contains("SIDE-ANSWER-ONLY"));
+    assert_eq!(
+        fs::read_to_string(workspace.join("main.txt")).unwrap(),
+        "main work"
+    );
+}
+
+#[tokio::test]
+async fn btw_tool_calls_are_never_dispatched_and_reload_settles_only_the_side_request() {
+    let fixture = Fixture::new(
+        "btw-no-tools",
+        vec![Canned::Json(tool_call_reply(vec![(
+            "write_file",
+            serde_json::json!({"path":"side.txt", "contents":"forbidden"}),
+        )]))],
+    );
+    let workspace = fixture.add_session("s");
+    fixture.runner.ask("s", "/btw inspect this").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if fixture
+                .events("s")
+                .iter()
+                .any(|event| event.kind == EventKind::BtwResult)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!workspace.join("side.txt").exists());
+    assert!(fixture
+        .events("s")
+        .iter()
+        .all(|event| event.kind != EventKind::UserAsk && event.kind != EventKind::ToolCall));
+    let session = Session::at(&fixture.root.join("session-s"));
+    session
+        .append(
+            &Event::new("btw-pending", AT, "btw", EventKind::BtwRequest)
+                .with_body(&serde_json::json!({"question":"recover"}))
+                .unwrap(),
+        )
+        .unwrap();
+    fixture
+        .runner
+        .reload(&[fixture.root.join("session-s")])
+        .unwrap();
+    assert_eq!(fixture.runner.view("s").unwrap().status, Status::Idle);
+    assert!(fixture
+        .events("s")
+        .iter()
+        .any(|event| event.kind == EventKind::BtwResult
+            && event.body["requestId"] == "btw-pending"
+            && event.body["state"] == "failed"));
+}
+
+#[tokio::test]
+async fn btw_cancel_is_independent_and_releases_the_slot_for_retry() {
+    let gate = HoldGate::new();
+    let fixture = Fixture::new(
+        "btw-cancel",
+        vec![
+            Canned::Hold {
+                head: reasoning_event("side pending"),
+                tail: String::new(),
+                gate: gate.clone(),
+            },
+            Canned::Json(text_reply("Retried answer")),
+        ],
+    );
+    fixture.add_session("s");
+    let id = fixture.runner.btw("s", "original question").unwrap();
+    assert!(matches!(
+        fixture.runner.btw("s", "another"),
+        Err(kyotoagent::turn::TurnError::Busy)
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fixture.chat_requests().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fixture.runner.btw("s", "cancel").unwrap(), id);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !fixture
+            .events("s")
+            .iter()
+            .any(|event| event.kind == EventKind::BtwResult)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fixture.runner.view("s").unwrap().status, Status::Idle);
+    assert_eq!(
+        fixture.runner.view("s").unwrap().cards[0].body["state"],
+        "cancelled"
+    );
+    gate.release();
+    fixture.runner.btw("s", "retry").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fixture
+            .events("s")
+            .iter()
+            .filter(|event| event.kind == EventKind::BtwResult)
+            .count()
+            < 2
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        fixture.runner.view("s").unwrap().cards[1].body["state"],
+        "answered"
+    );
+    assert!(fixture.chat_requests()[1]
+        .to_string()
+        .contains("original question"));
+}
+
+#[tokio::test]
+async fn btw_finishes_while_the_main_command_is_running_and_preserves_the_queue() {
+    let fixture = Fixture::new(
+        "btw-working",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "run",
+                serde_json::json!({"argv":["sh","-c","printf started > started; while test ! -f release; do sleep 0.02; done; printf done > done"]}),
+            )])),
+            Canned::Json(text_reply("Side while working")),
+            Canned::Json(text_reply("Main finished")),
+        ],
+    );
+    let workspace = fixture.add_session("s");
+    fixture.ask("s", "Run the command");
+    fixture.wait_for_waiting_permission("s").await;
+    fixture.answer("s", Answer::allow_once());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !workspace.join("started").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.runner.ask("s", "queued work").unwrap();
+    let before = fixture.runner.view("s").unwrap();
+    fixture.runner.btw("s", "What are you doing?").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !fixture
+            .events("s")
+            .iter()
+            .any(|event| event.kind == EventKind::BtwResult)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let after = fixture.runner.view("s").unwrap();
+    assert_eq!(after.status, Status::Working);
+    assert_eq!(after.queue, before.queue);
+    assert_eq!(after.todos, before.todos);
+    assert!(!workspace.join("done").exists());
+    fs::write(workspace.join("release"), "").unwrap();
+    fixture.wait_for_status("s", Status::Idle).await;
+    assert_eq!(fs::read_to_string(workspace.join("done")).unwrap(), "done");
+}

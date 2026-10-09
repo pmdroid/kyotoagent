@@ -612,6 +612,7 @@ fn every_kind_round_trips_through_the_log() {
                         text: None,
                     })
                 }
+                EventKind::BtwRequest | EventKind::BtwResult => Ok(serde_json::json!({})),
                 EventKind::CloseoutChanged
                 | EventKind::CloseoutStarted
                 | EventKind::CloseoutOutput => Ok(serde_json::json!({})),
