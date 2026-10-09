@@ -50,6 +50,7 @@ final class CommandTests: XCTestCase {
             "/effort",
             "/compact",
             "/yolo",
+            "/goal",
             "/preflight",
         ])
         let listed = [
@@ -78,11 +79,11 @@ final class CommandTests: XCTestCase {
         XCTAssertEqual(liveProfileField("Everything"), "")
         XCTAssertEqual(liveProfileField("review"), "review")
         XCTAssertTrue(filteredCatalog(skills: skills, query: "/").isEmpty)
-        XCTAssertEqual(skillMatches(skills, draft: "/").map(\.name), ["preflight"])
-        XCTAssertEqual(skillMatches(skills, draft: "/pr").map(\.name), ["preflight"])
-        XCTAssertTrue(skillMatches(skills, draft: filledSkill("preflight")).isEmpty)
-        XCTAssertTrue(skillMatches(skills, draft: "/preflight check this").isEmpty)
-        XCTAssertTrue(skillMatches(skills, draft: "preflight").isEmpty)
+        XCTAssertEqual(slashSuggestions(skills, draft: "/").map(\.title), ["/compact", "/effort", "/goal", "/model", "/preflight", "/yolo"])
+        XCTAssertEqual(slashSuggestions(skills, draft: "/pr").map(\.title), ["/preflight"])
+        XCTAssertTrue(slashSuggestions(skills, draft: filledSkill("preflight")).isEmpty)
+        XCTAssertTrue(slashSuggestions(skills, draft: "/preflight check this").isEmpty)
+        XCTAssertTrue(slashSuggestions(skills, draft: "preflight").isEmpty)
         XCTAssertEqual(filledSkill("preflight"), "/preflight ")
         let sheet = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -93,6 +94,36 @@ final class CommandTests: XCTestCase {
         let text = try String(contentsOf: sheet, encoding: .utf8)
         XCTAssertTrue(text.contains(modelConfirmSentence))
         XCTAssertTrue(text.contains("Text(modelConfirmTitle)"))
+    }
+
+    func testSlashSuggestionsCombineCommandsAndSkillsWithoutDuplicatesOrTruncation() {
+        let skills = (0..<12).map {
+            Skill(name: "skill-\($0)", description: "Invocable", disable_model_invocation: false, user_invocable: true, path: "skill")
+        } + [
+            Skill(name: "model", description: "Duplicate", disable_model_invocation: false, user_invocable: true, path: "model"),
+            Skill(name: "hidden", description: "Hidden", disable_model_invocation: false, user_invocable: false, path: "hidden")
+        ]
+        let all = slashSuggestions(skills, draft: "/")
+        XCTAssertEqual(all.count, 17)
+        XCTAssertEqual(all.filter { $0.title == "/model" }.count, 1)
+        XCTAssertEqual(all.first { $0.title == "/model" }?.kind, .openModel)
+        XCTAssertFalse(all.contains { $0.title == "/hidden" })
+        XCTAssertEqual(slashSuggestions(skills, draft: "/MoD").map(\.title), ["/model"])
+        XCTAssertEqual(slashSuggestions(skills, draft: "/kill-11").map(\.title), ["/skill-11"])
+        XCTAssertTrue(slashSuggestions(skills, draft: "/model grok").isEmpty)
+        XCTAssertTrue(slashSuggestions(skills, draft: "/unknown").isEmpty)
+    }
+
+    func testSlashCompletionPreservesArgumentsWhitespaceAndUnicode() throws {
+        for (draft, expected) in [
+            ("/mod", "/model "),
+            ("  /mod", "  /model "),
+            ("/mod  grok", "/model  grok"),
+            ("/mod\n界 👩‍💻", "/model\n界 👩‍💻")
+        ] {
+            let suggestion = try XCTUnwrap(slashSuggestions([], draft: draft).first)
+            XCTAssertEqual(completedSlash(suggestion, draft: draft), expected)
+        }
     }
 
     func testModelPostBodyUsesTheFixtureEfforts() throws {
@@ -409,6 +440,53 @@ final class CommandClientTests: XCTestCase {
         let calls = gate.calls.count
         await model.goalCommand("unexpected")
         XCTAssertEqual(gate.calls.count, calls)
+    }
+
+    func testCompletingACommandOnlyEditsTheDraftAndSendUsesTheExistingRoute() async throws {
+        let gate = try scriptGate()
+        let model = try await open(gate)
+        for (prefix, expected) in [("/mod", "/model "), ("/eff", "/effort "), ("/com", "/compact "), ("/y", "/yolo "), ("/go", "/goal ")] {
+            model.updateComposerDraft(prefix)
+            let suggestion = try XCTUnwrap(model.composerSuggestions.first)
+            let calls = gate.calls.count
+            model.completeSlash(suggestion)
+            XCTAssertEqual(gate.calls.count, calls)
+            XCTAssertEqual(model.composerDraft, expected)
+            XCTAssertTrue(model.composerSuggestions.isEmpty)
+            XCTAssertNil(model.overlay)
+        }
+        model.updateComposerDraft("/mod grok-4.7")
+        model.completeSlash(try XCTUnwrap(model.composerSuggestions.first))
+        XCTAssertEqual(model.draft, "/model grok-4.7")
+        await model.send()
+        XCTAssertTrue(gate.calls.contains { $0.path.hasSuffix("/model/session") })
+        XCTAssertFalse(gate.calls.contains { $0.path.hasSuffix("/messages") })
+        model.updateComposerDraft("/go status")
+        model.completeSlash(try XCTUnwrap(model.composerSuggestions.first))
+        await model.send()
+        let call = try XCTUnwrap(gate.calls.last { $0.path.hasSuffix("/messages") })
+        XCTAssertEqual(try JSONDecoder().decode(MessageText.self, from: call.body ?? Data()).text, "/goal status")
+    }
+
+    func testCompletionRejectsAStaleSuggestionAndPreservesMidDraftEdits() async throws {
+        let gate = try scriptGate()
+        let model = try await open(gate)
+        model.updateComposerDraft("/mod")
+        let suggestion = try XCTUnwrap(model.composerSuggestions.first)
+        model.updateComposerDraft("hello world")
+        model.completeSlash(suggestion)
+        XCTAssertEqual(model.draft, "hello world")
+        model.updateComposerDraft("hello brave world")
+        await model.refreshOpenView()
+        XCTAssertEqual(model.composerDraft, "hello brave world")
+        model.updateComposerDraft("hello 👩‍💻 world")
+        await model.send()
+        let call = try XCTUnwrap(gate.calls.last { $0.path.hasSuffix("/messages") })
+        XCTAssertEqual(try JSONDecoder().decode(MessageText.self, from: call.body ?? Data()).text, "hello 👩‍💻 world")
+        model.updateComposerDraft(String(repeating: "pasted\n", count: 20))
+        model.updateComposerDraft("/mod")
+        XCTAssertTrue(model.composerSuggestions.isEmpty)
+        XCTAssertNotNil(model.pastedInput)
     }
 
     private func open(_ gate: Gate) async throws -> AppModel {

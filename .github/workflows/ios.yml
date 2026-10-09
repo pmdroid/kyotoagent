@@ -33,9 +33,46 @@ jobs:
           xcrun simctl io "$device" screenshot build/ios-smoke/launch.png
           xcrun simctl terminate "$device" sh.pascal.kyotoagent
           xcrun simctl shutdown "$device"
+      - name: Exercise command completion and native cursor editing
+        run: |
+          mkdir -p build/ios-composer
+          fixture=$(mktemp -d)
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=localhost' -addext 'subjectAltName=IP:127.0.0.1,DNS:localhost' -keyout "$fixture/key.pem" -out "$fixture/cert.pem"
+          python3 ios/KyotoAgent/UITests/server.py --cert "$fixture/cert.pem" --key "$fixture/key.pem" --port-file "$fixture/port" > build/ios-composer/server.log 2>&1 &
+          server=$!
+          trap 'kill "$server"; rm -rf "$fixture"' EXIT
+          xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme "Kyoto Agent" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ios CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
+          for attempt in {1..60}; do
+            test -s "$fixture/port" && break
+            kill -0 "$server" || { cat build/ios-composer/server.log; exit 1; }
+            sleep 1
+          done
+          test -s "$fixture/port" || { cat build/ios-composer/server.log; exit 1; }
+          port=$(cat "$fixture/port")
+          for family in iPhone iPad; do
+            device=$(xcrun simctl list devices available --json | FAMILY="$family" python3 -c 'import json, os, sys; print(next(d["udid"] for runtime, devices in json.load(sys.stdin)["devices"].items() if runtime.startswith("com.apple.CoreSimulator.SimRuntime.iOS-26-") for d in devices if d["name"].startswith(os.environ["FAMILY"])))')
+            xcrun simctl boot "$device"
+            xcrun simctl bootstatus "$device" -b
+            xcrun simctl keychain "$device" add-root-cert "$fixture/cert.pem"
+            xcrun simctl install "$device" 'build/ios/Build/Products/Debug-iphonesimulator/Kyoto Agent.app'
+            xcrun simctl ui "$device" appearance light
+            if [ "$family" = iPad ]; then
+              xcrun simctl ui "$device" appearance dark
+              xcrun simctl ui "$device" content_size accessibility-large
+            fi
+            export TEST_RUNNER_COMPOSER_PAIRING_URL="kyotoagent://127.0.0.1:$port?token=composer-ui-test"
+            result=0
+            xcodebuild -project ios/KyotoAgent/KyotoAgent.xcodeproj -scheme "Kyoto Agent" -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath build/ios -resultBundlePath "build/ios-composer/$family.xcresult" -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test-without-building || result=$?
+            xcrun simctl io "$device" screenshot "build/ios-composer/$family.png"
+            xcrun xcresulttool export attachments --path "build/ios-composer/$family.xcresult" --output-path "build/ios-composer/$family-attachments"
+            test "$result" -eq 0
+            xcrun simctl shutdown "$device"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ios-simulator-smoke
-          path: build/ios-smoke
+          path: |
+            build/ios-smoke
+            build/ios-composer
           if-no-files-found: ignore
