@@ -423,7 +423,12 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         }
     }
     if child {
-        tools.retain(|tool| tool.name != "ask" && tool.name != "spawn_subagent");
+        tools.retain(|tool| {
+            !matches!(
+                tool.name.as_str(),
+                "ask" | "spawn_subagent" | "get_closeout" | "run_closeout"
+            )
+        });
     }
     tools
 }
@@ -1742,7 +1747,7 @@ impl Runner {
                 .ok()
                 .flatten(),
             &events,
-            meta.show_closeout,
+            meta.show_closeout && meta.parent_id.is_none(),
             Some(state.tools.workspace()),
             meta.base_ref_name.as_deref(),
         );
@@ -2071,11 +2076,12 @@ mod tests {
     }
 
     #[test]
-    fn a_child_tool_list_drops_ask_and_spawn_subagent() {
+    fn a_child_tool_list_drops_questions_delegation_and_closeout() {
         let child = names(true);
         assert!(child.iter().any(|name| name == "finish"));
         assert!(child.iter().any(|name| name == "read_file"));
-        assert!(child.iter().any(|name| name == "get_closeout"));
+        assert!(!child.iter().any(|name| name == "get_closeout"));
+        assert!(!child.iter().any(|name| name == "run_closeout"));
         assert!(!child.iter().any(|name| name == "ask"));
         assert!(!child.iter().any(|name| name == "spawn_subagent"));
         let parent = names(false);

@@ -35,7 +35,7 @@ pub(super) async fn run_turn(
     maybe_title(turn);
 
     let requested = session.meta()?.requested_workspace;
-    let policy = if session.meta()?.closeout_reviewer {
+    let policy = if session.meta()?.parent_id.is_some() {
         Ok(None)
     } else {
         turn.config.closeout_for(&workspace, requested.as_deref())

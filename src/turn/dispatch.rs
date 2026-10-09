@@ -85,6 +85,8 @@ pub(super) async fn execute_tool(
     let profile = session.meta().ok().and_then(|meta| meta.profile);
     if !config.tool_allowed(profile.as_deref(), call.name.as_str())
         || (session.meta()?.closeout_reviewer && !reviewer_tool(&call.name))
+        || (session.meta()?.parent_id.is_some()
+            && matches!(call.name.as_str(), "get_closeout" | "run_closeout"))
     {
         return Ok(ToolOutcome {
             is_error: true,

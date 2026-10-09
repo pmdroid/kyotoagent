@@ -250,22 +250,16 @@ fn agents_block(agents: &str) -> String {
     block
 }
 
-fn closeout_block(closeout: Option<&CloseoutFile>, child: bool) -> String {
+fn closeout_block(closeout: Option<&CloseoutFile>) -> String {
     let Some(_) = closeout else {
         return String::new();
     };
     let mut suffix = String::from(
         "This workspace has closeout checks. After changes and before finishing, call `get_closeout` to discover the required checks and their current status. Run each pending ID in order with `run_closeout`, then call `get_closeout` again. The run_closeout tool runs matching setup steps before checks. Pass a different model to run_closeout when a review has different_model set. Further workspace edits can make passed checks stale. The turn cannot finish until every required check has passed. If blocked is non-null, stop retrying and report the blocker.\n",
     );
-    if child {
-        suffix.push_str(
-            "If a required check fails, fix it and call run_closeout again. If you cannot fix a required check, call finish with the error and what you tried.\n\n",
-        );
-    } else {
-        suffix.push_str(
-            "If a required check fails, fix it and call run_closeout again. If you cannot fix it, call ask with the error and what you tried.\n\n",
-        );
-    }
+    suffix.push_str(
+        "If a required check fails, fix it and call run_closeout again. If you cannot fix it, call ask with the error and what you tried.\n\n",
+    );
     suffix
 }
 
@@ -304,7 +298,7 @@ pub fn prompt_parts(
     prefix.push_str(&agents_block(agents));
 
     let skills_block = skills_catalog(skills, context_length);
-    let mut suffix = closeout_block(closeout, false);
+    let mut suffix = closeout_block(closeout);
     suffix.push_str(FINISH_LINE);
     suffix.push_str(ARTIFACT_LINE);
     suffix.push_str(DELEGATE_LINE);
@@ -339,7 +333,7 @@ pub fn system_prompt(
 pub fn subagent_prompt(
     workspace: &str,
     skills: &[SkillEntry],
-    closeout: Option<&CloseoutFile>,
+    _closeout: Option<&CloseoutFile>,
     agents: &str,
     context_length: Option<u64>,
 ) -> String {
@@ -356,7 +350,7 @@ pub fn subagent_prompt(
     text.push('\n');
     text.push_str(&agents_block(agents));
     text.push_str(&skills_catalog(skills, context_length));
-    text.push_str(&closeout_block(closeout, true));
+    text.push_str("The parent agent owns workspace closeout checks. Do not run closeout checks. Report failures and questions only to the parent through `finish`, never to the user.\n\n");
     text.push_str(ARTIFACT_LINE);
     text
 }
@@ -832,7 +826,8 @@ mod tests {
         assert!(prompt.contains("pnpm test"), "{prompt}");
         assert!(prompt.contains("review"), "{prompt}");
         assert!(!prompt.contains("Fix the failing test"), "{prompt}");
-        assert!(prompt.contains("`get_closeout`"), "{prompt}");
+        assert!(!prompt.contains("`get_closeout`"), "{prompt}");
+        assert!(!prompt.contains("`run_closeout`"), "{prompt}");
         assert!(prompt.contains("You work for the parent agent"), "{prompt}");
         assert!(
             prompt.contains(
@@ -847,7 +842,7 @@ mod tests {
         assert!(!prompt.contains("call `ask`"), "{prompt}");
         assert!(
             prompt.contains(
-                "If you cannot fix a required check, call finish with the error and what you tried."
+                "Report failures and questions only to the parent through `finish`, never to the user."
             ),
             "{prompt}"
         );
