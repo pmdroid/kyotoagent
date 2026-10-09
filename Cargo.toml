@@ -20,16 +20,27 @@ include = [
     "/scripts/kyotoagent.service.in",
     "/scripts/ai.kyotoagent.serve.plist.in",
     "/scripts/capture-frames.py",
+    "/scripts/verify.py",
+    "/scripts/test_verify.py",
     "/docs/*.md",
     "/ios/Fixtures/*.json",
     "/.agents/AGENTS.md",
     "/.agents/skills/verify-kyotoagent/**",
+    "/.agents/skills/verify-project/**",
     "/.agents/skills/kyoto-plan/**",
     "/.agents/skills/verify-kyotoagent-tui/**",
     "/.kyotoagent/closeout.yaml",
     "/.acpdash/closeout.yaml",
     "/.github/workflows/ci.yml",
 ]
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
 
 [[bin]]
 name = "kyoto"
