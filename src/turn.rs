@@ -1512,6 +1512,8 @@ impl Runner {
         if let Some(running) = turn.as_ref() {
             running.cancel.send_replace(true);
             state.tools.gate().cancel();
+        } else if state.tools.gate().is_held_open() || state.tools.gate().is_held_open_question() {
+            let _ = settle_recovered_cancel(&state);
         }
         drop(turn);
         state.compact.cancel();

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub(crate) const MAX_TOOL_CALLS_PER_RESUME: u32 = 100;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalStatus {
@@ -32,6 +34,8 @@ pub struct Goal {
     pub repairs_since_resume: u32,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub repeated_gap: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub tool_calls_since_resume: u32,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -127,6 +131,7 @@ impl Goal {
             blocked_streak: 0,
             repairs_since_resume: 0,
             repeated_gap: 0,
+            tool_calls_since_resume: 0,
         }
     }
 
@@ -136,6 +141,18 @@ impl Goal {
         self.blocked_streak = 0;
         self.repairs_since_resume = 0;
         self.repeated_gap = 0;
+        self.tool_calls_since_resume = 0;
+    }
+
+    pub fn begin_tool_call(&mut self) {
+        if self.status != GoalStatus::Active {
+            return;
+        }
+        if self.tool_calls_since_resume >= MAX_TOOL_CALLS_PER_RESUME {
+            self.pause("Reached the safety limit of 100 tool calls since resume. Inspect the latest command results and remaining work before continuing.");
+        } else {
+            self.tool_calls_since_resume += 1;
+        }
     }
 
     pub fn evaluate(&mut self, verdict: GoalEvaluation) {
@@ -333,6 +350,32 @@ mod tests {
         assert_eq!(goal.tokens_used, 12);
         assert_eq!(goal.repairs_since_resume, 0);
         assert_eq!(goal.repeated_gap, 0);
+    }
+
+    #[test]
+    fn tool_call_limit_survives_reload_and_only_resume_resets_it() {
+        let mut goal = Goal::new("Fix", None);
+        for _ in 0..MAX_TOOL_CALLS_PER_RESUME {
+            goal.begin_tool_call();
+        }
+        assert_eq!(goal.status, GoalStatus::Active);
+        let mut goal: Goal = serde_json::from_str(&serde_json::to_string(&goal).unwrap()).unwrap();
+        goal.evaluate(GoalEvaluation {
+            decision: GoalDecision::Continue,
+            evidence: "Still failing".into(),
+            next_step: "Inspect the failure".into(),
+            blocker_key: String::new(),
+        });
+        goal.begin_tool_call();
+        assert_eq!(goal.status, GoalStatus::Paused);
+        assert_eq!(goal.tool_calls_since_resume, MAX_TOOL_CALLS_PER_RESUME);
+        let id = goal.id.clone();
+        goal.resume();
+        assert_eq!(goal.id, id);
+        assert_eq!(goal.tool_calls_since_resume, 0);
+        goal.begin_tool_call();
+        assert_eq!(goal.status, GoalStatus::Active);
+        assert_eq!(goal.tool_calls_since_resume, 1);
     }
 
     #[test]
