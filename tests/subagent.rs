@@ -808,6 +808,65 @@ async fn isolation_none_writes_through_the_permission_gate() {
 }
 
 #[tokio::test]
+async fn a_child_cannot_run_closeout_or_prompt_the_user_after_writing() {
+    let fixture = Fixture::new(
+        "child-closeout",
+        vec![Canned::Json(text_reply("Noted."))],
+        vec![
+            Canned::Json(tool_call(
+                "write_file",
+                serde_json::json!({ "path": "note.txt", "contents": "child work" }),
+            )),
+            Canned::Json(tool_call("get_closeout", serde_json::json!({}))),
+            Canned::Json(tool_call(
+                "run_closeout",
+                serde_json::json!({ "id": "test" }),
+            )),
+            Canned::Json(finish_reply("Need the parent to choose a name.", "")),
+        ],
+    );
+    let workspace = fixture.add_session("parent");
+    fs::create_dir_all(workspace.join(".kyotoagent")).unwrap();
+    fs::write(
+        workspace.join(".kyotoagent/closeout.yaml"),
+        "version: 1\nretry:\n  maxFailedAttemptsPerItem: 1\nitems:\n  - id: test\n    kind: command\n    run: sh -c 'touch check-ran; exit 1'\n    hint: Fix the failing test\n",
+    ).unwrap();
+    let id = child_id(
+        &fixture
+            .runner
+            .spawn_subagent(
+                "parent",
+                &spawn_args(serde_json::json!({ "isolation": "none" })),
+            )
+            .await,
+    );
+    fixture.wait_status(&id, Status::Waiting).await;
+    fixture.runner.answer(&id, Answer::allow_once()).unwrap();
+    fixture.wait_status(&id, Status::Idle).await;
+    assert_eq!(
+        fs::read_to_string(workspace.join("note.txt")).unwrap(),
+        "child work"
+    );
+    assert!(!workspace.join("check-ran").exists());
+    let events = Session::at(&fixture.root.join(&id)).events().unwrap();
+    assert!(events.iter().all(|event| event.kind != EventKind::Question));
+    for tool in ["get_closeout", "run_closeout"] {
+        assert!(events
+            .iter()
+            .any(|event| event.kind == EventKind::ToolResult
+                && event.body.get("tool").and_then(|value| value.as_str()) == Some(tool)
+                && event.body.get("output").and_then(|value| value.as_str())
+                    == Some(format!("unknown tool: {tool}").as_str())));
+    }
+    let view = fixture.runner.view(&id).unwrap();
+    assert!(view.closeout.is_empty());
+    assert!(events.iter().any(|event| event.kind == EventKind::Result
+        && event.body.get("text").and_then(|value| value.as_str())
+            == Some("Need the parent to choose a name.")));
+    assert!(!fixture.runner.view("parent").unwrap().closeout.is_empty());
+}
+
+#[tokio::test]
 async fn a_child_ask_is_refused_and_finish_wakes_the_parent() {
     let gate = HoldGate::new();
     let tail = kyotoagent::chat::completion_as_sse(&finish_reply("found 3 files", "grep exit 0"));
