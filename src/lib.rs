@@ -52,6 +52,7 @@ pub mod events;
 pub mod goal;
 pub mod hooks;
 pub mod mock;
+mod operator_config;
 pub mod pairing;
 pub mod permit;
 pub mod prompt;

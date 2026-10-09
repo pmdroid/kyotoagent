@@ -38,6 +38,12 @@ impl Tools {
             }
             "write_file" | "search_replace" => {
                 let target = self.target(string("path"))?;
+                crate::operator_config::check_write(&target.absolute).map_err(|source| {
+                    ToolError::Io {
+                        path: target.absolute.clone(),
+                        source,
+                    }
+                })?;
                 let path = display(&target.absolute);
                 if self.allowed_write(&path)? {
                     None
