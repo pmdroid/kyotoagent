@@ -176,6 +176,31 @@ pub(super) async fn execute_tool(
                 },
             }
         }
+        "generate_image" => {
+            let request: crate::tools::ImageGeneration = match serde_json::from_value(args.clone())
+            {
+                Ok(request) => request,
+                Err(error) => return Ok(failed(format!("generate_image: {error}"))),
+            };
+            let tools = tools.clone();
+            let turn_id = turn_id.to_string();
+            let config = config.clone();
+            let root = turn.root.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                tools.generate_image_in_root(&turn_id, &config, request, root.as_deref())
+            })
+            .await?;
+            match result {
+                Ok(write) => ToolOutcome {
+                    is_error: false,
+                    images: Vec::new(),
+                    summary: write.summary(),
+                    wrote: (!write.denied).then(|| relative_to_workspace(&workspace, &write.path)),
+                    failure: None,
+                },
+                Err(error) => failed(error.to_string()),
+            }
+        }
         "web_fetch" => {
             let url = string_arg(args, "url").unwrap_or_default();
             let max_bytes = args.get("max_bytes").and_then(Value::as_u64);
@@ -610,11 +635,38 @@ pub(super) async fn execute_tool(
             }
             let text = string_arg(args, "text").unwrap_or_default();
             let choices = choices_arg(args);
+            let visual_tools = tools.clone();
+            let visual_turn = turn_id.to_string();
+            let visual_args = args.clone();
+            let visuals = tokio::task::spawn_blocking(move || {
+                crate::question::prepare(&visual_tools, &visual_turn, &visual_args)
+            })
+            .await?;
+            let visuals = match visuals {
+                Ok(visuals) => visuals,
+                Err(error) => {
+                    return Ok(ToolOutcome {
+                        is_error: true,
+                        images: Vec::new(),
+                        summary: error,
+                        wrote: None,
+                        failure: None,
+                    })
+                }
+            };
             let gate = tools.gate().clone();
             let turn_id = turn_id.to_string();
-            let result =
-                tokio::task::spawn_blocking(move || gate.ask_question(&turn_id, &text, &choices))
-                    .await?;
+            let result = tokio::task::spawn_blocking(move || {
+                gate.ask_visual_question(
+                    &turn_id,
+                    crate::events::QuestionBody {
+                        text,
+                        choices,
+                        visuals,
+                    },
+                )
+            })
+            .await?;
             match result {
                 Ok(answer) => ToolOutcome {
                     is_error: false,

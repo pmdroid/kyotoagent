@@ -34,7 +34,6 @@ public final class AppModel {
     public private(set) var dismissedQuestion: String?
     public private(set) var dismissedPermission: String?
     public private(set) var openPanes: Set<SessionPane>
-    public private(set) var banners: [SessionBanner] = []
     public private(set) var openedFile: FileSheet?
     public private(set) var fileFailure: String?
     public private(set) var openedTask: TaskDetail?
@@ -57,8 +56,6 @@ public final class AppModel {
     private var requestContext = UUID()
     private var fileRequest = UUID()
     private var taskRequest = UUID()
-    private var hasSessionList = false
-    private var nextBanner = 0
     private var openTaskId: String?
 
     public init(
@@ -317,10 +314,6 @@ public final class AppModel {
             openPanes.remove(pane)
         }
         panes.open = openPanes
-    }
-
-    public func dismissBanner(_ id: Int) {
-        banners.removeAll { $0.id == id }
     }
 
     public func openFile(_ path: String) async {
@@ -670,11 +663,11 @@ public final class AppModel {
         await refreshOpenView()
     }
 
-    public func answer(_ choice: String) async {
+    public func answer(_ choice: String, eventId expectedEventId: String? = nil) async {
         guard connected, !answering, !choice.isEmpty, let id = selection, let client else {
             return
         }
-        guard let eventId = answerSheet?.eventId else {
+        guard let eventId = answerSheet?.eventId, expectedEventId == nil || expectedEventId == eventId else {
             return
         }
         answering = true
@@ -734,18 +727,7 @@ public final class AppModel {
     }
 
     private func replaceSessions(_ listed: [Session]) {
-        if hasSessionList {
-            appendBanners(sessionTransitions(previous: sessions, next: listed, openId: selection))
-        }
         sessions = listed
-        hasSessionList = true
-    }
-
-    private func appendBanners(_ raised: [SessionTransition]) {
-        for transition in raised {
-            banners.append(SessionBanner(id: nextBanner, sessionId: transition.sessionId, phrase: transition.phrase))
-            nextBanner += 1
-        }
     }
 
     private func currentServer(_ context: UUID, server: URL) -> Bool {
@@ -1011,12 +993,6 @@ public final class AppModel {
     private var currentYolo: Bool {
         sessions.first { $0.id == selection }?.yolo ?? false
     }
-}
-
-nonisolated public struct SessionBanner: Equatable, Sendable, Identifiable {
-    public var id: Int
-    public var sessionId: String
-    public var phrase: String
 }
 
 func serveBase(_ text: String) -> URL? {

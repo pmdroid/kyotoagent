@@ -1,5 +1,67 @@
 use super::*;
 
+#[tokio::test]
+async fn visual_question_keeps_choice_keys_and_free_text_while_cycling_previews() {
+    let mut app = waiting_question("");
+    let client = Client::at(PathBuf::from("/tmp/absent-visual-test.sock"));
+    let mut image =
+        crate::attachment::ImageAttachment::from_bytes("A", crate::splash::PNG).unwrap();
+    let visual = crate::question::QuestionVisual {
+        title: "A".into(),
+        alt: "Plan then review".into(),
+        image: image.clone(),
+        source: None,
+    };
+    image.name = "B".into();
+    app.cards = vec![Card::Question {
+        text: "Which route?".into(),
+        choices: vec![
+            Choice {
+                label: "A".into(),
+                marked: false,
+            },
+            Choice {
+                label: "B".into(),
+                marked: false,
+            },
+        ],
+        answer: None,
+        visuals: vec![
+            visual,
+            crate::question::QuestionVisual {
+                title: "B".into(),
+                alt: "Review later".into(),
+                image,
+                source: None,
+            },
+        ],
+    }];
+    app.question_id = Some("q1".into());
+    let effect = keystroke(&app, ctrl('v')).unwrap();
+    apply(&mut app, &client, effect).await.unwrap();
+    assert!(matches!(
+        screen_model(&app).overlay,
+        Some(Overlay::VisualQuestion { .. })
+    ));
+    assert_eq!(
+        keystroke(&app, press(KeyCode::Char('1'))),
+        Some(Effect::Choose(0))
+    );
+    apply(&mut app, &client, Effect::Paste("Custom route".into()))
+        .await
+        .unwrap();
+    assert!(
+        matches!(screen_model(&app).overlay, Some(Overlay::VisualQuestion { prompt, .. }) if prompt == "Custom route")
+    );
+    let next = keystroke(&app, ctrl('v')).unwrap();
+    apply(&mut app, &client, next).await.unwrap();
+    assert_eq!(app.open_image.as_ref().unwrap().name, "B");
+    close_overlay(&mut app);
+    assert!(app.open_image.is_none());
+    assert!(app.overlay);
+    assert_eq!(app.question_text, "Custom route");
+}
+
 #[test]
 fn pane_close_buttons_hide_only_the_clicked_pane_and_allow_reopening() {
     for pane in RightPane::ORDER {
@@ -2964,6 +3026,31 @@ fn a_click_on_a_todo_file_opens_the_file_effect() {
 }
 
 #[test]
+fn markdown_file_clicks_decode_paths_in_cards_tables_and_overlays() {
+    let path = ".scratch/queue%20definition.md";
+    for text in [
+        format!("[Queue]({path})"),
+        format!("| Document |\n| --- |\n| [Queue]({path}) |"),
+    ] {
+        let mut app = todos_app(false);
+        app.cards = vec![Card::result(&text)];
+        let area = Rect::new(0, 0, 76, 24);
+        for overlay in [false, true] {
+            if overlay {
+                app.open_text = Some(text.clone());
+                app.overlay = true;
+            }
+            let model = screen_model(&app);
+            let (x, y) = hit(&model, area, screen::link_at, path);
+            assert_eq!(
+                released_click(&model, area, x, y),
+                Some(Effect::OpenFile(".scratch/queue definition.md".into()))
+            );
+        }
+    }
+}
+
+#[test]
 fn a_click_on_a_todo_link_opens_the_url() {
     let mut app = todos_app(true);
     let area = Rect::new(0, 0, 76, 24);
@@ -3657,7 +3744,7 @@ async fn a_large_bracketed_paste_is_a_clickable_preview_with_the_original_draft(
     assert_eq!(model.pasted_text, Some(format!("before {text}!")));
     let rect = screen::split_of(&model, app.area).input;
     assert!(matches!(
-        press_at(&model, app.area, rect.x, rect.y),
+        press_at(&model, app.area, rect.x + 10, rect.y),
         Some(Effect::OpenText(_))
     ));
     apply(&mut app, &client, Effect::Backspace).await.unwrap();
@@ -4346,4 +4433,180 @@ fn toast_mouse_clicks_do_not_reach_the_underlying_pane() {
         mouse(click(rect.right() - 1, rect.y), &model, app.area),
         Some(Effect::DismissNotice)
     );
+}
+
+#[tokio::test]
+async fn composer_commands_and_skills_share_a_scrollable_completion_list() {
+    let mut app = idle_with_skills();
+    app.ask = "/".into();
+    let names: Vec<_> = picker_matches(&app)
+        .into_iter()
+        .map(|row| row.name)
+        .collect();
+    for name in [
+        "model",
+        "effort",
+        "goal",
+        "server",
+        "proof",
+        "preflight",
+        "yolo",
+    ] {
+        assert!(names.iter().any(|found| found == name));
+    }
+    app.skills.push(SkillEntry {
+        name: "model".into(),
+        ..SkillEntry::default()
+    });
+    assert_eq!(
+        picker_matches(&app)
+            .iter()
+            .filter(|row| row.name == "model")
+            .count(),
+        1
+    );
+    app.skill_highlight = names.len() - 1;
+    let picker = screen_model(&app).skill_picker.unwrap();
+    assert_eq!(picker.rows[picker.selected].name, "yolo");
+    assert!(picker.rows.len() <= skills::PICKER_LIMIT);
+    app.ask = "/mod existing-id".into();
+    let client = Client::at(PathBuf::from("/unused"));
+    let effect = keystroke(&app, press(KeyCode::Tab)).unwrap();
+    assert_eq!(effect, Effect::Complete);
+    apply(&mut app, &client, effect).await.unwrap();
+    assert_eq!(app.ask, "/model existing-id");
+    assert!(screen_model(&app).skill_picker.is_none());
+    app.ask = "/todo".into();
+    app.ask_cursor = None;
+    apply(&mut app, &client, Effect::Submit).await.unwrap();
+    assert_eq!(app.ask, "/todos ");
+    apply(&mut app, &client, Effect::Submit).await.unwrap();
+    assert!(app.ask.is_empty());
+    assert!(app.right_panes.contains(&RightPane::Todos));
+}
+
+async fn composer_key(app: &mut App, code: KeyCode) {
+    let effect = keystroke(app, press(code)).expect("composer key");
+    apply(app, &Client::at(PathBuf::from("/unused")), effect)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn composer_edits_graphemes_at_the_caret_and_preserves_the_suffix() {
+    let mut app = idle_with_skills();
+    app.ask = "a👩‍💻e\u{301}界z".into();
+    composer_key(&mut app, KeyCode::Left).await;
+    composer_key(&mut app, KeyCode::Backspace).await;
+    assert_eq!(app.ask, "a👩‍💻e\u{301}z");
+    composer_key(&mut app, KeyCode::Left).await;
+    composer_key(&mut app, KeyCode::Delete).await;
+    assert_eq!(app.ask, "a👩‍💻z");
+    composer_key(&mut app, KeyCode::Backspace).await;
+    composer_key(&mut app, KeyCode::Char('!')).await;
+    assert_eq!(app.ask, "a!z");
+    composer_key(&mut app, KeyCode::Home).await;
+    composer_key(&mut app, KeyCode::Char('[')).await;
+    composer_key(&mut app, KeyCode::End).await;
+    composer_key(&mut app, KeyCode::Char(']')).await;
+    assert_eq!(app.ask, "[a!z]");
+    app.ask = "first\nhello world suffix".into();
+    app.ask_cursor = Some("first\nhello world".len());
+    edit_delete(&mut app, Effect::DeleteWord);
+    assert_eq!(app.ask, "first\nhello  suffix");
+    edit_delete(&mut app, Effect::DeleteLine);
+    assert_eq!(app.ask, "first\n suffix");
+    composer_key(&mut app, KeyCode::Up).await;
+    composer_key(&mut app, KeyCode::Char('>')).await;
+    assert_eq!(app.ask, ">first\n suffix");
+}
+
+#[tokio::test]
+async fn composer_mouse_and_keyboard_agree_across_wrapping_and_resize() {
+    let mut app = idle_with_skills();
+    app.ask = "界e\u{301}👩‍💻 hello\n".repeat(12);
+    let client = Client::at(PathBuf::from("/unused"));
+    for width in [20, 76, 120] {
+        app.area = Rect::new(0, 0, width, 15);
+        for target in [0, "界".len(), app.ask.len() / 2, app.ask.len()] {
+            app.ask_cursor = Some(target);
+            let model = screen_model(&app);
+            let cursor = model.bottom_cursor.unwrap();
+            let backend = ratatui::backend::TestBackend::new(width, 15);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| screen::render(&model, app.area, frame))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let (x, y) = (0..15)
+                .flat_map(|y| (0..width).map(move |x| (x, y)))
+                .find(|&(x, y)| {
+                    buffer[(x, y)].symbol() == "█"
+                        || buffer[(x, y)]
+                            .modifier
+                            .contains(ratatui::style::Modifier::REVERSED)
+                })
+                .expect("visible caret");
+            let effect = mouse(click(x, y), &model, app.area).unwrap();
+            assert_eq!(effect, Effect::SetCursor(cursor));
+            apply(&mut app, &client, effect).await.unwrap();
+            assert_eq!(editor::cursor(&app), cursor);
+        }
+    }
+    app.ask = "hello world".into();
+    app.ask_cursor = None;
+    let model = screen_model(&app);
+    let input = screen::split_of(&model, app.area).input;
+    let effect = mouse(click(input.x + 10, input.y + 1), &model, app.area).unwrap();
+    apply(&mut app, &client, effect).await.unwrap();
+    composer_key(&mut app, KeyCode::Char('X')).await;
+    assert_eq!(app.ask, "hello Xworld");
+}
+
+#[tokio::test]
+async fn composer_paste_ranges_follow_edits_before_and_after_the_preview() {
+    let mut app = idle_with_skills();
+    app.ask = "before after".into();
+    app.ask_cursor = Some(7);
+    let text = "界\n".repeat(30);
+    let client = Client::at(PathBuf::from("/unused"));
+    apply(&mut app, &client, Effect::Paste(text.clone()))
+        .await
+        .unwrap();
+    assert_eq!(app.ask, format!("before {text}after"));
+    composer_key(&mut app, KeyCode::Left).await;
+    assert_eq!(editor::cursor(&app), 7);
+    composer_key(&mut app, KeyCode::Char('!')).await;
+    assert_eq!(app.pastes[0].start, 8);
+    let model = screen_model(&app);
+    assert_eq!(model.bottom, "before ![Pasted input: 60 chars]after");
+    let position = model.pasted_ranges[0].end;
+    apply(&mut app, &client, Effect::SetCursor(position))
+        .await
+        .unwrap();
+    composer_key(&mut app, KeyCode::Char('?')).await;
+    assert_eq!(app.ask, format!("before !{text}?after"));
+    composer_key(&mut app, KeyCode::Backspace).await;
+    composer_key(&mut app, KeyCode::Backspace).await;
+    assert_eq!(app.ask, "before !after");
+    assert!(app.pastes.is_empty());
+}
+
+#[tokio::test]
+async fn composer_question_and_popup_drafts_keep_independent_carets() {
+    let mut app = waiting_question("answer here");
+    app.ask = "ask draft".into();
+    composer_key(&mut app, KeyCode::Left).await;
+    composer_key(&mut app, KeyCode::Char('!')).await;
+    assert_eq!(app.question_text, "answer her!e");
+    assert_eq!(app.ask, "ask draft");
+    assert_eq!(app.ask_cursor, None);
+    open_palette(&mut app);
+    assert_ne!(
+        keystroke(&app, press(KeyCode::Left)),
+        Some(Effect::MoveCursor(CursorMove::Left))
+    );
+    close_overlay(&mut app);
+    composer_key(&mut app, KeyCode::Char('?')).await;
+    assert_eq!(app.question_text, "answer her!?e");
 }

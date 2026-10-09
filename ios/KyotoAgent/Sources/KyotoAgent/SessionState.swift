@@ -197,44 +197,6 @@ nonisolated public struct SessionSheets: Equatable, Sendable {
     }
 }
 
-nonisolated public struct SessionTransition: Equatable, Sendable {
-    public var sessionId: String
-    public var phrase: String
-}
-
-nonisolated public func bannerPhrase(previous: Status?, status: Status, waiting: String?) -> String? {
-    switch (previous, status) {
-    case (nil, .waiting), (.working, .waiting), (.idle, .waiting):
-        if waiting == "question" {
-            return "needs a question"
-        }
-        if waiting == "enhance" {
-            return "needs a prompt"
-        }
-        return "needs a permission"
-    case (.working, .idle), (.waiting, .idle):
-        return "finished"
-    default:
-        return nil
-    }
-}
-
-nonisolated public func sessionTransitions(
-    previous: [Session],
-    next: [Session],
-    openId: String?
-) -> [SessionTransition] {
-    let prior = Dictionary(previous.map { ($0.id, $0.status) }, uniquingKeysWith: { _, latest in latest })
-    var raised: [SessionTransition] = []
-    for session in next where session.id != openId {
-        guard let phrase = bannerPhrase(previous: prior[session.id], status: session.status, waiting: session.waiting) else {
-            continue
-        }
-        raised.append(SessionTransition(sessionId: session.id, phrase: phrase))
-    }
-    return raised
-}
-
 nonisolated public func sessionListPolls(connected: Bool, sceneIsActive: Bool) -> Bool {
     connected && sceneIsActive
 }

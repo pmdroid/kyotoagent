@@ -106,34 +106,6 @@ final class SessionStateTests: XCTestCase {
         XCTAssertNil(SessionSheets(view).context)
     }
 
-    func testBannerPhrasesFollowTheTwoLists() throws {
-        XCTAssertEqual(bannerPhrase(previous: .working, status: .waiting, waiting: "question"), "needs a question")
-        XCTAssertEqual(bannerPhrase(previous: .idle, status: .waiting, waiting: "permission"), "needs a permission")
-        XCTAssertEqual(bannerPhrase(previous: nil, status: .waiting, waiting: nil), "needs a permission")
-        XCTAssertEqual(bannerPhrase(previous: .working, status: .waiting, waiting: "enhance"), "needs a prompt")
-        XCTAssertEqual(bannerPhrase(previous: .idle, status: .waiting, waiting: "enhance"), "needs a prompt")
-        XCTAssertEqual(bannerPhrase(previous: nil, status: .waiting, waiting: "enhance"), "needs a prompt")
-        XCTAssertEqual(bannerPhrase(previous: .working, status: .idle, waiting: nil), "finished")
-        XCTAssertEqual(bannerPhrase(previous: .waiting, status: .idle, waiting: "question"), "finished")
-        XCTAssertNil(bannerPhrase(previous: .waiting, status: .waiting, waiting: "permission"))
-        XCTAssertNil(bannerPhrase(previous: .idle, status: .working, waiting: nil))
-        XCTAssertNil(bannerPhrase(previous: .working, status: .working, waiting: nil))
-        XCTAssertNil(bannerPhrase(previous: nil, status: .idle, waiting: nil))
-    }
-
-    func testTheOpenSessionDoesNotBannerItself() throws {
-        let previous = [
-            try session("c0ffee01", .working),
-            try session("a11a0001", .working),
-        ]
-        let next = [
-            try session("c0ffee01", .waiting, waiting: "question"),
-            try session("a11a0001", .idle),
-        ]
-        let raised = sessionTransitions(previous: previous, next: next, openId: "a11a0001")
-        XCTAssertEqual(raised, [SessionTransition(sessionId: "c0ffee01", phrase: "needs a question")])
-    }
-
     func testTheListPollStopsWhenTheAppIsSuspended() throws {
         XCTAssertFalse(sessionListPolls(connected: true, sceneIsActive: false))
         XCTAssertFalse(openViewPolls(connected: true, sceneIsActive: false, sessionOpen: true))
@@ -159,7 +131,7 @@ final class SessionStateTests: XCTestCase {
         XCTAssertTrue(panes.contains("file-truncated"))
         XCTAssertTrue(panes.contains("task-tail"))
         XCTAssertTrue(panes.contains("closeout-tail"))
-        XCTAssertTrue(panes.contains("session-banner"))
+        XCTAssertFalse(panes.contains("session-banner"))
         XCTAssertTrue(panes.contains("pane-column"))
         XCTAssertTrue(panes.contains("file-sheet"))
         let transcript = try String(contentsOf: packageRoot().appendingPathComponent("App/TranscriptScreen.swift"), encoding: .utf8)
@@ -676,48 +648,6 @@ final class SessionClientTests: XCTestCase {
         XCTAssertEqual(TaskDetail(detail).tail, "test result: ok. 1 passed\n")
         XCTAssertEqual(TaskDetail(detail).exit, 0)
         XCTAssertEqual(TaskDetail(detail).state, .exited)
-    }
-
-    func testAnotherSessionBannersAndTheOpenOneDoesNot() async throws {
-        var first = try fixture([Session].self, "sessions.json")
-        first[0].status = .idle
-        first[0].waiting = nil
-        first[1].status = .working
-        first[1].waiting = nil
-        var second = first
-        second[0].status = .waiting
-        second[0].waiting = "permission"
-        second[1].status = .waiting
-        second[1].waiting = "question"
-        var third = second
-        third[0].status = .working
-        third[0].waiting = nil
-        var fourth = third
-        fourth[0].status = .idle
-        let bodies = Locked([
-            try JSONEncoder().encode(first),
-            try JSONEncoder().encode(second),
-            try JSONEncoder().encode(third),
-            try JSONEncoder().encode(fourth),
-        ])
-        let gate = Gate()
-        gate.handler = { _ in
-            HostResponse(status: 200, body: bodies.take())
-        }
-        let model = model(directory: temporaryDirectory(), gate: gate)
-        model.baseURLText = sampleBase()
-        await model.connect()
-        model.open("a11a0001")
-        XCTAssertTrue(model.banners.isEmpty)
-        await model.refreshSessions()
-        XCTAssertEqual(model.banners.map(\.phrase), ["needs a permission"])
-        XCTAssertEqual(model.banners.map(\.sessionId), ["c0ffee01"])
-        await model.refreshSessions()
-        XCTAssertEqual(model.banners.map(\.phrase), ["needs a permission"])
-        await model.refreshSessions()
-        XCTAssertEqual(model.banners.map(\.phrase), ["needs a permission", "finished"])
-        model.dismissBanner(model.banners[0].id)
-        XCTAssertEqual(model.banners.map(\.phrase), ["finished"])
     }
 
     func testOpenPanesSurviveANewModel() {

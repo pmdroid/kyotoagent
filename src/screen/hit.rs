@@ -58,7 +58,7 @@ pub fn pull_target_at(model: &ScreenModel, area: Rect, column: u16, row: u16) ->
 }
 
 pub fn thinking_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -> bool {
-    if model.phase != Some(Phase::Thinking) {
+    if model.compacting || model.phase != Some(Phase::Thinking) {
         return false;
     }
     let inner = session_inner_of(model, area);
@@ -246,7 +246,10 @@ fn overlay_frame(model: &ScreenModel, area: Rect, overlay: &Overlay) -> Rect {
     } else {
         split_of(model, area).session
     };
-    if matches!(overlay, Overlay::Image { .. }) {
+    if matches!(
+        overlay,
+        Overlay::Image { .. } | Overlay::VisualQuestion { .. }
+    ) {
         return crate::image_preview::popup(pane);
     }
     let width = overlay_inner_width(pane);
@@ -396,6 +399,25 @@ pub(super) fn http_url(value: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+pub fn local_file_link(value: &str) -> Option<String> {
+    if value.is_empty() || value.starts_with('#') || value.starts_with("//") || value.contains(':')
+    {
+        return None;
+    }
+    let mut bytes = value.bytes();
+    let mut decoded = Vec::new();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let high = (bytes.next()? as char).to_digit(16)?;
+            let low = (bytes.next()? as char).to_digit(16)?;
+            decoded.push((high * 16 + low) as u8);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    String::from_utf8(decoded).ok()
 }
 
 pub(super) fn wrote_path_at(

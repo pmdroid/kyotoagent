@@ -47,6 +47,7 @@ pub(super) struct Push {
     root: PathBuf,
     devices: Mutex<Vec<Device>>,
     provider: Option<Provider>,
+    tui_seen: Mutex<Option<std::time::Instant>>,
 }
 
 pub(super) struct Worker(Vec<tokio::task::JoinHandle<()>>);
@@ -63,6 +64,41 @@ struct Notice {
     session_id: String,
     event_id: String,
     kind: EventKind,
+    alert: serde_json::Value,
+}
+
+fn alert(meta: &SessionMeta, event: &Event) -> serde_json::Value {
+    let (reason, field) = match event.kind {
+        EventKind::Question => ("Question needs your answer", "text"),
+        EventKind::Permission => ("Permission approval required", "action"),
+        _ => ("Session finished", "text"),
+    };
+    let title = meta
+        .title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or(&meta.id);
+    let text = event
+        .body
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let body = if text.trim().is_empty() { reason } else { text };
+    serde_json::json!({
+        "title": preview(title, 100),
+        "subtitle": reason,
+        "body": preview(body, 400),
+    })
+}
+
+fn preview(text: &str, limit: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut characters = normalized.chars();
+    let mut preview: String = characters.by_ref().take(limit).collect();
+    if characters.next().is_some() {
+        preview.push('…');
+    }
+    preview
 }
 
 impl Push {
@@ -125,6 +161,7 @@ impl Push {
             root: root.to_owned(),
             devices: Mutex::new(devices),
             provider,
+            tui_seen: Mutex::new(None),
         })
     }
 
@@ -199,8 +236,15 @@ impl Push {
         Worker(vec![poll, worker])
     }
 
+    fn tui_active(&self) -> bool {
+        self.tui_seen
+            .lock()
+            .is_ok_and(|seen| seen.is_some_and(|at| at.elapsed() < Duration::from_secs(15)))
+    }
+
     fn scan(&self, seen: &mut HashMap<String, HashSet<String>>, baseline: bool) -> Vec<Notice> {
         let mut notices = Vec::new();
+        let suppressed = self.tui_active();
         for dir in session_dirs(&self.root) {
             let session = Session::at(&dir);
             let (Ok(meta), Ok(events)) = (session.meta(), session.events()) else {
@@ -209,6 +253,8 @@ impl Push {
             let ids = seen.entry(meta.id.clone()).or_default();
             for event in &events {
                 if baseline
+                    || suppressed
+                    || meta.parent_id.is_some()
                     || !matches!(
                         event.kind,
                         EventKind::Permission | EventKind::Question | EventKind::Result
@@ -223,6 +269,7 @@ impl Push {
                         session_id: meta.id.clone(),
                         event_id: event.id.clone(),
                         kind: event.kind,
+                        alert: alert(&meta, event),
                     });
                 }
             }
@@ -231,7 +278,7 @@ impl Push {
     }
 
     fn current(&self, device: &Device, notice: &Notice) -> bool {
-        if !self.devices.lock().is_ok_and(|v| v.contains(device)) {
+        if self.tui_active() || !self.devices.lock().is_ok_and(|v| v.contains(device)) {
             return false;
         }
         let session = Session::at(&session_dir(&self.root, &notice.session_id));
@@ -256,7 +303,7 @@ impl Push {
                 return;
             };
             let payload = serde_json::json!({
-                "aps": { "alert": { "title": "Kyoto Agent", "body": if notice.kind == EventKind::Result { "A session has finished." } else { "A session needs your attention." } }, "sound": "default" },
+                "aps": { "alert": notice.alert, "sound": "default" },
                 "serverId": device.server_id, "sessionId": notice.session_id,
                 "eventId": notice.event_id, "kind": notice.kind.label()
             });
@@ -296,6 +343,9 @@ impl Push {
 }
 
 fn eligible(event: &Event, events: &[Event], meta: &SessionMeta) -> bool {
+    if meta.parent_id.is_some() {
+        return false;
+    }
     match event.kind {
         EventKind::Result => true,
         EventKind::Permission | EventKind::Question => {
@@ -392,6 +442,13 @@ pub(super) async fn register(
         devices.push(device);
     })?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(super) async fn tui_heartbeat(State(state): State<AppState>) -> StatusCode {
+    if let Ok(mut seen) = state.push.tui_seen.lock() {
+        *seen = Some(std::time::Instant::now());
+    }
+    StatusCode::NO_CONTENT
 }
 
 pub(super) async fn unregister(
@@ -632,6 +689,132 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn alerts_explain_the_event_and_preview_its_content() {
+        let mut meta = SessionMeta::new("s1", Path::new("/tmp"), "model", &now());
+        meta.title = Some("Software Updates".into());
+        for (kind, body, subtitle, text) in [
+            (
+                EventKind::Question,
+                serde_json::json!({"text": "Which device should update?"}),
+                "Question needs your answer",
+                "Which device should update?",
+            ),
+            (
+                EventKind::Permission,
+                serde_json::json!({"action": "Run cargo test", "contents": "secret"}),
+                "Permission approval required",
+                "Run cargo test",
+            ),
+            (
+                EventKind::Result,
+                serde_json::json!({"text": "Updates page created."}),
+                "Session finished",
+                "Updates page created.",
+            ),
+        ] {
+            let event = Event::new("e1", &now(), "t1", kind)
+                .with_body(&body)
+                .unwrap();
+            let alert = alert(&meta, &event);
+            assert_eq!(alert["title"], "Software Updates");
+            assert_eq!(alert["subtitle"], subtitle);
+            assert_eq!(alert["body"], text);
+            assert!(!alert.to_string().contains("secret"));
+        }
+    }
+
+    #[test]
+    fn alert_previews_bound_unicode_and_escaped_payloads() {
+        let mut meta = SessionMeta::new("s1", Path::new("/tmp"), "model", &now());
+        meta.title = Some("🦊".repeat(500));
+        for text in ["🦊".repeat(5000), "\u{0000}".repeat(5000)] {
+            let event = Event::new("e1", &now(), "t1", EventKind::Question)
+                .with_body(&serde_json::json!({"text": text}))
+                .unwrap();
+            let alert = alert(&meta, &event);
+            assert_eq!(alert["body"].as_str().unwrap().chars().count(), 401);
+            assert!(alert["body"].as_str().unwrap().ends_with('…'));
+            assert!(serde_json::to_vec(&alert).unwrap().len() < 3500);
+        }
+        assert_eq!(
+            preview("  First\nsecond\tthird  ", 400),
+            "First second third"
+        );
+        meta.title = Some(" ".into());
+        let event = Event::new("e1", &now(), "t1", EventKind::Permission);
+        assert_eq!(alert(&meta, &event)["title"], "s1");
+        assert_eq!(alert(&meta, &event)["body"], "Permission approval required");
+    }
+
+    #[test]
+    fn subagents_never_produce_notices() {
+        let root = root();
+        let session = Session::at(&root.join("sessions/child"));
+        let mut meta = SessionMeta::new("child", &root, "model", &now());
+        meta.parent_id = Some("parent".into());
+        meta.status = Status::Waiting;
+        session.create(&meta).unwrap();
+        let push = Push::new(&root, None).unwrap();
+        for kind in [
+            EventKind::Permission,
+            EventKind::Question,
+            EventKind::Result,
+        ] {
+            let event = Event::new(&generate_id(), &now(), "t1", kind);
+            session.append(&event).unwrap();
+            assert!(!eligible(&event, &session.events().unwrap(), &meta));
+        }
+        assert!(push.scan(&mut HashMap::new(), false).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn tui_heartbeat_suppresses_server_and_expires_without_replay() {
+        let root = root();
+        let server = Server::new(&root, &Config::default()).unwrap();
+        let session = Session::at(&root.join("sessions/s1"));
+        session
+            .create(&SessionMeta::new("s1", &root, "model", &now()))
+            .unwrap();
+        server.push.update(|v| v.push(device())).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/tui/heartbeat", listener.local_addr().unwrap());
+        let task = tokio::spawn(axum::serve(listener, server.router()).into_future());
+        assert_eq!(
+            reqwest::Client::new()
+                .post(url)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        let event = Event::new("e1", &now(), "t1", EventKind::Result);
+        session.append(&event).unwrap();
+        let notice = Notice {
+            session_id: "s1".into(),
+            event_id: "e1".into(),
+            kind: EventKind::Result,
+            alert: alert(&session.meta().unwrap(), &event),
+        };
+        let mut seen = HashMap::new();
+        assert!(server.push.tui_active());
+        assert!(server.push.scan(&mut seen, false).is_empty());
+        assert!(!server.push.current(&device(), &notice));
+        *server.push.tui_seen.lock().unwrap() =
+            Some(std::time::Instant::now() - Duration::from_secs(16));
+        assert!(!server.push.tui_active());
+        assert!(server.push.scan(&mut seen, false).is_empty());
+        session
+            .append(&Event::new("e2", &now(), "t2", EventKind::Result))
+            .unwrap();
+        assert_eq!(server.push.scan(&mut seen, false).len(), 1);
+        assert!(server.push.current(&device(), &notice));
+        task.abort();
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn fake_http2_apns_checks_headers_payload_retry_and_gone() {
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -670,6 +853,7 @@ mod tests {
             root: root.clone(),
             devices: Mutex::new(vec![device()]),
             provider: Some(p),
+            tui_seen: Mutex::new(None),
         };
         push.deliver(
             &device(),
@@ -677,6 +861,7 @@ mod tests {
                 session_id: "s1".into(),
                 event_id: "e1".into(),
                 kind: EventKind::Result,
+                alert: alert(&session.meta().unwrap(), &session.events().unwrap()[0]),
             },
         )
         .await;
@@ -694,6 +879,9 @@ mod tests {
             .starts_with("Bearer "));
         assert_eq!(payload["serverId"], device().server_id);
         assert_eq!(payload["eventId"], "e1");
+        assert_eq!(payload["aps"]["alert"]["title"], "s1");
+        assert_eq!(payload["aps"]["alert"]["subtitle"], "Session finished");
+        assert_eq!(payload["aps"]["alert"]["body"], "Session finished");
         assert_eq!(payload.as_object().unwrap().len(), 5);
         server.abort();
         fs::remove_dir_all(root).unwrap();

@@ -122,13 +122,15 @@ fn plain_left_down(model: &ScreenModel, area: Rect, column: u16, row: u16) -> Op
 }
 
 pub(super) fn press_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -> Option<Effect> {
-    if screen::split_of(model, area)
-        .input
-        .contains(Position { x: column, y: row })
-    {
-        if let Some(text) = &model.pasted_text {
-            return Some(Effect::OpenText(text.clone()));
+    if let Some(position) = screen::input_cursor_at(model, area, column, row) {
+        if model
+            .pasted_ranges
+            .iter()
+            .any(|range| range.contains(&position))
+        {
+            return model.pasted_text.clone().map(Effect::OpenText);
         }
+        return Some(Effect::SetCursor(position));
     }
     if screen::queue_at(model, area, column, row) {
         return Some(Effect::OpenQueue);
@@ -160,6 +162,9 @@ pub(super) fn press_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -
         Some(screen::TodoTarget::Link(_)) | None => {}
     }
     if let Some(url) = screen::link_at(model, area, column, row) {
+        if let Some(path) = screen::local_file_link(&url) {
+            return Some(Effect::OpenFile(path));
+        }
         return Some(Effect::OpenLink(url));
     }
     if let Some(text) = screen::preview_text_at(model, area, column, row) {
@@ -287,18 +292,7 @@ fn image_press(model: &ScreenModel, area: Rect, column: u16, row: u16) -> Option
     if model.overlay.is_some() {
         return None;
     }
-    let input = screen::split_of(model, area).input;
-    let input = if screen::composer_framed(model, area.height) {
-        ratatui::widgets::Block::bordered().inner(input)
-    } else {
-        input
-    };
-    let first = input.y
-        + input
-            .height
-            .saturating_sub(model.pending_images.len() as u16);
-    if row >= first && input.contains(Position { x: column, y: row }) {
-        let index = usize::from(row - first);
+    if let Some((index, input)) = screen::input_image_at(model, area, column, row) {
         let image = model.pending_images.get(index)?;
         let name = screen::image_chip_name(image, input.width);
         let end = input.x + 3 + unicode_width::UnicodeWidthStr::width(name.as_str()) as u16;

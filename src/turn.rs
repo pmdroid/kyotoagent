@@ -65,6 +65,7 @@ pub fn known_tool_names() -> &'static [&'static str] {
     &[
         "read_file",
         "web_fetch",
+        "generate_image",
         "web_search",
         "grep",
         "list_dir",
@@ -124,6 +125,24 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
             }),
         ),
         Tool::new(
+            "generate_image",
+            "Generate one image with a configured provider's OpenAI-compatible images/generations endpoint and save it to path. Grok image models (grok-imagine-*) automatically use the configured grok provider and its saved API key or Grok login, even while coding with Codex. GPT image models (gpt-image-*) use the configured codex provider and saved Codex login when available. Other models use the active provider. Optional provider overrides automatic routing without changing the coding provider. Model names never change the coding provider. Specify an image model supported by that provider, not the chat model. Optional size, quality and response_format are sent only when supplied. Requires permission before generation and before writing. Use read_file to inspect and attach_artifact to publish the saved image.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "provider": { "type": "string", "minLength": 1 },
+                    "prompt": { "type": "string", "minLength": 1 },
+                    "model": { "type": "string", "minLength": 1 },
+                    "path": { "type": "string", "minLength": 1 },
+                    "size": { "type": "string" },
+                    "quality": { "type": "string" },
+                    "response_format": { "type": "string", "enum": ["b64_json", "url"] }
+                },
+                "required": ["prompt", "model", "path"],
+                "additionalProperties": false
+            }),
+        ),
+        Tool::new(
             "grep",
             "Search the workspace. Returns path:line:text.",
             serde_json::json!({
@@ -174,7 +193,7 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "run",
-            "Run a command in the workspace.",
+            "Run a quick, bounded command in the workspace. Use start_task for builds, test suites, installs, servers, or commands with uncertain duration, even when you need their result next.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -186,7 +205,7 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "start_task",
-            "Start a command in the workspace and return while it still runs.",
+            "Start a command in the workspace and return while it still runs. Use for builds, test suites, installs, servers, and commands that may take more than a few seconds. Default to this when duration is uncertain; use check_task to wait for results.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -289,12 +308,20 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "ask",
-            "Ask the user a question and wait for the answer.",
+            "Ask one concise question and wait. Supply short selectable choices. Optional visuals show Mermaid diagrams, SVG files, or images beside the question. Include a plain-text alt explaining the decision; visuals illustrate proposals, not verified evidence.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "text": { "type": "string" },
                     "choices": { "type": "array", "items": { "type": "string" } },
+                    "visuals": { "type": "array", "maxItems": 2, "items": {
+                        "type": "object", "properties": {
+                            "title": { "type": "string", "maxLength": 80 },
+                            "alt": { "type": "string", "maxLength": 600 },
+                            "mermaid": { "type": "string", "description": "Mermaid source; provide this or path." },
+                            "path": { "type": "string", "description": "Workspace image, SVG, or Mermaid file; provide this or mermaid." }
+                        }, "required": ["title", "alt"]
+                    } },
                 },
                 "required": ["text"],
             }),
@@ -439,6 +466,7 @@ pub enum TurnError {
     /// The tool arguments were not the JSON the tool expected.
     Args(serde_json::Error),
     Goal(String),
+    Compaction(String),
     ContextLimit {
         estimated: u64,
         limit: u64,
@@ -460,6 +488,7 @@ impl std::fmt::Display for TurnError {
             TurnError::Join(source) => write!(f, "a task did not finish: {source}"),
             TurnError::Config(source) => write!(f, "{source}"),
             TurnError::Goal(message) => write!(f, "{message}"),
+            TurnError::Compaction(message) => write!(f, "Context compaction failed: {message}. The original history was kept. Retry /compact."),
             TurnError::ContextLimit { estimated, limit } => write!(f, "The estimated request uses {estimated} tokens and exceeds the model context limit {limit}. Reduce the prompt or tool output and retry."),
             TurnError::Args(source) => write!(f, "the tool arguments were not JSON: {source}"),
         }
@@ -527,11 +556,11 @@ pub enum AskOutcome {
 /// One running turn's cancel handle.
 struct RunningTurn {
     cancel: tokio::sync::watch::Sender<bool>,
-    turn_id: String,
 }
 
 struct CompactSlot {
     job: Mutex<Option<Arc<CompactJob>>>,
+    requested: AtomicBool,
 }
 
 struct CompactJob {
@@ -544,6 +573,7 @@ impl CompactSlot {
     fn new() -> Arc<CompactSlot> {
         Arc::new(CompactSlot {
             job: Mutex::new(None),
+            requested: AtomicBool::new(false),
         })
     }
 
@@ -592,6 +622,7 @@ impl CompactSlot {
     }
 
     fn cancel(&self) {
+        self.requested.store(false, Ordering::SeqCst);
         if let Some(job) = self.current() {
             let _ = job.cancel.send(true);
         }
@@ -690,6 +721,7 @@ impl Flight {
             "grep" | "list_dir" | "web_search" => "Searching",
             "read_file" | "web_fetch" | "use_skill" | "get_closeout" => "Reading",
             "write_file" | "search_replace" => "Editing",
+            "generate_image" => "Generating image",
             "run" | "start_task" | "check_task" | "kill_task" => "Running",
             "run_closeout" => "Verifying",
             "spawn_subagent" => "Delegating",
@@ -1248,7 +1280,6 @@ impl Runner {
             .map(Path::to_path_buf);
         let client = ChatClient::in_root(&config, root.as_deref())?;
         let compact_percent = config.compact_percent;
-        let prefire_percent = config.prefire_percent;
         let workspace = state.tools.workspace().to_path_buf();
         let meta = state.session.meta().ok();
         let profile = meta.as_ref().and_then(|meta| meta.profile.clone());
@@ -1291,10 +1322,8 @@ impl Runner {
             silent,
             turn_id: turn_id.clone(),
             compact_percent,
-            prefire_percent,
             flight: Arc::clone(&state.flight),
             runner: Arc::clone(&runner),
-            state: Arc::clone(state),
             root,
             child,
             goal_run: meta
@@ -1312,6 +1341,7 @@ impl Runner {
         tokio::spawn(async move {
             wait_compact(&compact).await;
             if let Err(error) = run_turn(&turn_ctx, cancel_rx).await {
+                let _ = goal::pause_unfinished(&turn_ctx, &error.to_string());
                 idle_after_turn_error(
                     &turn_ctx.session,
                     &turn_ctx.turn_id,
@@ -1330,10 +1360,7 @@ impl Runner {
             }
         });
 
-        *turn = Some(RunningTurn {
-            cancel: cancel_tx,
-            turn_id: turn_id.clone(),
-        });
+        *turn = Some(RunningTurn { cancel: cancel_tx });
         Ok(TurnStart::Id(turn_id))
     }
 
@@ -1358,18 +1385,16 @@ impl Runner {
         let client = ChatClient::in_root(&config, root)?;
         let runner = self.me.upgrade().expect("the runner is still held");
         let done = Arc::clone(&state);
-        let preserve_turn = state
-            .turn
-            .lock()
-            .expect("the turn slot is not poisoned")
-            .as_ref()
-            .map(|turn| turn.turn_id.clone());
+        let turn = state.turn.lock().expect("the turn slot is not poisoned");
+        if turn.is_some() {
+            state.compact.requested.store(true, Ordering::SeqCst);
+            return Ok(());
+        }
         spawn_compact(
             state.session.clone(),
             Arc::clone(&state.compact),
             client,
             config,
-            preserve_turn,
             move || runner.after_idle(&done),
         );
         Ok(())
@@ -1530,7 +1555,7 @@ impl Runner {
                     let _ = self.answer(&id, Answer::allow_once());
                 }
                 _ => {
-                    let _ = self.answer_question(&id, &question, "");
+                    let _ = self.answer_question_for(&id, Some(&question), "");
                 }
             }
         }
@@ -1558,10 +1583,14 @@ impl Runner {
     }
 
     /// Answer the open question on a session.
-    pub fn answer_question(
+    pub fn answer_question(&self, session_id: &str, text: &str) -> Result<(), AnswerError> {
+        self.answer_question_for(session_id, None, text)
+    }
+
+    pub fn answer_question_for(
         &self,
         session_id: &str,
-        question_id: &str,
+        question_id: Option<&str>,
         text: &str,
     ) -> Result<(), AnswerError> {
         let state = self
@@ -1575,7 +1604,7 @@ impl Runner {
         state
             .tools
             .gate()
-            .answer_question(question_id, text.to_string())?;
+            .answer_question_for(question_id, text.to_string())?;
         if held {
             settle_held_question(&state.session, text)?;
         }
@@ -1898,10 +1927,8 @@ struct Turn {
     silent: bool,
     turn_id: String,
     compact_percent: u32,
-    prefire_percent: u32,
     flight: Arc<Flight>,
     runner: Arc<Runner>,
-    state: Arc<SessionState>,
     root: Option<PathBuf>,
     child: bool,
     goal_run: bool,
@@ -1916,13 +1943,18 @@ impl Turn {
         } else {
             prompt::system_prompt
         };
-        let text = build(
+        let mut text = build(
             &workspace.to_string_lossy(),
             &self.prompt_skills,
             self.prompt_closeout.as_ref(),
             &agents,
             self.context_length,
         );
+        if self.goal_run {
+            if let Some(goal) = self.session.meta().ok().and_then(|meta| meta.goal) {
+                text.push_str(&format!("\nActive goal outcome criteria: {}\nPrior verification: {}\nThe objective remains authoritative; these criteria do not authorize extra work or narrow the request. Todos are flexible implementation memory. Produce actual behavior evidence, continue ready work without asking for go, and preserve existing permission gates.\n", serde_json::to_string(&goal.criteria).unwrap_or_default(), goal.verification));
+            }
+        }
         let profile = self.session.meta().ok().and_then(|meta| meta.profile);
         if self
             .config
@@ -1968,6 +2000,7 @@ mod tests {
         let expected = [
             ("read_file", "Reading"),
             ("web_fetch", "Reading"),
+            ("generate_image", "Generating image"),
             ("web_search", "Searching"),
             ("grep", "Searching"),
             ("list_dir", "Searching"),

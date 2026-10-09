@@ -654,9 +654,19 @@ impl Session {
             path: path.clone(),
             source,
         })?;
-        file.write_all(line.as_bytes())
-            .and_then(|()| file.flush())
-            .map_err(|source| SessionError::Io { path, source })?;
+        if let Err(source) = file.write_all(line.as_bytes()).and_then(|()| file.flush()) {
+            cache.stamp = None;
+            file.set_len(before.len)
+                .and_then(|()| file.sync_all())
+                .map_err(|rollback| SessionError::Io {
+                    path: path.clone(),
+                    source: std::io::Error::new(
+                        rollback.kind(),
+                        format!("event append failed: {source}; rollback failed: {rollback}"),
+                    ),
+                })?;
+            return Err(SessionError::Io { path, source });
+        }
         let after = LogStamp::read(&file).map_err(|source| SessionError::Io {
             path: self.events_path(),
             source,
@@ -1011,6 +1021,59 @@ mod tests {
         assert_eq!(session.next_event_id().expect("an id"), "e3");
 
         fs::remove_dir_all(&dir).expect("clean up");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_partial_append_preserves_the_log() {
+        if std::env::var_os("KYOTO_TEST_PARTIAL_APPEND").is_none() {
+            let output = std::process::Command::new("bash")
+                .args(["-c", "ulimit -f 1; trap '' XFSZ; exec \"$@\"", "bash"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "session::tests::a_failed_partial_append_preserves_the_log",
+                    "--nocapture",
+                ])
+                .env("KYOTO_TEST_PARTIAL_APPEND", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let dir = temp_dir("partial-append");
+        fs::create_dir_all(&dir).unwrap();
+        let session = Session::at(&dir);
+        let event = Event::new("e1", "2026-09-29T00:00:00.000Z", "t1", EventKind::Result);
+        session.append(&event).unwrap();
+        let original = fs::read(session.events_path()).unwrap();
+        let snapshot = session.event_snapshot().unwrap();
+        let large = Event::new("e2", "2026-09-29T00:00:00.000Z", "t1", EventKind::Result)
+            .with_body(&serde_json::json!({"text": "x".repeat(4096)}))
+            .unwrap();
+        assert!(matches!(
+            session.append(&large),
+            Err(SessionError::Io { .. })
+        ));
+        assert_eq!(fs::read(session.events_path()).unwrap(), original);
+        assert_eq!(session.events().unwrap(), vec![event.clone()]);
+        assert_eq!(snapshot.1.as_ref(), &vec![event]);
+        assert_eq!(session.next_event_id().unwrap(), "e2");
+        session
+            .append(&Event::new(
+                "e2",
+                "2026-09-29T00:00:00.000Z",
+                "t1",
+                EventKind::Result,
+            ))
+            .unwrap();
+        assert_eq!(session.events().unwrap().len(), 2);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

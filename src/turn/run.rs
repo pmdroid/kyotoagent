@@ -64,7 +64,6 @@ pub(super) async fn run_turn(
                     items: Vec::new(),
                 },
             )?;
-            maybe_prefire(turn).await;
             return Ok(());
         }
     };
@@ -144,6 +143,8 @@ pub(super) async fn run_turn(
     let mut usage = None;
     let mut overflow_retried = false;
 
+    let mut goal_prepared = !turn.goal_run;
+
     loop {
         if let Some(reason) = goal::goal_stop(turn)? {
             result_text = reason;
@@ -165,7 +166,10 @@ pub(super) async fn run_turn(
         )
         .await
         {
-            if matches!(error, TurnError::ContextLimit { .. }) {
+            if matches!(
+                error,
+                TurnError::ContextLimit { .. } | TurnError::Compaction(_)
+            ) {
                 result_text = error.to_string();
                 break;
             }
@@ -176,6 +180,14 @@ pub(super) async fn run_turn(
             break;
         }
 
+        if !goal_prepared {
+            goal::prepare(turn, &transcript, &mut cancel).await?;
+            transcript[0] = Message::System {
+                content: turn.system_prompt(),
+            };
+            goal_prepared = true;
+            continue;
+        }
         turn.flight.begin_thinking();
         let reply = tokio::select! {
             biased;
@@ -232,7 +244,8 @@ pub(super) async fn run_turn(
         if !reply.wants_tools() {
             turn.flight.clear();
             if let Some(reason) =
-                completion_blocker(turn, reply.text(), &mut cancel, &mut closeout).await?
+                completion_blocker(turn, reply.text(), &transcript, &mut cancel, &mut closeout)
+                    .await?
             {
                 transcript.push(Message::User {
                     content: reason.into(),
@@ -252,6 +265,12 @@ pub(super) async fn run_turn(
             turn.flight.tool_action(&call.name);
             if *cancel.borrow() || tools.gate().rejected() {
                 stopped = true;
+            }
+            if !finished {
+                if let Some(reason) = goal::goal_stop(turn)? {
+                    result_text = reason;
+                    turn_stop = true;
+                }
             }
             if stopped || finished || turn_stop {
                 let args = parse_args(&call.arguments).unwrap_or_else(|_| serde_json::json!({}));
@@ -422,7 +441,7 @@ pub(super) async fn run_turn(
             if call.name == "finish" {
                 let (text, finish_note, proof) = finish_args(&args)?;
                 if let Some(reason) =
-                    completion_blocker(turn, &text, &mut cancel, &mut closeout).await?
+                    completion_blocker(turn, &text, &transcript, &mut cancel, &mut closeout).await?
                 {
                     append_tool_result(session, turn_id, call, &reason)?;
                     transcript.push(Message::tool_result(&call.id, &reason));
@@ -509,6 +528,13 @@ pub(super) async fn run_turn(
         append_result(session, turn_id, &result_text, &note)?;
     }
     turn.flight.clear();
+    if turn.compact.requested.swap(false, Ordering::SeqCst) && !*cancel.borrow() {
+        if let Err(error) =
+            wait_and_run_compact(&turn.compact, session, client, &turn.config, &mut cancel).await
+        {
+            append_result(session, turn_id, &error.to_string(), "")?;
+        }
+    }
     set_status(session, Status::Idle)?;
 
     // The proof event: what the turn wrote, the git state of the workspace, and
@@ -537,7 +563,6 @@ pub(super) async fn run_turn(
         items: closeout.proof_items_with_carried_passes(),
     };
     append_proof(session, turn_id, &proof)?;
-    maybe_prefire(turn).await;
 
     Ok(())
 }
@@ -553,9 +578,13 @@ fn current_workspace_fingerprint(workspace: &Path) -> String {
 async fn completion_blocker(
     turn: &Turn,
     text: &str,
+    transcript: &[Message],
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     closeout: &mut CloseoutState,
 ) -> Result<Option<String>, TurnError> {
+    if let Some(reason) = goal::evaluate(turn, text, transcript, cancel).await? {
+        return Ok(Some(reason));
+    }
     let workspace = turn.tools.workspace();
     refresh_closeout(&turn.tools, &turn.turn_id, closeout, &[])?;
     if let Some(error) = sync_retry(turn, closeout, cancel).await {
@@ -585,7 +614,7 @@ async fn completion_blocker(
     if let Some(reason) = closeout.cannot_finish() {
         return Ok(Some(reason));
     }
-    goal::verify_goal(turn, text, cancel, closeout).await
+    goal::verify_goal(turn, text, transcript, cancel, closeout).await
 }
 
 fn artifact_file(

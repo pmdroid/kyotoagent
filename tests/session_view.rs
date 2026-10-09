@@ -519,6 +519,7 @@ fn every_kind_round_trips_through_the_log() {
                 EventKind::Question => serde_json::to_value(QuestionBody {
                     text: "Which title?".into(),
                     choices: vec!["Kyoto Agent".into()],
+                    visuals: Vec::new(),
                 }),
                 EventKind::QuestionAnswer => {
                     serde_json::to_value(kyotoagent::events::QuestionAnswerBody {

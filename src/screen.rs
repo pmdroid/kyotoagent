@@ -30,8 +30,12 @@ pub use proof::{proof_action_at, ProofAction};
 mod card;
 mod file;
 mod hit;
+mod input;
+pub use input::{input_cursor_at, input_image_at, move_input_vertical};
 mod list;
 mod overlay;
+mod question;
+pub use question::question_preview_area;
 mod select;
 mod session;
 
@@ -341,6 +345,9 @@ impl SessionRow {
         if self.archived {
             return "archived".to_string();
         }
+        if self.compacting {
+            return "compacting".to_string();
+        }
         match (self.status, self.waiting) {
             (Status::Idle, _) => Status::Idle.label().to_string(),
             (Status::Working, _) => Status::Working.label().to_string(),
@@ -377,6 +384,7 @@ pub enum Card {
         text: String,
         choices: Vec<Choice>,
         answer: Option<String>,
+        visuals: Vec<crate::question::QuestionVisual>,
     },
     Answer {
         text: String,
@@ -525,6 +533,12 @@ pub enum Bottom {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Overlay {
+    VisualQuestion {
+        text: String,
+        choices: Vec<Choice>,
+        prompt: String,
+        visual: crate::question::QuestionVisual,
+    },
     Queue {
         rows: Vec<String>,
         highlight: usize,
@@ -732,6 +746,8 @@ pub struct ScreenModel {
     /// The one input row. It holds the next ask, the permission keys, or
     /// nothing at all.
     pub bottom: String,
+    pub bottom_cursor: Option<usize>,
+    pub pasted_ranges: Vec<std::ops::Range<usize>>,
     pub toast: Option<String>,
     /// Whether `bottom` is something the user types or a set of keys that
     /// answer the open card.
@@ -800,6 +816,8 @@ impl Default for ScreenModel {
             selected: String::new(),
             cards: Vec::new(),
             bottom: String::new(),
+            bottom_cursor: None,
+            pasted_ranges: Vec::new(),
             toast: None,
             bottom_kind: Bottom::Prompt,
             pasted_text: None,
@@ -1251,13 +1269,13 @@ fn header_right(model: &ScreenModel) -> String {
         model.model.is_empty(),
         model.effort.as_deref(),
     ) {
-        (true, true, _) => format!("compact \u{00b7} {counts}"),
+        (true, true, _) => format!("compacting \u{00b7} {counts}"),
         (true, false, None | Some("")) => {
-            format!("compact \u{00b7} {} \u{00b7} {counts}", model.model)
+            format!("compacting \u{00b7} {} \u{00b7} {counts}", model.model)
         }
         (true, false, Some(effort)) => {
             format!(
-                "compact \u{00b7} {} {effort} \u{00b7} {counts}",
+                "compacting \u{00b7} {} {effort} \u{00b7} {counts}",
                 model.model
             )
         }

@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::auth::{self, AuthClient, AuthError, CodexAuth};
 use crate::chat::ChatClient;
@@ -30,6 +30,7 @@ pub async fn run(
     all_ok &= check_web_credentials(config.as_ref(), out).await;
     all_ok &= check_serve(root.as_deref(), url, out).await;
     all_ok &= check_closeout(cwd, out);
+    all_ok &= check_skills(root.as_deref(), cwd, config.as_ref(), out).await;
     all_ok
 }
 
@@ -522,8 +523,79 @@ fn check_closeout(cwd: Option<&Path>, out: &mut impl Write) -> bool {
     }
 }
 
+async fn check_skills(
+    root: Option<&Path>,
+    cwd: Option<&Path>,
+    config: Option<&Config>,
+    out: &mut impl Write,
+) -> bool {
+    let Some(cwd) = cwd else {
+        return write_check(out, false, "skills", "no current directory");
+    };
+    let skills = crate::skills::index_in(cwd, &home_dir().unwrap_or_default());
+    let visible = skills
+        .iter()
+        .filter(|skill| !skill.disable_model_invocation)
+        .count();
+    let length = skill_context_length(root, config).await;
+    let fit = crate::prompt::catalog_fit(&skills, length);
+    let window = match length {
+        Some(tokens) => format!("{tokens} tokens"),
+        None => "an unknown window".to_string(),
+    };
+    match fit {
+        crate::prompt::CatalogFit::Fits => write_check(
+            out,
+            true,
+            "skills",
+            &format!("{visible} listed with descriptions  {window}"),
+        ),
+        crate::prompt::CatalogFit::DescriptionsShortened { kept } => write_warn(
+            out,
+            "skills",
+            &format!("{visible} skills would have descriptions cut to {kept} characters  {window}"),
+        ),
+        crate::prompt::CatalogFit::NamesOnly { listed } => write_warn(
+            out,
+            "skills",
+            &format!("{listed} skills would be listed by name only  {window}"),
+        ),
+        crate::prompt::CatalogFit::NamesDropped { listed, omitted } => write_warn(
+            out,
+            "skills",
+            &format!("{listed} skills listed, {omitted} omitted  {window}"),
+        ),
+    }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let home = PathBuf::from(home);
+    if home.as_os_str().is_empty() {
+        None
+    } else {
+        Some(home)
+    }
+}
+
+async fn skill_context_length(root: Option<&Path>, config: Option<&Config>) -> Option<u64> {
+    let config = config?;
+    if let Some(length) = config.provider_context_window() {
+        return Some(length);
+    }
+    let client = ChatClient::in_root(config, root).ok()?;
+    client.model_length(&config.model).await
+}
+
 fn write_check(out: &mut impl Write, ok: bool, name: &str, detail: &str) -> bool {
-    let status = if ok { "ok" } else { "fail" };
+    write_status(out, ok, if ok { "ok" } else { "fail" }, name, detail)
+}
+
+fn write_warn(out: &mut impl Write, name: &str, detail: &str) -> bool {
+    write_status(out, false, "warn", name, detail)
+}
+
+fn write_status(out: &mut impl Write, ok: bool, status: &str, name: &str, detail: &str) -> bool {
     let _ = writeln!(out, "{status:<6}{name:<10}{detail}");
     ok
 }
@@ -895,5 +967,80 @@ mod tests {
     #[tokio::test]
     async fn rejected_codex_refresh_fails_the_auth_check() {
         codex_check(Some("2000-01-01T00:00:00.000Z"), 401, false, 1).await;
+    }
+
+    #[tokio::test]
+    async fn too_many_skills_warn_that_the_catalog_would_drop_names() {
+        let root = std::env::temp_dir().join(format!(
+            "kyoto-doctor-skills-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let workspace = root.join("workspace");
+        fs::create_dir_all(workspace.join(".agents/skills")).unwrap();
+        for index in 0..40 {
+            let dir = workspace
+                .join(".agents/skills")
+                .join(format!("skill{index:02}"));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("SKILL.md"),
+                format!(
+                    "---\nname: skill{index:02}\ndescription: {}\n---\n\nBody.\n",
+                    "d".repeat(500)
+                ),
+            )
+            .unwrap();
+        }
+        let previous = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", &root) };
+        let mut out = Vec::new();
+        let ok = check_skills(None, Some(&workspace), None, &mut out).await;
+        match previous {
+            Some(home) => unsafe { std::env::set_var("HOME", home) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        let text = String::from_utf8(out).unwrap();
+        assert!(!ok, "{text}");
+        assert!(text.starts_with("warn"), "{text}");
+        assert!(text.contains("40 skills"), "{text}");
+        assert!(text.contains("omitted") || text.contains("cut"), "{text}");
+        assert!(text.contains("unknown window"), "{text}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_short_skill_catalog_stays_ok() {
+        let root = std::env::temp_dir().join(format!(
+            "kyoto-doctor-skills-ok-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let workspace = root.join("workspace");
+        let dir = workspace.join(".agents/skills/review");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: review\ndescription: How to review a change.\n---\n\nBody.\n",
+        )
+        .unwrap();
+        let previous = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", &root) };
+        let mut out = Vec::new();
+        let ok = check_skills(None, Some(&workspace), None, &mut out).await;
+        match previous {
+            Some(home) => unsafe { std::env::set_var("HOME", home) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        let text = String::from_utf8(out).unwrap();
+        assert!(ok, "{text}");
+        assert!(text.contains("1 listed with descriptions"), "{text}");
+        fs::remove_dir_all(root).unwrap();
     }
 }

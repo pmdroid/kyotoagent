@@ -42,6 +42,8 @@ mod apply;
 mod catalog;
 mod connections;
 mod deletion;
+mod editor;
+pub use editor::CursorMove;
 mod images;
 mod key;
 mod layout;
@@ -235,6 +237,10 @@ pub enum Effect {
     Type(char),
     Paste(String),
     Backspace,
+    DeleteForward,
+    MoveCursor(CursorMove),
+    SetCursor(usize),
+    Complete,
     DeleteWord,
     DeleteLine,
     Submit,
@@ -316,6 +322,8 @@ pub struct App {
     card_event_ids: Vec<String>,
     artifact_focus: Option<String>,
     pub ask: String,
+    ask_cursor: Option<usize>,
+    question_cursor: Option<usize>,
     pastes: Vec<PastedInput>,
     images: BTreeMap<String, Vec<crate::attachment::ImageAttachment>>,
     open_image: Option<crate::attachment::ImageAttachment>,
@@ -664,6 +672,18 @@ fn command_catalog(_skills: &[SkillEntry]) -> Vec<CatalogRow> {
             CommandAction::TogglePane(RightPane::Proof),
         ),
         catalog_row(
+            "/server",
+            "/server",
+            "manage saved servers",
+            CommandAction::OpenServer,
+        ),
+        catalog_row(
+            "/proof",
+            "/proof",
+            "show or hide artifacts",
+            CommandAction::TogglePane(RightPane::Proof),
+        ),
+        catalog_row(
             "/model",
             "/model",
             "open the model list",
@@ -774,6 +794,8 @@ impl App {
             card_event_ids: Vec::new(),
             artifact_focus: None,
             ask: String::new(),
+            ask_cursor: None,
+            question_cursor: None,
             pastes: Vec::new(),
             images: BTreeMap::new(),
             open_image: None,
@@ -1314,15 +1336,26 @@ async fn run_loop(
         let area = match drawn {
             Ok(Ok(area)) => {
                 app.area = area;
-                let image = match &model.overlay {
-                    Some(Overlay::Image { image }) => Some(image),
-                    _ => None,
+                let pane = screen::split_of(&model, area).session;
+                let (image, image_pane) = match &model.overlay {
+                    Some(Overlay::Image { image }) => (Some(image), pane),
+                    Some(overlay @ Overlay::VisualQuestion { visual, .. }) => {
+                        match screen::question_preview_area(pane, overlay) {
+                            Some(rect) => (
+                                Some(&visual.image),
+                                Rect::new(
+                                    rect.x.saturating_sub(1),
+                                    rect.y.saturating_sub(1),
+                                    rect.width + 2,
+                                    rect.height + 2,
+                                ),
+                            ),
+                            None => (None, pane),
+                        }
+                    }
+                    _ => (None, pane),
                 };
-                if let Err(source) = preview.sync(
-                    &mut io::stdout(),
-                    image,
-                    screen::split_of(&model, area).session,
-                ) {
+                if let Err(source) = preview.sync(&mut io::stdout(), image, image_pane) {
                     notice_or_fatal(app, source.to_string())?;
                 }
                 Some(area)
