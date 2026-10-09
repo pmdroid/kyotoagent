@@ -82,7 +82,7 @@ final class CommandTests: XCTestCase {
         XCTAssertEqual(liveProfileField("Everything"), "")
         XCTAssertEqual(liveProfileField("review"), "review")
         XCTAssertTrue(filteredCatalog(skills: skills, query: "/").isEmpty)
-        XCTAssertEqual(slashSuggestions(skills, draft: "/").map(\.title), ["/compact", "/effort", "/goal", "/model", "/preflight", "/yolo"])
+        XCTAssertEqual(slashSuggestions(skills, draft: "/").map(\.title), ["/btw", "/compact", "/effort", "/goal", "/model", "/preflight", "/yolo"])
         XCTAssertEqual(slashSuggestions(skills, draft: "/pr").map(\.title), ["/preflight"])
         XCTAssertTrue(slashSuggestions(skills, draft: filledSkill("preflight")).isEmpty)
         XCTAssertTrue(slashSuggestions(skills, draft: "/preflight check this").isEmpty)
@@ -107,7 +107,7 @@ final class CommandTests: XCTestCase {
             Skill(name: "hidden", description: "Hidden", disable_model_invocation: false, user_invocable: false, path: "hidden")
         ]
         let all = slashSuggestions(skills, draft: "/")
-        XCTAssertEqual(all.count, 17)
+        XCTAssertEqual(all.count, 18)
         XCTAssertEqual(all.filter { $0.title == "/model" }.count, 1)
         XCTAssertEqual(all.first { $0.title == "/model" }?.kind, .openModel)
         XCTAssertFalse(all.contains { $0.title == "/hidden" })
