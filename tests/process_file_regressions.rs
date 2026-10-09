@@ -71,6 +71,42 @@ async fn write_preserves_executable_mode() {
 }
 
 #[test]
+fn reads_and_listings_preserve_parent_directory_components() {
+    let f = Fixture::new("read-parent-components");
+    fs::create_dir_all(f.workspace.join("sub")).unwrap();
+    fs::create_dir_all(f.workspace.join("entries")).unwrap();
+    fs::write(f.workspace.join("expected.txt"), "expected\n").unwrap();
+    fs::write(f.workspace.join("sub/expected.txt"), "wrong\n").unwrap();
+    fs::write(f.workspace.join("entries/visible.txt"), "visible\n").unwrap();
+    fs::write(f.workspace.join("sub/entries"), "not a directory\n").unwrap();
+    fs::write(f.root.join("outside.txt"), "approved\n").unwrap();
+    fs::write(f.workspace.join("outside.txt"), "unapproved\n").unwrap();
+    let tools = Tools::at(&f.session).unwrap();
+    for path in ["sub/../expected.txt", "./sub/../../workspace/expected.txt"] {
+        let read = tools.read_file("t1", path, None, None, None).unwrap();
+        assert_eq!(read.text, "1→expected");
+    }
+    let listing = tools.list_dir("t1", "sub/../entries").unwrap();
+    assert!(listing.summary().contains("visible.txt"));
+    assert!(tools
+        .read_file("t1", "../outside.txt", None, None, None)
+        .is_err());
+    fs::create_dir_all(f.root.join("alternate")).unwrap();
+    fs::write(f.root.join("alternate/outside.txt"), "unapproved\n").unwrap();
+    tools.gate().queue(Answer::allow_once());
+    let read = tools
+        .read_file(
+            "t1",
+            f.root.join("alternate/../outside.txt").to_str().unwrap(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(read.text, "1→approved");
+}
+
+#[test]
 fn outside_read_rejects_a_symlink_after_approval() {
     let f = Fixture::new("read-symlink");
     let approved = f.root.join("approved.txt");

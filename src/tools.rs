@@ -1726,8 +1726,10 @@ fn open_nofollow(path: &Path) -> Result<File, ToolError> {
     })?;
     let mut parts = path.components().peekable();
     while let Some(part) = parts.next() {
-        let std::path::Component::Normal(name) = part else {
-            continue;
+        let name = match part {
+            std::path::Component::Normal(name) => name,
+            std::path::Component::ParentDir => std::ffi::OsStr::new(".."),
+            _ => continue,
         };
         let flags = if parts.peek().is_none() {
             libc::O_RDONLY | libc::O_NONBLOCK
