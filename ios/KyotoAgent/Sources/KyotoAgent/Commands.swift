@@ -120,12 +120,12 @@ public enum PaletteResult: Equatable, Sendable {
     case finished
 }
 
-struct SlashParts {
+nonisolated struct SlashParts: Sendable {
     var name: String
     var argument: String?
 }
 
-func slashParts(_ text: String) -> SlashParts? {
+nonisolated func slashParts(_ text: String) -> SlashParts? {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard trimmed.hasPrefix("/") else {
         return nil
