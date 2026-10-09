@@ -5420,8 +5420,8 @@ async fn btw_tool_calls_are_never_dispatched_and_reload_settles_only_the_side_re
         .iter()
         .all(|event| event.kind != EventKind::UserAsk && event.kind != EventKind::ToolCall));
     let session = Session::at(&fixture.root.join("session-s"));
-    session
-        .append(
+    let pending = session
+        .append_assigned(
             &Event::new("btw-pending", AT, "btw", EventKind::BtwRequest)
                 .with_body(&serde_json::json!({"question":"recover"}))
                 .unwrap(),
@@ -5436,7 +5436,7 @@ async fn btw_tool_calls_are_never_dispatched_and_reload_settles_only_the_side_re
         .events("s")
         .iter()
         .any(|event| event.kind == EventKind::BtwResult
-            && event.body["requestId"] == "btw-pending"
+            && event.body["requestId"] == pending.id
             && event.body["state"] == "failed"));
 }
 

@@ -20,8 +20,7 @@ fn append(
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
     let event = Event::new(&id, &now(), "btw", kind).with_body(&body)?;
-    session.append(&event)?;
-    Ok(id)
+    Ok(session.append_assigned(&event)?.id)
 }
 
 pub(super) type BtwSlot = Mutex<Option<(String, tokio::sync::watch::Sender<bool>)>>;
