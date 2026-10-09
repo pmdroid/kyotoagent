@@ -399,17 +399,19 @@ impl Fixture {
 
     fn answer_question(&self, id: &str, text: &str) {
         self.runner
-            .answer_question(
+            .answer_question_for(
                 id,
-                self.runner
-                    .view(id)
-                    .unwrap()
-                    .cards
-                    .iter()
-                    .rev()
-                    .find(|card| card.kind == kyotoagent::view::CardKind::Question)
-                    .and_then(|card| card.body["eventId"].as_str())
-                    .unwrap_or(""),
+                Some(
+                    self.runner
+                        .view(id)
+                        .unwrap()
+                        .cards
+                        .iter()
+                        .rev()
+                        .find(|card| card.kind == kyotoagent::view::CardKind::Question)
+                        .and_then(|card| card.body["eventId"].as_str())
+                        .unwrap_or(""),
+                ),
                 text,
             )
             .expect("the answer lands");

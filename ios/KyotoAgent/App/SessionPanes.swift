@@ -1,43 +1,5 @@
 import SwiftUI
 
-struct SessionBanners: SwiftUI.View {
-    @Bindable var model: AppModel
-
-    var body: some SwiftUI.View {
-        if !model.banners.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(model.banners) { banner in
-                    Button {
-                        model.dismissBanner(banner.id)
-                    } label: {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(name(banner.sessionId))
-                                .foregroundStyle(Ink.text)
-                            Text(banner.phrase)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(Ink.permission)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("session-banner")
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Ink.card)
-        }
-    }
-
-    private func name(_ id: String) -> String {
-        if let session = model.sessions.first(where: { $0.id == id }) {
-            return sessionName(session)
-        }
-        return String(id.prefix(4))
-    }
-}
-
 enum DockPane: String, Identifiable {
     case todos
     case closeout

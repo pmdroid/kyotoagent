@@ -87,6 +87,9 @@ fn session_lines(model: &ScreenModel, width: usize) -> Rc<Vec<Line<'static>>> {
 }
 
 pub(super) fn session_action(model: &ScreenModel) -> Option<&str> {
+    if model.compacting {
+        return Some("Compacting context");
+    }
     let selected = model.selected_session();
     let working = selected.is_some_and(|row| row.status == Status::Working);
     model.retry_status.as_deref().or(
@@ -282,6 +285,9 @@ pub(super) fn input_lines(model: &ScreenModel, width: u16) -> Vec<Line<'static>>
         }
     }
     lines.push(line);
+    if model.bottom_kind == Bottom::Prompt {
+        lines = super::input::prompt_lines(model, width);
+    }
     for image in &model.pending_images {
         let name = image_chip_name(image, width);
         lines.push(Line::from(vec![
@@ -309,7 +315,7 @@ pub(super) fn render_input(model: &ScreenModel, area: Rect, frame: &mut Frame) {
     if lines.is_empty() {
         return;
     }
-    let start = lines.len().saturating_sub(usize::from(content.height));
+    let start = super::input::input_start(model, content, lines.len());
     frame.render_widget(
         Paragraph::new(lines.into_iter().skip(start).collect::<Vec<_>>())
             .style(on_input(Style::default())),

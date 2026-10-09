@@ -6,6 +6,16 @@ import FoundationNetworking
 
 @MainActor
 final class NotificationTests: XCTestCase {
+    func testSessionAlertsUseNativeNotificationsWithoutCustomBanners() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let screen = try String(contentsOf: root.appendingPathComponent("App/ConnectScreen.swift"), encoding: .utf8)
+        let panes = try String(contentsOf: root.appendingPathComponent("App/SessionPanes.swift"), encoding: .utf8)
+        let coordinator = try String(contentsOf: root.appendingPathComponent("App/NotificationCoordinator.swift"), encoding: .utf8)
+        XCTAssertFalse(screen.contains("SessionBanners"))
+        XCTAssertFalse(panes.contains("session-banner"))
+        XCTAssertTrue(coordinator.contains("[.banner, .list, .sound]"))
+    }
+
     func testDevicePayloadPreservesVariableLengthTokenAndInstallationIdentity() throws {
         let device = DeviceRegistration(id: "installation", token: Data([0, 1, 15, 255, 128]), environment: .sandbox, serverId: "saved-server")
         let request = serveRequest(baseURL: URL(string: "https://trusted.example")!, call: .registerDevice(device))

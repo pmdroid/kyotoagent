@@ -1,6 +1,89 @@
 use super::*;
 
 #[test]
+fn visual_question_keeps_the_question_choices_and_draft_in_narrow_and_wide_frames() {
+    for width in [42, 120] {
+        let mut model = crate::mock::idle();
+        model.left_open = false;
+        model.right_open = false;
+        model.overlay = Some(Overlay::VisualQuestion {
+            text: "When should review happen?".into(),
+            choices: vec![
+                Choice {
+                    label: "Before PR".into(),
+                    marked: false,
+                },
+                Choice {
+                    label: "After PR".into(),
+                    marked: false,
+                },
+            ],
+            prompt: "My draft".into(),
+            visual: crate::question::QuestionVisual {
+                title: "Before PR".into(),
+                alt: "Implement → Review → PR".into(),
+                source: None,
+                image: crate::attachment::ImageAttachment::from_bytes(
+                    "Before PR",
+                    crate::splash::PNG,
+                )
+                .unwrap(),
+            },
+        });
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+        terminal
+            .draw(|frame| render(&model, frame.area(), frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let text = buffer
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        for expected in [
+            "When should review happen?",
+            "1  Before PR",
+            "2  After PR",
+            "My draft",
+        ] {
+            assert!(text.contains(expected), "{width}: {text}");
+        }
+    }
+}
+
+#[test]
+fn answered_visual_questions_do_not_offer_an_inactive_preview_shortcut() {
+    let mut card = Card::Question {
+        text: "Which route?".into(),
+        choices: Vec::new(),
+        answer: None,
+        visuals: vec![crate::question::QuestionVisual {
+            title: "Review first".into(),
+            alt: "Implement → Review → PR".into(),
+            source: None,
+            image: crate::attachment::ImageAttachment::from_bytes("route", crate::splash::PNG)
+                .unwrap(),
+        }],
+    };
+    assert!(card
+        .lines(76)
+        .iter()
+        .any(|line| line.to_string().contains("Ctrl-V")));
+    if let Card::Question { answer, .. } = &mut card {
+        *answer = Some("Review first".into());
+    }
+    let rendered = card
+        .lines(76)
+        .iter()
+        .map(Line::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Implement → Review → PR"));
+    assert!(!rendered.contains("Ctrl-V"));
+}
+
+#[test]
 fn question_markdown_styles_the_card_and_overlay_without_changing_answers() {
     let text = "# Choose\n\nUse **strong** *slanted* `cargo`\n\n- first\n- second";
     let card = Card::question(text, &[("**literal answer**", false)]);
@@ -645,7 +728,7 @@ fn find_phrase(rows: &[Vec<String>], phrase: &str) -> (u16, u16) {
 }
 
 #[test]
-fn link_at_misses_a_destination_that_is_not_http() {
+fn link_at_hits_local_files_and_web_urls() {
     let mut model = crate::mock::idle();
     model.cards = vec![Card::result(
         "See [readme](README.md) and [docs](https://example.com).",
@@ -653,9 +736,15 @@ fn link_at_misses_a_destination_that_is_not_http() {
     let area = Rect::new(0, 0, 76, 24);
     let rows = grid(&model);
     let (readme_x, readme_y) = find_phrase(&rows, "readme");
-    assert_eq!(link_at(&model, area, readme_x, readme_y), None);
+    assert_eq!(
+        link_at(&model, area, readme_x, readme_y).as_deref(),
+        Some("README.md")
+    );
     let (path_x, path_y) = find_phrase(&rows, "README.md");
-    assert_eq!(link_at(&model, area, path_x, path_y), None);
+    assert_eq!(
+        link_at(&model, area, path_x, path_y).as_deref(),
+        Some("README.md")
+    );
     let (docs_x, docs_y) = find_phrase(&rows, "docs");
     assert_eq!(
         link_at(&model, area, docs_x, docs_y).as_deref(),
@@ -1700,7 +1789,7 @@ fn the_header_shows_the_selected_model_and_effort() {
     let text = draw(&model);
     assert!(text.contains("compact"), "{text}");
     assert!(
-        text.contains("compact \u{00b7} grok-4.6 high \u{00b7} 3 sessions"),
+        text.contains("compacting \u{00b7} grok-4.6 high \u{00b7} 3 sessions"),
         "{text}"
     );
 }
@@ -2923,4 +3012,22 @@ fn idle_panes_have_no_image_and_working_labels_keep_their_row() {
             }
         }
     }
+}
+
+#[test]
+fn compaction_overrides_stale_thinking_and_retry_status() {
+    let mut model = crate::mock::working();
+    model.compacting = true;
+    model.phase = Some(Phase::Thinking);
+    model.retry_status = Some("Provider busy. Retrying in 10s".into());
+    model.sessions[0].compacting = true;
+    let text = draw(&model);
+    assert!(text.contains("Compacting context"), "{text}");
+    assert!(!text.contains("Provider busy"), "{text}");
+    assert_eq!(model.sessions[0].status_text(), "compacting");
+    let area = Rect::new(0, 0, 100, 30);
+    assert!(!(0..30).any(|y| (0..100).any(|x| thinking_at(&model, area, x, y))));
+    model.compacting = false;
+    model.sessions[0].compacting = false;
+    assert!(!draw(&model).contains("Compacting context"));
 }

@@ -24,6 +24,7 @@ impl Card {
                 })
                 .collect(),
             answer: None,
+            visuals: Vec::new(),
         }
     }
 
@@ -251,9 +252,25 @@ impl Card {
                 text,
                 choices,
                 answer,
+                visuals,
             } => {
                 body.extend(markdown_lines(preview_source(text), text_width));
                 self.clip_preview(&mut body);
+                for (index, visual) in visuals.iter().enumerate() {
+                    body.extend(wrapped(&visual.title, text_width, theme::body()));
+                    body.extend(wrapped(&visual.alt, text_width, theme::faint()));
+                    if answer.is_none() {
+                        body.extend(wrapped(
+                            if index == 0 {
+                                "Ctrl-V · View diagram"
+                            } else {
+                                "Ctrl-V · Next diagram"
+                            },
+                            text_width,
+                            theme::key(),
+                        ));
+                    }
+                }
                 if answer.is_none() {
                     for (index, choice) in choices.iter().enumerate() {
                         let marker = if choice.marked {
@@ -788,7 +805,8 @@ impl Paint {
             self.push_image(label, pending.url, &label_text);
             return;
         }
-        let hit = http_url(&pending.url);
+        let hit = http_url(&pending.url)
+            .or_else(|| local_file_link(&pending.url).map(|_| pending.url.clone()));
         if label_text.is_empty() || label_text == pending.url {
             self.push(Piece::Text {
                 text: pending.url,

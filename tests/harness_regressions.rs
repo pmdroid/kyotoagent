@@ -161,7 +161,9 @@ impl Drop for Fixture {
             })
             .and_then(|card| card.body["eventId"].as_str().map(str::to_string));
         if let Some(question) = question {
-            let _ = self.runner.answer_question("s", &question, "cancelled");
+            let _ = self
+                .runner
+                .answer_question_for("s", Some(&question), "cancelled");
         }
         self.server.abort();
     }

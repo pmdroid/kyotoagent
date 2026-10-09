@@ -30,6 +30,85 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
+async fn goal_http_routes_continue_then_verify_and_publish_persisted_outcomes() {
+    let text = |value: &str| {
+        Canned::Json(
+            serde_json::json!({"choices":[{"message":{"role":"assistant","content":value}}]})
+                .to_string(),
+        )
+    };
+    let fixture = Fixture::new("goal-http", vec![
+        text(r#"[{"outcome":"result.txt contains expected","verification":"Read the real file and assert its contents"}]"#),
+        text("Done."),
+        text(r#"{"decision":"continue","evidence":"No file has been written","next_step":"Write result.txt","blocker_key":""}"#),
+        Canned::Json(tool_call_reply(vec![("write_file", serde_json::json!({"path":"result.txt","contents":"expected"}))])),
+        text("File ready."),
+        text(r#"{"decision":"candidate_complete","evidence":"write_file succeeded","next_step":"Check file content","blocker_key":""}"#),
+        Canned::Json(tool_call_reply(vec![("run", serde_json::json!({"argv":["sh","-c","test \"$(cat result.txt)\" = expected && printf verified"]}))])),
+        Canned::Json(tool_call_reply(vec![("finish", serde_json::json!({"verified":true,"text":"The real file contains expected."}))])),
+    ]).await;
+    let id = fixture.add_session("goal").await;
+    let (status, response) = fixture
+        .client
+        .message(&id, "/goal Ensure result.txt contains expected")
+        .await;
+    assert_eq!(status, 202, "{response}");
+    let waiting = fixture.client.wait_for_status(&id, "waiting").await;
+    assert_eq!(waiting["goal"]["status"], "active");
+    assert_eq!(
+        waiting["goal"]["criteria"][0]["outcome"],
+        "result.txt contains expected"
+    );
+    assert!(!fixture.workspace("goal").join("result.txt").exists());
+    let permission = fixture.client.open_permission_id(&id).await;
+    assert_eq!(
+        fixture
+            .client
+            .answer(&id, &permission, "allow_once")
+            .await
+            .0,
+        204
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !fixture.workspace("goal").join("result.txt").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.client.wait_for_status(&id, "waiting").await;
+    let permission = fixture.client.open_permission_id(&id).await;
+    assert_eq!(
+        fixture
+            .client
+            .answer(&id, &permission, "allow_once")
+            .await
+            .0,
+        204
+    );
+    let idle = fixture.client.wait_for_status(&id, "idle").await;
+    assert_eq!(idle["goal"]["status"], "complete");
+    assert_eq!(idle["goal"]["evaluations_since_resume"], 2);
+    assert_eq!(idle["goal"]["rounds"], 1);
+    assert_eq!(
+        idle["goal"]["evidence"][0]["output"],
+        "exited 0\n\nverified"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.workspace("goal").join("result.txt")).unwrap(),
+        "expected"
+    );
+    let (status, _) = fixture.client.message(&id, "/goal status").await;
+    assert_eq!(status, 202);
+    let events = fixture.client.events(&id).await;
+    assert!(events.contains("The real file contains expected."));
+    assert!(events.contains("Read the real file and assert its contents"));
+    assert!(!events
+        .lines()
+        .any(|line| serde_json::from_str::<Value>(line).unwrap()["kind"] == "question"));
+}
+
+#[tokio::test]
 async fn image_uploads_above_two_mib_are_accepted_and_upload_limits_are_enforced() {
     let fixture = Fixture::new("large-image-upload", finish_turn("A picture.")).await;
     let id = fixture.add_session("images").await;
@@ -1051,6 +1130,78 @@ async fn restarting_leaves_an_unanswered_permission_waiting() {
 
 /// A question the model asks says `question` on the list, and the reply text
 /// answers it.
+#[tokio::test]
+async fn visual_questions_survive_http_projection_and_reject_stale_answers() {
+    let first = serde_json::json!({
+        "text": "When should review happen?", "choices": ["Before PR", "After PR"],
+        "visuals": [{"title": "Before PR", "alt": "Implement then review then PR", "mermaid": "flowchart LR\n A[Implement] --> B[Review]\n B --> C[PR]"}]
+    });
+    let fixture = Fixture::new(
+        "visual-questions",
+        vec![
+            Canned::Json(tool_call_reply(vec![("ask", first)])),
+            Canned::Json(tool_call_reply(vec![(
+                "ask",
+                serde_json::json!({"text":"Which branch?","choices":["Main","New branch"]}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"Decisions recorded."}),
+            )])),
+        ],
+    )
+    .await;
+    let id = fixture.add_session("visual").await;
+    fixture.client.message(&id, "Plan review").await;
+    let view = fixture.client.wait_for_status(&id, "waiting").await;
+    let question = view["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "question")
+        .unwrap();
+    let first_id = question["body"]["eventId"].as_str().unwrap().to_string();
+    let image: kyotoagent::attachment::ImageAttachment =
+        serde_json::from_value(question["body"]["visuals"][0]["image"].clone()).unwrap();
+    image.validate().unwrap();
+    assert_eq!(
+        question["body"]["visuals"][0]["source"],
+        "flowchart LR\n A[Implement] --> B[Review]\n B --> C[PR]"
+    );
+    assert_eq!(
+        fixture.client.answer(&id, &first_id, "Before PR").await.0,
+        204
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let second_id = loop {
+        let view = fixture.client.view(&id).await;
+        if let Some(card) = view["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["kind"] == "question" && c["body"]["text"] == "Which branch?")
+        {
+            break card["body"]["eventId"].as_str().unwrap().to_string();
+        }
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(
+        fixture.client.answer(&id, &first_id, "After PR").await.0,
+        409
+    );
+    assert_eq!(
+        fixture.client.answer(&id, &second_id, "New branch").await.0,
+        204
+    );
+    let view = fixture.client.wait_for_status(&id, "idle").await;
+    assert!(view["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["body"]["text"] == "New branch"));
+}
+
 #[tokio::test]
 async fn a_question_is_answered_by_its_reply_text() {
     let replies = vec![
