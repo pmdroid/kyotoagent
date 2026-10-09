@@ -346,6 +346,19 @@ pub struct Reply {
     pub completion_tokens: Option<u64>,
 }
 
+fn validate_tool_calls(calls: &[ToolCall]) -> Result<(), ChatError> {
+    let mut seen = std::collections::HashSet::new();
+    for call in calls {
+        if call.id.trim().is_empty() || !seen.insert(call.id.clone()) {
+            return Err(ChatError::Status {
+                status: 502,
+                body: "the model repeated a tool call id".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 impl Reply {
     /// The prose, or an empty string when the model only called a tool.
     pub fn text(&self) -> &str {
@@ -1208,6 +1221,7 @@ fn decode_message(text: &str) -> Result<Reply, ChatError> {
         });
     }
     let mut reply = choice.message;
+    validate_tool_calls(&reply.tool_calls)?;
     reply.prompt_tokens = tokens;
     reply.completion_tokens = completion_tokens;
     Ok(reply)
@@ -1420,6 +1434,7 @@ fn decode_response_value(value: &Value) -> Result<Reply, ChatError> {
     if content.is_empty() && tool_calls.is_empty() {
         return Err(ChatError::NoChoice);
     }
+    validate_tool_calls(&tool_calls)?;
     let prompt_tokens = value.get("usage").and_then(|usage| {
         usage
             .get("input_tokens")
@@ -1515,6 +1530,7 @@ impl Partial {
                 call.kind = function_kind();
             }
         }
+        validate_tool_calls(&tool_calls)?;
         Ok(Reply {
             content: if self.content.is_empty() {
                 None
