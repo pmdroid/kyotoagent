@@ -36,6 +36,12 @@ pub struct Goal {
     pub repeated_gap: u32,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub tool_calls_since_resume: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub evaluations_since_checkpoint: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checkpoints: Vec<GoalCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<GoalRecovery>,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -108,6 +114,54 @@ pub fn parse_criteria(text: &str) -> Result<Vec<GoalCriterion>, String> {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalWorkItem {
+    pub work_item: String,
+    pub evidence_refs: Vec<String>,
+    pub blocker: String,
+    pub next_action: String,
+}
+
+impl GoalWorkItem {
+    pub fn parse(value: &serde_json::Value) -> Result<Self, String> {
+        let item: Self =
+            serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+        if !valid_text(&item.work_item)
+            || !valid_text(&item.next_action)
+            || item.blocker.len() > 4000
+            || item.evidence_refs.is_empty()
+            || item.evidence_refs.len() > 20
+            || item
+                .evidence_refs
+                .iter()
+                .any(|reference| !valid_text(reference))
+        {
+            return Err(
+                "Checkpoint needs a work item, evidence references and a next action.".into(),
+            );
+        }
+        Ok(item)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GoalCheckpoint {
+    pub item: GoalWorkItem,
+    pub revision: String,
+    pub workspace_fingerprint: String,
+    pub through_event_id: String,
+    pub verification: String,
+    pub evidence: Vec<GoalEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GoalRecovery {
+    pub reason: String,
+    pub event_ids: Vec<String>,
+    pub interrupted_tasks: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GoalEvidence {
     pub tool: String,
     pub args: serde_json::Value,
@@ -132,12 +186,17 @@ impl Goal {
             repairs_since_resume: 0,
             repeated_gap: 0,
             tool_calls_since_resume: 0,
+            evaluations_since_checkpoint: 0,
+            checkpoints: Vec::new(),
+            recovery: None,
         }
     }
 
     pub fn resume(&mut self) {
         self.status = GoalStatus::Active;
         self.evaluations_since_resume = 0;
+        self.evaluations_since_checkpoint = 0;
+        self.recovery = None;
         self.blocked_streak = 0;
         self.repairs_since_resume = 0;
         self.repeated_gap = 0;
@@ -157,6 +216,7 @@ impl Goal {
 
     pub fn evaluate(&mut self, verdict: GoalEvaluation) {
         self.evaluations_since_resume = self.evaluations_since_resume.saturating_add(1);
+        self.evaluations_since_checkpoint = self.evaluations_since_checkpoint.saturating_add(1);
         self.blocked_streak = if verdict.decision == GoalDecision::Blocked {
             if self
                 .evaluation
@@ -175,10 +235,34 @@ impl Goal {
                 "{} Next user action: {}",
                 verdict.evidence, verdict.next_step
             ));
-        } else if self.evaluations_since_resume >= 20 {
-            self.pause("Twenty goal evaluations without completion. Review the remaining work before resuming.");
+        } else if self.evaluations_since_resume >= 200 {
+            self.pause(
+                "Two hundred goal evaluations since resume. Review progress before continuing.",
+            );
+        } else if self.evaluations_since_checkpoint >= 20 {
+            self.pause("Twenty goal evaluations without a new verified checkpoint. Review the remaining work before resuming.");
         }
         self.evaluation = Some(verdict);
+    }
+
+    pub fn record_checkpoint(&mut self, checkpoint: GoalCheckpoint) -> bool {
+        if self.status != GoalStatus::Active
+            || checkpoint.evidence.is_empty()
+            || checkpoint.verification.trim().is_empty()
+            || checkpoint.workspace_fingerprint.is_empty()
+            || self.checkpoints.iter().any(|prior| {
+                prior.item.work_item == checkpoint.item.work_item
+                    || prior.workspace_fingerprint == checkpoint.workspace_fingerprint
+            })
+        {
+            return false;
+        }
+        self.checkpoints.push(checkpoint);
+        self.evaluations_since_checkpoint = 0;
+        self.blocked_streak = 0;
+        self.repairs_since_resume = 0;
+        self.repeated_gap = 0;
+        true
     }
 
     pub fn reject(&mut self, explanation: &str) {
@@ -216,6 +300,13 @@ impl Goal {
         }
     }
 
+    pub fn checkpoint_context(&self) -> Vec<serde_json::Value> {
+        self.checkpoints.iter().map(|checkpoint| serde_json::json!({
+            "item": checkpoint.item, "revision": checkpoint.revision,
+            "verification": checkpoint.verification, "through_event_id": checkpoint.through_event_id,
+        })).collect()
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "Goal {:?}: {}\nRounds: {}. Tokens used: {}.{}{}",
@@ -244,6 +335,16 @@ impl Goal {
                 )
             })
             .collect::<String>()
+            + &self.checkpoints.last().map(|checkpoint| format!(
+                "\nVerified checkpoint: {} @ {}\nEvidence: {}\nBlocker: {}\nNext action: {}",
+                checkpoint.item.work_item, checkpoint.revision,
+                checkpoint.item.evidence_refs.join(", "), checkpoint.item.blocker,
+                checkpoint.item.next_action,
+            )).unwrap_or_default()
+            + &self.recovery.as_ref().map(|recovery| format!(
+                "\nRecovery: {}\nReconcile events: {}. Interrupted tasks: {}. Inspect existing external results before retrying any action. After reconciliation, use /goal resume --reconciled.",
+                recovery.reason, recovery.event_ids.join(", "), recovery.interrupted_tasks.join(", "),
+            )).unwrap_or_default()
     }
 }
 
@@ -270,6 +371,69 @@ pub fn parse_objective(text: &str) -> Result<(String, Option<u64>), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn checkpoint(index: u32) -> GoalCheckpoint {
+        GoalCheckpoint {
+            item: GoalWorkItem {
+                work_item: format!("issue-{index}"),
+                evidence_refs: vec!["proof.txt".into()],
+                blocker: String::new(),
+                next_action: "Next issue".into(),
+            },
+            revision: format!("revision-{index}"),
+            workspace_fingerprint: format!("fingerprint-{index}"),
+            through_event_id: format!("e{index}"),
+            verification: "Checked actual result".into(),
+            evidence: vec![GoalEvidence {
+                tool: "run".into(),
+                args: serde_json::json!({"argv":["true"]}),
+                output: "exited 0".into(),
+            }],
+        }
+    }
+
+    fn continuing() -> GoalEvaluation {
+        GoalEvaluation {
+            decision: GoalDecision::Continue,
+            evidence: "Still working".into(),
+            next_step: "Check result".into(),
+            blocker_key: String::new(),
+        }
+    }
+
+    #[test]
+    fn verified_progress_can_cross_twenty_evaluations_but_remains_bounded() {
+        let mut goal = Goal::new("All issues", None);
+        for index in 0..199 {
+            goal.evaluate(continuing());
+            assert!(goal.record_checkpoint(checkpoint(index)));
+        }
+        goal.evaluate(continuing());
+        assert!(!goal.record_checkpoint(checkpoint(200)));
+        assert_eq!(goal.status, GoalStatus::Paused);
+        assert_eq!(goal.evaluations_since_resume, 200);
+        assert_eq!(goal.checkpoints.len(), 199);
+    }
+
+    #[test]
+    fn repeated_checkpoints_and_unverified_claims_do_not_reset_stalls() {
+        let mut goal = Goal::new("All issues", None);
+        assert!(goal.record_checkpoint(checkpoint(1)));
+        for index in 0..20 {
+            goal.evaluate(continuing());
+            assert!(!goal.record_checkpoint(checkpoint(1)));
+            let mut claim = checkpoint(index + 2);
+            claim.evidence.clear();
+            assert!(!goal.record_checkpoint(claim));
+            let mut churn = checkpoint(index + 2);
+            churn.workspace_fingerprint = checkpoint(1).workspace_fingerprint;
+            assert!(!goal.record_checkpoint(churn));
+        }
+        assert_eq!(goal.status, GoalStatus::Paused);
+        assert_eq!(goal.checkpoints.len(), 1);
+        let restored: Goal = serde_json::from_str(&serde_json::to_string(&goal).unwrap()).unwrap();
+        assert_eq!(restored, goal);
+    }
 
     #[test]
     fn objective_preserves_spaces_and_reads_a_positive_budget() {

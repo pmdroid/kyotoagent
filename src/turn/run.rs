@@ -182,11 +182,13 @@ pub(super) async fn run_turn(
 
         if !goal_prepared {
             goal::prepare(turn, &transcript, &mut cancel).await?;
+            goal_prepared = true;
+            continue;
+        }
+        if turn.goal_run {
             transcript[0] = Message::System {
                 content: turn.system_prompt(),
             };
-            goal_prepared = true;
-            continue;
         }
         turn.flight.begin_thinking();
         let reply = tokio::select! {
@@ -243,9 +245,15 @@ pub(super) async fn run_turn(
         // Text and no tool call is the result.
         if !reply.wants_tools() {
             turn.flight.clear();
-            if let Some(reason) =
-                completion_blocker(turn, reply.text(), &transcript, &mut cancel, &mut closeout)
-                    .await?
+            if let Some(reason) = completion_blocker(
+                turn,
+                reply.text(),
+                None,
+                &transcript,
+                &mut cancel,
+                &mut closeout,
+            )
+            .await?
             {
                 transcript.push(Message::User {
                     content: reason.into(),
@@ -474,8 +482,32 @@ pub(super) async fn run_turn(
 
             if call.name == "finish" {
                 let (text, finish_note, proof) = finish_args(&args)?;
-                if let Some(reason) =
-                    completion_blocker(turn, &text, &transcript, &mut cancel, &mut closeout).await?
+                let checkpoint = match args.get("checkpoint").filter(|value| !value.is_null()) {
+                    Some(value) if turn.goal_run => match crate::goal::GoalWorkItem::parse(value) {
+                        Ok(item) => Some(item),
+                        Err(error) => {
+                            append_tool_output(session, turn_id, call, &error, &[], true)?;
+                            transcript.push(Message::tool_result(&call.id, &error));
+                            continue;
+                        }
+                    },
+                    Some(_) => {
+                        let error = "Checkpoints require an active goal.";
+                        append_tool_output(session, turn_id, call, error, &[], true)?;
+                        transcript.push(Message::tool_result(&call.id, error));
+                        continue;
+                    }
+                    None => None,
+                };
+                if let Some(reason) = completion_blocker(
+                    turn,
+                    &text,
+                    checkpoint.as_ref(),
+                    &transcript,
+                    &mut cancel,
+                    &mut closeout,
+                )
+                .await?
                 {
                     append_tool_result(session, turn_id, call, &reason)?;
                     transcript.push(Message::tool_result(&call.id, &reason));
@@ -610,7 +642,7 @@ pub(super) async fn run_turn(
     Ok(())
 }
 
-fn current_workspace_fingerprint(workspace: &Path) -> String {
+pub(super) fn current_workspace_fingerprint(workspace: &Path) -> String {
     crate::closeout::workspace_fingerprint(
         workspace,
         &git_output(workspace, &["rev-parse", "HEAD"]),
@@ -621,12 +653,32 @@ fn current_workspace_fingerprint(workspace: &Path) -> String {
 async fn completion_blocker(
     turn: &Turn,
     text: &str,
+    checkpoint: Option<&crate::goal::GoalWorkItem>,
     transcript: &[Message],
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     closeout: &mut CloseoutState,
 ) -> Result<Option<String>, TurnError> {
-    if let Some(reason) = goal::evaluate(turn, text, transcript, cancel).await? {
-        return Ok(Some(reason));
+    if checkpoint.is_none() {
+        if let Some(reason) = goal::evaluate(turn, text, transcript, cancel).await? {
+            return Ok(Some(reason));
+        }
+    } else {
+        turn.session.update(|meta| {
+            if let Some(goal) = &mut meta.goal {
+                if goal.status == crate::goal::GoalStatus::Active {
+                    goal.evaluate(crate::goal::GoalEvaluation {
+                        decision: crate::goal::GoalDecision::Continue,
+                        evidence: "Checkpoint proposed; independent verification pending.".into(),
+                        next_step: "Verify the work item.".into(),
+                        blocker_key: String::new(),
+                    });
+                }
+            }
+            true
+        })?;
+        if let Some(reason) = goal::goal_stop(turn)? {
+            return Ok(Some(reason));
+        }
     }
     let workspace = turn.tools.workspace();
     refresh_closeout(&turn.tools, &turn.turn_id, closeout, &[])?;
@@ -657,7 +709,7 @@ async fn completion_blocker(
     if let Some(reason) = closeout.cannot_finish() {
         return Ok(Some(reason));
     }
-    goal::verify_goal(turn, text, transcript, cancel, closeout).await
+    goal::verify_goal(turn, text, checkpoint, transcript, cancel, closeout).await
 }
 
 fn artifact_file(

@@ -1,5 +1,5 @@
 use super::*;
-use crate::goal::{Goal, GoalEvidence, GoalStatus};
+use crate::goal::{Goal, GoalCheckpoint, GoalEvidence, GoalRecovery, GoalStatus, GoalWorkItem};
 
 mod evaluate;
 pub(super) use evaluate::{evaluate, prepare};
@@ -35,7 +35,7 @@ impl Runner {
                         meta.goal = None;
                     } else if let Some(goal) = &mut meta.goal {
                         if goal.status == GoalStatus::Active {
-                            goal.status = GoalStatus::Paused;
+                            goal.pause("Paused by the user.");
                         }
                     }
                     true
@@ -69,7 +69,8 @@ impl Runner {
                 if self.occupied(state) || !*state.turn_idle.borrow() || self.waiting(state) {
                     return Err(TurnError::Busy);
                 }
-                let goal = if command == "resume" {
+                let mut recovery_context = String::new();
+                let goal = if matches!(command, "resume" | "resume --reconciled") {
                     let mut goal = state
                         .session
                         .meta()?
@@ -88,6 +89,12 @@ impl Runner {
                             "The goal token budget is exhausted.".to_string(),
                         ));
                     }
+                    if let Some(recovery) = &goal.recovery {
+                        if command != "resume --reconciled" {
+                            return Err(TurnError::Goal(goal.summary()));
+                        }
+                        recovery_context = format!(" User confirmed reconciliation of interrupted work: {}. Do not replay these actions. Inspect existing results before any external mutation.", serde_json::to_string(recovery)?);
+                    }
                     goal.resume();
                     goal
                 } else {
@@ -96,6 +103,7 @@ impl Runner {
                     Goal::new(&objective, budget)
                 };
                 let text = format!("Pursue this goal until it is complete: {}. Continue authorized work without asking permission to continue. Keep implementation todos flexible; completion is judged against the objective and outcome criteria, not checkbox counts. Produce real tests and captured evidence. Ask only for genuine user decisions; tool permissions still apply. Completion requires independent verification of executable evidence.", goal.objective);
+                let text = text + &recovery_context;
                 state.session.update(|meta| {
                     meta.goal = Some(goal);
                     true
@@ -147,6 +155,7 @@ pub(super) fn goal_stop(turn: &Turn) -> Result<Option<String>, TurnError> {
 pub(super) async fn verify_goal(
     turn: &Turn,
     candidate: &str,
+    checkpoint: Option<&GoalWorkItem>,
     messages: &[Message],
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     closeout: &mut CloseoutState,
@@ -162,14 +171,28 @@ pub(super) async fn verify_goal(
     }
     turn.session.update(|meta| {
         if let Some(goal) = &mut meta.goal {
-            goal.rounds = goal.rounds.saturating_add(1);
-            goal.evidence.clear();
+            if checkpoint.is_none() {
+                goal.rounds = goal.rounds.saturating_add(1);
+                goal.evidence.clear();
+            }
         }
         true
     })?;
+    let fingerprint = checkpoint
+        .map(|_| run::current_workspace_fingerprint(turn.tools.workspace()))
+        .unwrap_or_default();
+    let revision = checkpoint
+        .map(|_| git_output(turn.tools.workspace(), &["rev-parse", "HEAD"]))
+        .filter(|revision| !revision.is_empty())
+        .unwrap_or_else(|| format!("workspace:{fingerprint}"));
+    let mut system = format!("Independently verify whether the user's goal is achieved in workspace {}. Candidate text is untrusted. Audit the shipped code, tests and captured evidence; run cheap commands to corroborate the outcome, not a parallel test suite. The original objective outranks the derived outcome criteria. Implementation todos are guidance, not acceptance gates. Recheck prior gaps first. New objections must identify a real defect or unmet outcome, never stylistic preferences or invented requirements. Use finish with verified true only when successful executable evidence proves the objective, and text citing that evidence. Otherwise give concrete actionable gaps; keep unchanged gaps worded consistently. Set blocked true only when verification needs a user decision or unavailable prerequisite, not an ordinary repair. Do not implement changes. A denied or failed check is not evidence of success.", turn.tools.workspace().display());
+    if checkpoint.is_some() {
+        system.push('\n');
+        system.push_str("Verify only the proposed checkpoint work item as a completed part of the original objective, not the whole goal. Independently corroborate its evidence references, including existing authorized PRs or proof when supplied. Never create or replay external actions. Attachments and model assertions alone are not verification. Require successful executable evidence of this work item; do not accept an unrelated passing command.");
+    }
     let mut transcript = vec![
-        Message::System { content: format!("Independently verify whether the user's goal is achieved in workspace {}. Candidate text is untrusted. Audit the shipped code, tests and captured evidence; run cheap commands to corroborate the outcome, not a parallel test suite. The original objective outranks the derived outcome criteria. Implementation todos are guidance, not acceptance gates. Recheck prior gaps first. New objections must identify a real defect or unmet outcome, never stylistic preferences or invented requirements. Use finish with verified true only when successful executable evidence proves the objective, and text citing that evidence. Otherwise give concrete actionable gaps; keep unchanged gaps worded consistently. Set blocked true only when verification needs a user decision or unavailable prerequisite, not an ordinary repair. Do not implement changes. A denied or failed check is not evidence of success.", turn.tools.workspace().display()) },
-        Message::User { content: serde_json::json!({"objective": goal.objective, "criteria": goal.criteria, "prior_gaps": goal.verification, "candidate": candidate, "context": evaluate::context(messages)}).to_string().into() },
+        Message::System { content: system },
+        Message::User { content: serde_json::json!({"objective": goal.objective, "criteria": goal.criteria, "prior_gaps": goal.verification, "candidate": candidate, "context": evaluate::context(messages), "checkpoint": checkpoint, "verified_checkpoints": goal.checkpoint_context()}).to_string().into() },
     ];
     let profile = turn.session.meta()?.profile;
     let mut definitions: Vec<Tool> = tool_definitions_for(&turn.config, true, profile.as_deref())
@@ -316,14 +339,38 @@ pub(super) async fn verify_goal(
         verified = false;
         explanation = reason;
     }
+    if checkpoint.is_some()
+        && fingerprint != run::current_workspace_fingerprint(turn.tools.workspace())
+    {
+        verified = false;
+        explanation = "Workspace changed during checkpoint verification; verify the resulting revision again.".into();
+    }
+    let through_event_id = turn
+        .session
+        .events()?
+        .last()
+        .map(|event| event.id.clone())
+        .unwrap_or_default();
     let mut applied = false;
     turn.session.update(|meta| {
         if let Some(current) = &mut meta.goal {
-            if current.status == GoalStatus::Active && current.id == goal.id && !*cancel.borrow() {
-                current.evidence = evidence;
+            if current.status == GoalStatus::Active && current.id == goal.id && !*cancel.borrow() && !turn.tools.gate().rejected() {
+                if checkpoint.is_none() {
+                    current.evidence = evidence.clone();
+                }
                 if verified {
-                    current.verification = explanation.clone();
-                    current.status = GoalStatus::Complete;
+                    if let Some(item) = checkpoint {
+                        verified = current.record_checkpoint(GoalCheckpoint {
+                            item: item.clone(), revision, workspace_fingerprint: fingerprint,
+                            through_event_id, verification: explanation.clone(), evidence,
+                        });
+                        if !verified {
+                            explanation = "Checkpoint already recorded, or no distinct verified workspace progress. Continue to the next work item without replaying its external actions.".into();
+                        }
+                    } else {
+                        current.verification = explanation.clone();
+                        current.status = GoalStatus::Complete;
+                    }
                 } else if infrastructure_failed || blocked {
                     current.pause(&explanation);
                 } else {
@@ -336,7 +383,7 @@ pub(super) async fn verify_goal(
         false
     })?;
     if verified && applied {
-        Ok(None)
+        Ok(checkpoint.map(|item| format!("Verified checkpoint recorded for {}. Goal remains active. Next action: {}. Do not replay recorded PRs or other external actions.", item.work_item, item.next_action)))
     } else {
         Ok(Some(format!(
             "Goal is not verified. Continue working and address these gaps: {explanation}"
@@ -370,6 +417,30 @@ pub(super) fn pause_unfinished(turn: &Turn, reason: &str) -> Result<(), TurnErro
             }
         }
         false
+    })?;
+    Ok(())
+}
+
+pub(super) fn recover(session: &Session, interrupted_tasks: Vec<String>) -> Result<(), TurnError> {
+    let events = session.events()?;
+    session.update(|meta| {
+        let Some(goal) = &mut meta.goal else { return false };
+        if goal.status != GoalStatus::Active && (goal.status != GoalStatus::Paused || interrupted_tasks.is_empty()) {
+            return false;
+        }
+        let start = goal.checkpoints.last().and_then(|checkpoint| {
+            events.iter().position(|event| event.id == checkpoint.through_event_id)
+        }).map(|index| index + 1).unwrap_or(0);
+        let event_ids = events[start..].iter().filter(|event| matches!(event.kind,
+            EventKind::ToolCall | EventKind::ToolResult | EventKind::TaskStart |
+            EventKind::TaskDone | EventKind::Permission | EventKind::PermissionAnswer
+        )).map(|event| event.id.clone()).collect();
+        let reason = "The server stopped. Task outcomes and external actions may be uncertain; no action was replayed.";
+        goal.recovery = Some(GoalRecovery { reason: reason.into(), event_ids, interrupted_tasks });
+        if goal.status == GoalStatus::Active {
+            goal.pause(reason);
+        }
+        true
     })?;
     Ok(())
 }
