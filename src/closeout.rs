@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::events::{
@@ -562,6 +563,9 @@ pub(crate) fn workspace_snapshot(workspace: &Path) -> HashMap<String, u64> {
             let full = workspace.join(&path);
             let metadata = std::fs::symlink_metadata(&full).ok()?;
             let mut hash = std::collections::hash_map::DefaultHasher::new();
+            metadata.file_type().is_symlink().hash(&mut hash);
+            metadata.file_type().is_file().hash(&mut hash);
+            metadata.permissions().mode().hash(&mut hash);
             if metadata.file_type().is_symlink() {
                 std::fs::read_link(full).ok()?.hash(&mut hash);
             } else if metadata.is_file() {
@@ -1327,6 +1331,43 @@ pub fn proof_item(id: &str, passed: bool, argv: Vec<String>, exit: i32, tail: St
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_FINGERPRINT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn executable_mode_changes_the_candidate_fingerprint() {
+        let root = std::env::temp_dir().join(format!(
+            "kyoto-fingerprint-{}-{}",
+            std::process::id(),
+            NEXT_FINGERPRINT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        let script = root.join("script");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        let before = workspace_snapshot(&root);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&script, permissions).unwrap();
+        }
+        let executable = workspace_snapshot(&root);
+        assert_ne!(before.get("script"), executable.get("script"));
+        let first = executable.clone();
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        assert_eq!(first, workspace_snapshot(&root));
+        std::fs::remove_file(&script).unwrap();
+        std::os::unix::fs::symlink("missing", &script).unwrap();
+        assert_ne!(first.get("script"), workspace_snapshot(&root).get("script"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn public_retry_requires_a_bounded_limit_and_scope() {
