@@ -606,16 +606,15 @@ async fn the_repo_closeout_file_is_ok() {
     assert!(!closeout.contains("no closeout file"), "{stdout}");
     assert!(closeout.contains("3 items"), "{stdout}");
     assert!(
-        stdout.contains("cargo-test  command  cargo test --offline"),
+        stdout.contains("cargo-test  command  python3 scripts/verify.py test"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("cargo-fmt  command  cargo fmt --check"),
+        stdout.contains("cargo-fmt  command  python3 scripts/verify.py fmt"),
         "{stdout}"
     );
     assert!(
-        stdout
-            .contains("cargo-clippy  command  cargo clippy --all-targets --offline -- -D warnings"),
+        stdout.contains("cargo-clippy  command  python3 scripts/verify.py clippy"),
         "{stdout}"
     );
 

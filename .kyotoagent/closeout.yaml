@@ -1,16 +1,20 @@
-version: 1
+specVersion: '0.1'
 retry:
   maxFailedAttemptsPerItem: 3
+  scope: task
 items:
   - id: cargo-test
     kind: command
-    run: cargo test --offline
-    hint: cargo test must pass
+    gate: beforePR
+    exec: [python3, scripts/verify.py, test]
+    timeoutSeconds: 1920
   - id: cargo-fmt
     kind: command
-    run: cargo fmt --check
-    hint: rustfmt must be clean
+    gate: beforePR
+    exec: [python3, scripts/verify.py, fmt]
+    timeoutSeconds: 840
   - id: cargo-clippy
     kind: command
-    run: cargo clippy --all-targets --offline -- -D warnings
-    hint: clippy -D warnings must be clean
+    gate: beforePR
+    exec: [python3, scripts/verify.py, clippy]
+    timeoutSeconds: 1620

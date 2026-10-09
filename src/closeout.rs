@@ -2179,33 +2179,34 @@ mod tests {
             .expect("the kyotoagent file parses");
         assert_eq!(file.max_failures, 3);
         let expected = [
-            ("cargo-test", "cargo test --offline", "cargo test must pass"),
-            ("cargo-fmt", "cargo fmt --check", "rustfmt must be clean"),
-            (
-                "cargo-clippy",
-                "cargo clippy --all-targets --offline -- -D warnings",
-                "clippy -D warnings must be clean",
-            ),
+            ("cargo-test", "test", 1920),
+            ("cargo-fmt", "fmt", 840),
+            ("cargo-clippy", "clippy", 1620),
         ];
         assert_eq!(file.items.len(), expected.len());
-        for (item, (id, run, hint)) in file.items.iter().zip(expected) {
+        assert_eq!(file.retry.as_ref().unwrap().scope, RetryScope::Task);
+        for (item, (id, mode, timeout)) in file.items.iter().zip(expected) {
             assert_eq!(item.id, id);
             assert_eq!(item.kind, CloseoutKind::Command);
-            assert_eq!(item.run, run);
-            assert_eq!(item.hint, hint);
+            assert_eq!(item.run, format!("python3 scripts/verify.py {mode}"));
+            assert_eq!(item.hint, format!("Run {id}"));
             assert!(item.paths.is_empty());
+            let execution = &file.executions[id];
+            assert_eq!(execution.argv, ["python3", "scripts/verify.py", mode]);
+            assert_eq!(execution.timeout, timeout);
         }
         assert!(file.items.iter().all(|item| item.id != "cargo"));
 
         let value: serde_yaml::Value =
             serde_yaml::from_str(&kyotoagent).expect("the kyotoagent file is yaml");
-        assert_eq!(value["version"].as_u64(), Some(1));
+        assert_eq!(value["specVersion"].as_str(), Some("0.1"));
         let items = value["items"].as_sequence().expect("one items list");
         assert_eq!(items.len(), expected.len());
-        for (item, (id, run, _)) in items.iter().zip(expected) {
+        for (item, (id, _, timeout)) in items.iter().zip(expected) {
             assert_eq!(item["kind"].as_str(), Some("command"));
             assert_eq!(item["id"].as_str(), Some(id));
-            assert_eq!(item["run"].as_str(), Some(run));
+            assert_eq!(item["gate"].as_str(), Some("beforePR"));
+            assert_eq!(item["timeoutSeconds"].as_u64(), Some(timeout));
         }
     }
 
@@ -2232,12 +2233,8 @@ mod tests {
         assert!(ci.contains("components: rustfmt, clippy"));
         assert!(ci.contains("Swatinem/rust-cache@v2"));
         assert!(!ci.contains("--offline"));
-        let fmt = ci.find("cargo fmt --check").expect("fmt step");
-        let clippy = ci
-            .find("cargo clippy --all-targets -- -D warnings")
-            .expect("clippy step");
-        let test = ci.find("cargo test").expect("test step");
-        assert!(fmt < clippy && clippy < test);
+        assert!(ci.contains("python3 scripts/verify.py all --online"));
+        assert!(ci.contains("timeout-minutes: 55"));
     }
 
     const ONE_CHECK: &str = "version: 1\nitems:\n  - id: test\n    kind: command\n    run: cargo test\n    hint: Fix the failing test\n";
