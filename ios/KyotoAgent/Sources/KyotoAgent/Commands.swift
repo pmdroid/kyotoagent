@@ -12,6 +12,7 @@ public enum SlashCommand: Equatable, Sendable {
     case openEffort
     case setEffort(String)
     case compact
+    case btw
     case yolo(YoloFlag)
     case ask
     case blocked
@@ -22,6 +23,7 @@ public enum CommandKind: Equatable, Sendable {
     case openModel
     case openEffort
     case compact
+    case btw
     case yolo
     case profile
     case cancel
@@ -153,6 +155,8 @@ public func slashCommand(_ text: String, efforts: [String]) -> SlashCommand {
         return .openEffort
     case ("effort", let level?) where !level.contains(where: \.isWhitespace) && efforts.contains(level):
         return .setEffort(level)
+    case ("btw", _):
+        return .btw
     case ("compact", nil):
         return .compact
     case ("yolo", nil):
@@ -181,6 +185,7 @@ public func commandCatalog(skills: [Skill]) -> [CommandEntry] {
         CommandEntry(id: "help", title: "Help", hint: "list every command", kind: .help),
         CommandEntry(id: "slash-model", title: "/model", hint: "open the model list", kind: .openModel),
         CommandEntry(id: "slash-effort", title: "/effort", hint: "set the reasoning effort", kind: .openEffort),
+        CommandEntry(id: "slash-btw", title: "/btw", hint: "ask a side question, cancel, or retry", kind: .btw),
         CommandEntry(id: "slash-compact", title: "/compact", hint: "summarize the older transcript", kind: .compact),
         CommandEntry(id: "slash-yolo", title: "/yolo", hint: "turn yolo on or off", kind: .yolo),
     ]

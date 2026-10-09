@@ -57,6 +57,7 @@ nonisolated public enum ServeCall: Equatable, Sendable {
     case projects
     case view(String)
     case message(id: String, text: String, images: [ImageAttachment] = [])
+    case btw(id: String, text: String)
     case cancel(String)
     case create(workspace: String, worktree: Bool, profile: String?)
     case delete(String, deleteWorkspace: Bool = false)
@@ -266,7 +267,9 @@ nonisolated public struct ServeClient: Sendable {
     }
 
     nonisolated public func ask(_ id: String, text: String, images: [ImageAttachment] = []) async throws -> AskAcceptance {
-        let response = try await send(.message(id: id, text: text, images: images))
+        let side = slashParts(text)?.name == "btw"
+        let response = try await send(side ? .btw(id: id, text: slashParts(text)?.argument ?? "") : .message(id: id, text: text, images: images))
+        if side, response.status == 202, let json = try? JSONSerialization.jsonObject(with: response.body) as? [String: String], let id = json["btwId"] { return .started(id) }
         if response.status == 202 {
             if let started = try? JSONDecoder().decode(TurnAccepted.self, from: response.body),
                !started.turnId.isEmpty {
@@ -414,6 +417,10 @@ nonisolated public func serveRequest(baseURL: URL, call: ServeCall) -> URLReques
         path = "/v1/sessions/" + id + "/messages"
         method = "POST"
         body = try? JSONEncoder().encode(MessagePayload(text: text, images: images.isEmpty ? nil : images))
+    case .btw(let id, let text):
+        path = "/v1/sessions/" + id + "/btw"
+        method = "POST"
+        body = try? JSONEncoder().encode(MessagePayload(text: text, images: nil))
     case .cancel(let id):
         path = "/v1/sessions/" + id + "/cancel"
         method = "POST"

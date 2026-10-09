@@ -170,10 +170,20 @@ final class DecodeTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(AskQueued.self, from: Data(#"{"queued":false}"#.utf8)))
     }
 
+    func testBtwDecodesAsAnIndependentLeadingAnswer() throws {
+        let data = Data(#"{"id":"c1","kind":"btw","at":"now","body":{"text":"Why?\n\nBecause.","state":"answered","requestId":"btw-1"}}"#.utf8)
+        let card = try JSONDecoder().decode(Card.self, from: data)
+        XCTAssertEqual(card.kind, .btw)
+        XCTAssertEqual(cardEdge(card.kind), .leading)
+        guard case .result(let answer) = card.body else { return XCTFail("Expected BTW answer") }
+        XCTAssertTrue(answer.text.contains("Because."))
+        XCTAssertEqual(try JSONDecoder().decode(Card.self, from: JSONEncoder().encode(card)), card)
+    }
+
     func testCardKindsOmitToolCalls() {
         XCTAssertEqual(
             Set(CardKind.allCases.map(\.rawValue)),
-            ["ask", "question", "answer", "permission", "result", "proof", "artifact", "enhance"]
+            ["ask", "question", "answer", "permission", "result", "proof", "artifact", "enhance", "btw"]
         )
         let toolCall = #"{"id":"c0","kind":"tool_call","at":"2026-10-01T21:00:00.000Z","body":{"text":"quiet"}}"#
         XCTAssertThrowsError(try JSONDecoder().decode(Card.self, from: Data(toolCall.utf8)))

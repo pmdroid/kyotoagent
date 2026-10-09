@@ -32,6 +32,9 @@ struct TranscriptScreen: SwiftUI.View {
                 onOpenText: { expandedCard = $0 },
                 onOpenImage: model.previewImage,
                 onOpenArtifact: { file in try await model.artifact(file, session: sessionId) },
+                onBtw: { action in
+                    Swift.Task { await model.btwAction(action) }
+                },
                 onEnhance: { choice, text in
                     Swift.Task { await model.answerEnhance(choice, text: text) }
                 }
@@ -620,6 +623,7 @@ struct TranscriptCards: SwiftUI.View {
     var onOpenText: (Card) -> Void
     var onOpenImage: (ImageAttachment) -> Void = { _ in }
     var onOpenArtifact: ((ArtifactFile) async throws -> Data)?
+    var onBtw: (String) -> Void = { _ in }
     var onEnhance: (String, String?) -> Void
     @State private var followTail = true
 
@@ -636,6 +640,7 @@ struct TranscriptCards: SwiftUI.View {
                                 onOpenText: onOpenText,
                                 onOpenImage: onOpenImage,
                                 onOpenArtifact: onOpenArtifact,
+                                onBtw: card.id == cards.last(where: { $0.kind == .btw })?.id ? onBtw : nil,
                                 onEnhance: onEnhance
                             )
                                 .id(card.id)
@@ -667,7 +672,7 @@ struct TranscriptCards: SwiftUI.View {
                     followTail = current.atBottom
                 }
                 .scrollDismissesKeyboard(.interactively)
-                .onChange(of: revision) { _, _ in
+                .onChange(of: cards.filter { $0.kind != .btw }) { _, _ in
                     guard followTail else { return }
                     proxy.scrollTo(TranscriptCards.tail, anchor: .bottom)
                 }
@@ -690,6 +695,7 @@ struct CardBlock: SwiftUI.View {
     var onOpenText: (Card) -> Void
     var onOpenImage: (ImageAttachment) -> Void = { _ in }
     var onOpenArtifact: ((ArtifactFile) async throws -> Data)?
+    var onBtw: ((String) -> Void)? = nil
     var onEnhance: (String, String?) -> Void
     var expanded = false
 
@@ -722,6 +728,15 @@ struct CardBlock: SwiftUI.View {
                         .foregroundStyle(Ink.faint)
                 }
                 cardBody
+                if card.kind == .btw, let onBtw, case .result(let answer) = card.body {
+                    if answer.state == "working" {
+                        Button("Cancel side answer") { onBtw("cancel") }
+                            .frame(minHeight: 44)
+                    } else if answer.state == "failed" || answer.state == "cancelled" {
+                        Button("Retry side question") { onBtw("retry") }
+                            .frame(minHeight: 44)
+                    }
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -746,6 +761,7 @@ struct CardBlock: SwiftUI.View {
         case .proof: "Kyoto · Verification"
         case .artifact: "Kyoto · File"
         case .enhance: "Kyoto · Suggested prompt"
+        case .btw: "Kyoto · BTW"
         }
     }
 

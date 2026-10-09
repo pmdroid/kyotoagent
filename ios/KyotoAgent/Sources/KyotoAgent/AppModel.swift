@@ -382,12 +382,18 @@ public final class AppModel {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else {
             return
         }
+        if !attachments.isEmpty, slashParts(text)?.name == "btw" {
+            notice = "Side questions take text only."
+            return
+        }
         if !attachments.isEmpty {
             await postAsk(id, client, text, images: attachments)
             return
         }
         let command = await classified(text)
         switch command {
+        case .btw:
+            await postAsk(id, client, text)
         case .ask:
             await postAsk(id, client, text)
         case .openModel:
@@ -412,6 +418,11 @@ public final class AppModel {
         case .blocked:
             return
         }
+    }
+
+    public func btwAction(_ action: String) async {
+        guard connected, !sending, let id = selection, let client, ["cancel", "retry"].contains(action) else { return }
+        await postAsk(id, client, "/btw " + action, preserveDraft: true)
     }
 
     public func goalCommand(_ command: String) async {
@@ -844,6 +855,10 @@ public final class AppModel {
             if let id {
                 await setArchived(id, archived: false)
             }
+            return .finished
+        case .btw:
+            updateDraft("/btw ")
+            dismissOverlay()
             return .finished
         case .skill(let name):
             updateDraft(filledSkill(name))
