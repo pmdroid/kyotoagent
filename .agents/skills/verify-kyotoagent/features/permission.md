@@ -18,10 +18,10 @@ A write inside the workspace opens a permission card. The turn continues only af
 
 Preconditions:
 
-- `helpers/verify.sh doctor` exits 0.
+- Inside `helpers/verify.sh run -- COMMAND ARGS...`, `"$VERIFY_HELPER" doctor` exits 0.
 - The workspace has no `ping.txt`.
 
-- **Ask for a write.** Run `.agents/skills/verify-kyotoagent/helpers/verify.sh permission`. The helper asks `Create ping.txt containing the single word pong.`
+- **Ask for a write.** Run `"$VERIFY_HELPER" permission`. The helper asks `Create ping.txt containing the single word pong.`
 - **See the card.** Poll until `status` is `waiting` and `GET /v1/sessions` has `waiting: permission`, or until idle if the model finished without a write. If a permission never appears, record the idle view and stop; that is a miss for this feature.
 - **Allow once.** POST `allow_once` for the open permission event id. Expect 204. Save `permission-answer.json`.
 - **Confirm the file.** When idle, `ping.txt` in the workspace contains `pong` (case-insensitive is enough). `view-idle.json` has a result card. `events.jsonl` still names `write_file`. The card JSON does not.
