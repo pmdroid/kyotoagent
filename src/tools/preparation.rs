@@ -13,6 +13,14 @@ impl Tools {
         args: &Value,
     ) -> Result<Option<Self>, ToolError> {
         let string = |key| args.get(key).and_then(Value::as_str).unwrap_or("");
+        if matches!(name, "write_file" | "search_replace") {
+            for key in match name {
+                "write_file" => &["path", "contents"][..],
+                _ => &["path", "old_string", "new_string"][..],
+            } {
+                Tools::required_string(args, key)?;
+            }
+        }
         let body = match name {
             "read_file" | "list_dir" => {
                 let target = self.target(string("path"))?;

@@ -327,9 +327,18 @@ pub(super) async fn execute_tool(
             }
         }
         "search_replace" => {
-            let path = string_arg(args, "path").unwrap_or_default();
-            let old_string = string_arg(args, "old_string").unwrap_or_default();
-            let new_string = string_arg(args, "new_string").unwrap_or_default();
+            let path = match Tools::required_string(args, "path") {
+                Ok(path) => path.to_string(),
+                Err(error) => return Ok(failed(error.to_string())),
+            };
+            let old_string = match Tools::required_string(args, "old_string") {
+                Ok(value) => value.to_string(),
+                Err(error) => return Ok(failed(error.to_string())),
+            };
+            let new_string = match Tools::required_string(args, "new_string") {
+                Ok(value) => value.to_string(),
+                Err(error) => return Ok(failed(error.to_string())),
+            };
             let replace_all = match optional_bool(args, "replace_all") {
                 Ok(replace_all) => replace_all,
                 Err(error) => {
@@ -373,8 +382,14 @@ pub(super) async fn execute_tool(
             }
         }
         "write_file" => {
-            let path = string_arg(args, "path").unwrap_or_default();
-            let contents = string_arg(args, "contents").unwrap_or_default();
+            let path = match Tools::required_string(args, "path") {
+                Ok(path) => path.to_string(),
+                Err(error) => return Ok(failed(error.to_string())),
+            };
+            let contents = match Tools::required_string(args, "contents") {
+                Ok(contents) => contents.to_string(),
+                Err(error) => return Ok(failed(error.to_string())),
+            };
             let tools = tools.clone();
             let turn_id = turn_id.to_string();
             let result =

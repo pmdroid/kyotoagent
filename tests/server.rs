@@ -22,8 +22,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use kyotoagent::config::Config;
-use kyotoagent::server::{Server, ServerError, SOCKET_FILE};
-use kyotoagent::session::github_origin;
+use kyotoagent::events::{Event, EventKind, TaskStartBody};
+use kyotoagent::screen::Status;
+use kyotoagent::server::{Server, ServerError, SESSIONS_DIR, SOCKET_FILE};
+use kyotoagent::session::{github_origin, Session, SessionMeta};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -824,8 +826,81 @@ impl Fixture {
     }
 }
 
-/// The socket is private, and a second serve exits without replacing the live
-/// one.
+/// A rejected second server must not recover or settle the live owner's sessions.
+#[tokio::test]
+async fn a_rejected_second_server_leaves_the_live_session_unchanged() {
+    let root = test_temp_dir().join(format!(
+        "kyotoagent-server-owner-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("the root exists");
+    let config =
+        Config::from_toml("base_url = \"http://127.0.0.1:1/v1\"\nmodel = \"test/model\"\n")
+            .expect("the config parses");
+    let owner = Server::new(&root, &config).expect("the owner is built");
+    let handle = tokio::spawn({
+        let owner = owner;
+        async move {
+            let _ = owner.serve().await;
+        }
+    });
+    let socket = root.join(SOCKET_FILE);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while tokio::net::UnixStream::connect(&socket).await.is_err() {
+        assert!(Instant::now() < deadline, "the owner did not bind");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let workspace = root.join("work");
+    fs::create_dir_all(&workspace).expect("the workspace exists");
+    let session = Session::at(&root.join(SESSIONS_DIR).join("live"));
+    session
+        .create(&SessionMeta::new(
+            "live",
+            &workspace,
+            "test/model",
+            "2026-10-08T00:00:00.000Z",
+        ))
+        .expect("the session exists");
+    session
+        .update(|meta| {
+            meta.status = Status::Working;
+            true
+        })
+        .expect("the session is working");
+    let start = Event::new("e1", "2026-10-08T00:00:01.000Z", "t1", EventKind::TaskStart)
+        .with_body(&TaskStartBody {
+            id: "task-live".to_string(),
+            argv: vec!["sleep".to_string(), "30".to_string()],
+        })
+        .expect("the task start encodes");
+    session.append(&start).expect("the task start is logged");
+    let before_meta = fs::read(session.meta_path()).expect("meta");
+    let before_events = fs::read(session.events_path()).expect("events");
+
+    let intruder = Server::new(&root, &config).expect("the second server is built");
+    let error = intruder.serve().await.expect_err("the second serve exits");
+    assert!(
+        matches!(error, ServerError::AlreadyServing),
+        "the second serve is refused: {error}"
+    );
+    assert_eq!(
+        fs::read(session.meta_path()).expect("meta after"),
+        before_meta,
+        "a refused server must not change session status"
+    );
+    assert_eq!(
+        fs::read(session.events_path()).expect("events after"),
+        before_events,
+        "a refused server must not settle a live task"
+    );
+    handle.abort();
+}
 #[tokio::test]
 async fn the_socket_is_private_and_a_second_serve_exits() {
     let fixture = Fixture::new("private", write_then_finish()).await;
@@ -1036,6 +1111,14 @@ async fn restarting_leaves_an_unanswered_permission_waiting() {
         "the answer lands after the restart: {response}"
     );
     client2.wait_for_status(&id, "idle").await;
+
+    let (status, response) = client2.message(&id, "Create the other file.").await;
+    assert_eq!(status, 202, "{response}");
+    client2.wait_for_status(&id, "idle").await;
+    assert!(
+        !workspace.join("notes.md").exists(),
+        "settling the recovered permission must not perform its write"
+    );
 
     // The first server's turn is still blocked on its gate. Answer it, so it
     // finishes and the runtime can shut down.

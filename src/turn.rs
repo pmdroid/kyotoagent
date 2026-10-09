@@ -1534,28 +1534,28 @@ impl Runner {
             .sessions
             .lock()
             .expect("the session map is not poisoned");
-        let open: Vec<(String, &'static str)> = sessions
+        let open: Vec<(String, String, &'static str)> = sessions
             .iter()
             .map(|(id, state)| {
                 let gate = state.tools.gate();
                 if gate.open_permission().is_some() {
-                    (id.clone(), "permission")
-                } else if gate.open_question().is_some() {
-                    (id.clone(), "question")
+                    (id.clone(), String::new(), "permission")
+                } else if let Some(question) = gate.open_question() {
+                    (id.clone(), question, "question")
                 } else {
-                    (String::new(), "")
+                    (String::new(), String::new(), "")
                 }
             })
-            .filter(|(_, kind)| !kind.is_empty())
+            .filter(|(_, _, kind)| !kind.is_empty())
             .collect();
         drop(sessions);
-        for (id, kind) in open {
+        for (id, question, kind) in open {
             match kind {
                 "permission" => {
                     let _ = self.answer(&id, Answer::allow_once());
                 }
                 _ => {
-                    let _ = self.answer_question(&id, "");
+                    let _ = self.answer_question_for(&id, Some(&question), "");
                 }
             }
         }

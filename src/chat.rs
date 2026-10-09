@@ -408,6 +408,8 @@ struct WireUsage {
 #[derive(Deserialize)]
 struct WireChoice {
     message: Reply,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 /// A completion request that did not come back with a message. Each variant
@@ -1192,12 +1194,20 @@ fn decode_message(text: &str) -> Result<Reply, ChatError> {
     let wire: WireResponse = serde_json::from_str(text).map_err(ChatError::Decode)?;
     let tokens = wire.usage.as_ref().and_then(|usage| usage.prompt_tokens);
     let completion_tokens = wire.usage.and_then(|usage| usage.completion_tokens);
-    let mut reply = wire
-        .choices
-        .into_iter()
-        .next()
-        .map(|choice| choice.message)
-        .ok_or(ChatError::NoChoice)?;
+    let choice = wire.choices.into_iter().next().ok_or(ChatError::NoChoice)?;
+    if !successful_finish(choice.finish_reason.as_deref()) {
+        return Err(ChatError::Status {
+            status: 502,
+            body: format!(
+                "the model generation ended with {}",
+                choice
+                    .finish_reason
+                    .as_deref()
+                    .unwrap_or("no finish reason")
+            ),
+        });
+    }
+    let mut reply = choice.message;
     reply.prompt_tokens = tokens;
     reply.completion_tokens = completion_tokens;
     Ok(reply)
@@ -1262,7 +1272,12 @@ async fn read_completion(
                 decode_message(&text)
             }
         }
-        BodyMode::Sse => partial.finish(),
+        BodyMode::Sse => {
+            if !partial.done {
+                return Err(ChatError::NoChoice);
+            }
+            partial.finish()
+        }
     }
 }
 
@@ -1359,7 +1374,19 @@ fn decode_responses(text: &str) -> Result<Reply, ChatError> {
     decode_response_value(&value)
 }
 
+fn successful_finish(reason: Option<&str>) -> bool {
+    matches!(reason, None | Some("stop" | "tool_calls"))
+}
+
 fn decode_response_value(value: &Value) -> Result<Reply, ChatError> {
+    if let Some(status) = value.get("status").and_then(Value::as_str) {
+        if status != "completed" {
+            return Err(ChatError::Status {
+                status: 502,
+                body: format!("the model generation ended with {status}"),
+            });
+        }
+    }
     let Some(output) = value.get("output").and_then(Value::as_array) else {
         return Err(ChatError::NoChoice);
     };
@@ -1459,6 +1486,7 @@ struct Partial {
     calls: Vec<ToolCall>,
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
+    finish_reason: Option<String>,
     saw: bool,
     done: bool,
 }
@@ -1467,6 +1495,18 @@ impl Partial {
     fn finish(self) -> Result<Reply, ChatError> {
         if !self.saw || (self.responses && !self.done) {
             return Err(ChatError::NoChoice);
+        }
+        if !self.responses && !self.done {
+            return Err(ChatError::NoChoice);
+        }
+        if !self.responses && !successful_finish(self.finish_reason.as_deref()) {
+            return Err(ChatError::Status {
+                status: 502,
+                body: format!(
+                    "the model generation ended with {}",
+                    self.finish_reason.as_deref().unwrap_or("no finish reason")
+                ),
+            });
         }
         let mut tool_calls = self.calls;
         tool_calls.retain(|call| !call.id.is_empty() || !call.name.is_empty());
@@ -1532,7 +1572,22 @@ fn apply_sse_line(
         partial.done = true;
         return Ok(());
     }
-    let chunk: StreamChunk = serde_json::from_str(payload).map_err(ChatError::Decode)?;
+    let value: Value = serde_json::from_str(payload).map_err(ChatError::Decode)?;
+    if let Some(message) = value
+        .pointer("/error/message")
+        .or_else(|| value.get("message"))
+        .and_then(Value::as_str)
+        .filter(|_| {
+            value.get("error").is_some()
+                || value.get("type").and_then(Value::as_str) == Some("error")
+        })
+    {
+        return Err(ChatError::Status {
+            status: 502,
+            body: message.to_string(),
+        });
+    }
+    let chunk: StreamChunk = serde_json::from_value(value).map_err(ChatError::Decode)?;
     if let Some(usage) = chunk.usage {
         if let Some(tokens) = usage.prompt_tokens {
             partial.prompt_tokens = Some(tokens);
@@ -1545,6 +1600,15 @@ fn apply_sse_line(
         return Ok(());
     };
     partial.saw = true;
+    if let Some(reason) = choice.finish_reason {
+        partial.finish_reason = Some(reason);
+    }
+    if choice.error.is_some() {
+        return Err(ChatError::Status {
+            status: 502,
+            body: "the model stream failed".to_string(),
+        });
+    }
     let Some(delta) = choice.delta else {
         return Ok(());
     };
@@ -1691,6 +1755,10 @@ struct StreamChunk {
 struct StreamChoice {
     #[serde(default)]
     delta: Option<StreamDelta>,
+    #[serde(default)]
+    finish_reason: Option<String>,
+    #[serde(default)]
+    error: Option<Value>,
 }
 
 #[derive(Deserialize)]

@@ -12,7 +12,10 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use kyotoagent::config::Config;
-use kyotoagent::server::{Server, SOCKET_FILE};
+use kyotoagent::events::{Event, EventKind, TaskStartBody};
+use kyotoagent::screen::Status;
+use kyotoagent::server::{Server, SESSIONS_DIR, SOCKET_FILE};
+use kyotoagent::session::{Session, SessionMeta};
 
 /// Run the `kyotoagent` binary with `HOME` in the test home, and return its output.
 ///
@@ -154,7 +157,108 @@ async fn the_cli_talks_to_the_socket() {
     let _ = fs::remove_dir_all(&home);
 }
 
-/// Without a server, the subcommands fail with the socket in the message.
+/// Two processes starting together leave one owner, and a stale socket still restarts.
+#[tokio::test]
+async fn simultaneous_startup_has_one_owner_and_a_stale_socket_recovers() {
+    let home = std::env::temp_dir().join(format!(
+        "kyotoagent-cli-owner-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let _ = fs::remove_dir_all(&home);
+    let root = home.join(".kyotoagent");
+    let workspace = home.join("work");
+    fs::create_dir_all(&root).expect("the root exists");
+    fs::create_dir_all(&workspace).expect("the workspace exists");
+    fs::write(
+        root.join("config.toml"),
+        "base_url = \"http://127.0.0.1:1/v1\"\nmodel = \"test/model\"\n",
+    )
+    .expect("the config writes");
+    let session = Session::at(&root.join(SESSIONS_DIR).join("restarted"));
+    session
+        .create(&SessionMeta::new(
+            "restarted",
+            &workspace,
+            "test/model",
+            "2026-10-08T00:00:00.000Z",
+        ))
+        .expect("the session exists");
+    session
+        .update(|meta| {
+            meta.status = Status::Working;
+            true
+        })
+        .expect("the session is working");
+    session
+        .append(
+            &Event::new("e1", "2026-10-08T00:00:01.000Z", "t1", EventKind::TaskStart)
+                .with_body(&TaskStartBody {
+                    id: "task-stale".to_string(),
+                    argv: vec!["sleep".to_string(), "30".to_string()],
+                })
+                .expect("the task start encodes"),
+        )
+        .expect("the task start is logged");
+    fs::write(root.join(SOCKET_FILE), b"").expect("a stale socket file exists");
+    let marker = root.join("owners.txt");
+    let binary = env!("CARGO_BIN_EXE_kyotoagent");
+    let script_for = |name: &str| {
+        format!(
+            "set -e; \"{binary}\" serve >\"{log}\" 2>&1 & pid=$!; for _ in $(seq 1 80); do if ! kill -0 \"$pid\" 2>/dev/null; then break; fi; if [ -S \"{socket}\" ]; then echo \"$pid\" >> \"{marker}\"; kill \"$pid\"; wait \"$pid\" || true; exit 0; fi; sleep 0.05; done; kill \"$pid\" || true; wait \"$pid\" || true; exit 1",
+            binary = binary,
+            log = root.join(name).display(),
+            socket = root.join(SOCKET_FILE).display(),
+            marker = marker.display(),
+        )
+    };
+    let launch = |home: PathBuf, script: String| {
+        tokio::task::spawn_blocking(move || {
+            Command::new("sh")
+                .arg("-c")
+                .arg(&script)
+                .env("HOME", &home)
+                .output()
+                .expect("startup runs")
+        })
+    };
+    let first = launch(home.clone(), script_for("race-a.log"));
+    let second = launch(home.clone(), script_for("race-b.log"));
+    let (first, second) = tokio::join!(first, second);
+    let first = first.expect("the first startup joins");
+    let second = second.expect("the second startup joins");
+    let owners = fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(
+        owners.lines().filter(|line| !line.is_empty()).count(),
+        1,
+        "one process owns startup: {owners}\n{:?}\n{:?}",
+        first.status,
+        second.status
+    );
+    let logs = format!(
+        "{}\n{}",
+        fs::read_to_string(root.join("race-a.log")).unwrap_or_default(),
+        fs::read_to_string(root.join("race-b.log")).unwrap_or_default()
+    );
+    assert!(
+        logs.contains("already running"),
+        "the losing process is refused: {logs}"
+    );
+
+    let events = fs::read_to_string(session.events_path()).expect("events");
+    assert!(
+        events.contains("The server stopped."),
+        "the genuine restart recovers the dead turn: {events}"
+    );
+    assert!(
+        events.contains("\"state\":\"stopped\""),
+        "the genuine restart settles the dead task: {events}"
+    );
+    let _ = fs::remove_dir_all(&home);
+}
 #[tokio::test]
 async fn without_a_server_the_cli_says_so() {
     let home = std::env::temp_dir().join(format!("kyotoagent-cli-down-{}", std::process::id()));

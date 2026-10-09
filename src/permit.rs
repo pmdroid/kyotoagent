@@ -330,6 +330,7 @@ struct State {
     canned: VecDeque<Answer>,
     /// An answer that arrived while the turn was stopped.
     live: Option<Answer>,
+
     /// The question the turn is stopped on, if any. A turn holds one open card
     /// at a time, so this is `None` whenever a permission is open.
     open_question: Option<String>,
@@ -368,6 +369,10 @@ impl Gate {
     /// Whether the open permission was left by a reload, so no turn is waiting
     /// on it. The answer to such a permission settles the card itself, because
     /// the turn that asked it is gone.
+    pub fn take_live_answer(&self) -> Option<Answer> {
+        self.lock().live.take()
+    }
+
     pub fn is_held_open(&self) -> bool {
         let state = self.lock();
         state.open.is_some() && state.held
@@ -397,6 +402,7 @@ impl Gate {
             }
         }
         state.live = Some(answer);
+        state.held = false;
         state.open = None;
         self.shared.answered.notify_all();
         Ok(())
