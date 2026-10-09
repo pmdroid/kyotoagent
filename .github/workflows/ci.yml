@@ -23,7 +23,10 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap
-      - run: bwrap --bind / / true
+      - run: |
+          printf '%s\n' 'abi <abi/4.0>,' 'profile kyoto-bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' '}' | sudo tee /etc/apparmor.d/kyoto-bwrap
+          sudo apparmor_parser -r /etc/apparmor.d/kyoto-bwrap
+          bwrap --bind / / true
       - run: python3 -m unittest discover -s evals -p 'test_*.py'
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
