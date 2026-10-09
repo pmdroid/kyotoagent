@@ -132,6 +132,7 @@ pub(in crate::turn) async fn evaluate(
     let input = serde_json::json!({
         "objective": goal.objective, "criteria": goal.criteria, "prior_gaps": goal.verification,
         "prior_evaluation": goal.evaluation, "context": context(messages), "candidate": candidate,
+        "verified_checkpoints": goal.checkpoint_context(),
     })
     .to_string();
     let Some(text) = assess(turn, EVALUATOR, input, cancel).await? else {

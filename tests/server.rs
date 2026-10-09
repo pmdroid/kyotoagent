@@ -109,6 +109,88 @@ async fn goal_http_routes_continue_then_verify_and_publish_persisted_outcomes() 
 }
 
 #[tokio::test]
+async fn goal_http_checkpoint_persists_proof_and_denial_survives_server_restart() {
+    let text = |value: &str| {
+        Canned::Json(
+            serde_json::json!({"choices":[{"message":{"role":"assistant","content":value}}]})
+                .to_string(),
+        )
+    };
+    let mut fixture = Fixture::new("goal-http-checkpoint", vec![
+        text(r#"[{"outcome":"Two issues complete","verification":"Check each result"}]"#),
+        Canned::Json(tool_call_reply(vec![("finish", serde_json::json!({"text":"First issue ready", "checkpoint":{"work_item":"issue-1", "evidence_refs":["proof.txt"], "blocker":"", "next_action":"issue-2"}}))])),
+        Canned::Json(tool_call_reply(vec![("run", serde_json::json!({"argv":["cat","proof.txt"]}))])),
+        Canned::Json(tool_call_reply(vec![("finish", serde_json::json!({"verified":true,"text":"Read the proof"}))])),
+        Canned::Json(tool_call_reply(vec![("write_file", serde_json::json!({"path":"issue-2.txt","contents":"must not write"}))])),
+    ]).await;
+    let id = fixture.add_session("goal").await;
+    fs::write(
+        fixture.workspace("goal").join("proof.txt"),
+        "verified first issue",
+    )
+    .unwrap();
+    assert_eq!(
+        fixture
+            .client
+            .message(&id, "/goal Complete both issues")
+            .await
+            .0,
+        202
+    );
+    fixture.client.wait_for_status(&id, "waiting").await;
+    let permission = fixture.client.open_permission_id(&id).await;
+    assert_eq!(
+        fixture
+            .client
+            .answer(&id, &permission, "allow_once")
+            .await
+            .0,
+        204
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let view = fixture.client.view(&id).await;
+            if view["status"] == "waiting"
+                && view["goal"]["checkpoints"]
+                    .as_array()
+                    .is_some_and(|items| items.len() == 1)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let permission = fixture.client.open_permission_id(&id).await;
+    assert_eq!(fixture.client.answer(&id, &permission, "deny").await.0, 204);
+    let idle = fixture.client.wait_for_status(&id, "idle").await;
+    assert_eq!(idle["goal"]["status"], "paused");
+    assert_eq!(
+        idle["goal"]["checkpoints"][0]["item"]["work_item"],
+        "issue-1"
+    );
+    assert_eq!(
+        idle["goal"]["checkpoints"][0]["evidence"][0]["output"],
+        "exited 0\n\nverified first issue"
+    );
+    assert!(!fixture.workspace("goal").join("issue-2.txt").exists());
+    fixture._handle.abort();
+    let _ = (&mut fixture._handle).await;
+    let config =
+        Config::from_toml(&fs::read_to_string(fixture.root.join("config.toml")).unwrap()).unwrap();
+    let restarted = Server::new(&fixture.root, &config).unwrap();
+    fixture.runner = Arc::clone(restarted.runner());
+    fixture._handle = tokio::spawn(async move {
+        restarted.serve().await.unwrap();
+    });
+    fixture.client.wait_for_socket().await;
+    let restored = fixture.client.wait_for_status(&id, "idle").await;
+    assert_eq!(restored["goal"], idle["goal"]);
+    assert!(!fixture.workspace("goal").join("issue-2.txt").exists());
+}
+
+#[tokio::test]
 async fn image_uploads_above_two_mib_are_accepted_and_upload_limits_are_enforced() {
     let fixture = Fixture::new("large-image-upload", finish_turn("A picture.")).await;
     let id = fixture.add_session("images").await;
@@ -3982,4 +4064,57 @@ async fn saved_layout_is_global_and_preserves_other_server_configuration() {
         assert!((400..500).contains(&status));
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }
+}
+
+#[tokio::test]
+async fn btw_http_answers_without_changing_a_waiting_work_turn() {
+    let fixture = Fixture::new("btw-http", vec![
+        Canned::Json(tool_call_reply(vec![("write_file", serde_json::json!({"path":"main.txt", "contents":"main"}))])),
+        Canned::Json(serde_json::json!({"choices":[{"message":{"role":"assistant","content":"A separate answer."}}]}).to_string()),
+    ]).await;
+    let id = fixture.add_session("s").await;
+    assert_eq!(fixture.client.message(&id, "Write main.txt").await.0, 202);
+    fixture.client.wait_for_status(&id, "waiting").await;
+    let permission = fixture.client.open_permission_id(&id).await;
+    let (status, accepted) = fixture
+        .client
+        .request(
+            "POST",
+            &format!("/v1/sessions/{id}/btw"),
+            Some(r#"{"text":"Why this change?"}"#),
+        )
+        .await;
+    assert_eq!(status, 202, "{accepted}");
+    assert!(accepted.contains("btwId"));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let (_, body) = fixture
+                .client
+                .request("GET", &format!("/v1/sessions/{id}/view"), None)
+                .await;
+            let view: Value = serde_json::from_str(&body).unwrap();
+            if view["cards"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|card| card["kind"] == "btw" && card["body"]["state"] == "answered")
+            {
+                assert_eq!(view["status"], "waiting");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fixture.client.open_permission_id(&id).await, permission);
+    assert!(!fixture.workspace("s").join("main.txt").exists());
+    assert_eq!(
+        fixture
+            .client
+            .request("DELETE", &format!("/v1/sessions/{id}/btw"), None)
+            .await
+            .0,
+        400
+    );
 }

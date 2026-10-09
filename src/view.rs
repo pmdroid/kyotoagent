@@ -46,6 +46,7 @@ pub enum CardKind {
     Proof,
     Artifact,
     Enhance,
+    Btw,
 }
 
 impl CardKind {
@@ -59,6 +60,7 @@ impl CardKind {
             CardKind::Proof => "proof",
             CardKind::Artifact => "artifact",
             CardKind::Enhance => "enhance",
+            CardKind::Btw => "btw",
         }
     }
 }
@@ -527,6 +529,7 @@ fn opened(events: &[Event]) -> Vec<Opened> {
                 .ok()
                 .and_then(|body| serde_json::to_value(body).ok()),
             EventKind::Enhance => enhance_body(event),
+            EventKind::BtwRequest => Some(btw_body(event, events)),
             _ => None,
         };
         if event.kind == EventKind::Enhance {
@@ -636,9 +639,22 @@ fn card_kind(kind: EventKind) -> CardKind {
         EventKind::Permission => CardKind::Permission,
         EventKind::Result => CardKind::Result,
         EventKind::Enhance => CardKind::Enhance,
+        EventKind::BtwRequest => CardKind::Btw,
         EventKind::Artifact => CardKind::Artifact,
         _ => CardKind::Proof,
     }
+}
+
+fn btw_body(request: &Event, events: &[Event]) -> Value {
+    let result = events
+        .iter()
+        .rev()
+        .find(|event| event.kind == EventKind::BtwResult && event.body["requestId"] == request.id);
+    let question = request.body["question"].as_str().unwrap_or_default();
+    let answer = result
+        .and_then(|event| event.body["text"].as_str())
+        .unwrap_or("Answering… · /btw cancel");
+    serde_json::json!({ "text": format!("{question}\n\n{answer}"), "question": question, "answer": answer, "state": result.map(|event| event.body["state"].clone()).unwrap_or(serde_json::json!("working")), "requestId": request.id })
 }
 
 fn answer_body(event: &Event) -> Option<Value> {

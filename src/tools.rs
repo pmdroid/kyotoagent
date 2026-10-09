@@ -618,6 +618,10 @@ impl Tools {
         limit: usize,
     ) -> Result<WriteFile, ToolError> {
         let target = self.target(path)?;
+        crate::operator_config::check_write(&target.absolute).map_err(|source| ToolError::Io {
+            path: target.absolute.clone(),
+            source,
+        })?;
         let name = display(&target.absolute);
         if new.len() > limit {
             return Err(ToolError::TooLarge {
@@ -1011,9 +1015,14 @@ impl Tools {
             source: std::io::Error::other("the command waiter did not report"),
         };
 
-        let mut child = TokioCommand::new(&program)
+        let command = crate::operator_config::command(&program, &argv[1..]).map_err(|source| {
+            ToolError::Spawn {
+                program: program.clone(),
+                source,
+            }
+        })?;
+        let mut child = TokioCommand::from(command)
             .process_group(0)
-            .args(&argv[1..])
             .current_dir(&self.workspace)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1051,7 +1060,9 @@ impl Tools {
             result = &mut done_rx => result.ok().flatten(),
             _ = cancel.changed() => {
                 signal_group(pid, libc::SIGTERM);
-                let result = tokio::time::timeout(Duration::from_secs(2), &mut done_rx).await;
+                let grace = tokio::time::Instant::now() + Duration::from_secs(2);
+                let result = tokio::time::timeout_at(grace, &mut done_rx).await;
+                tokio::time::sleep_until(grace).await;
                 signal_group(pid, libc::SIGKILL);
                 match result {
                     Ok(result) => result.ok().flatten(),
@@ -1084,9 +1095,14 @@ impl Tools {
 
     /// Start the command and wait for it, with the timeout on the clock.
     fn execute(&self, argv: &[String], timeout: u64) -> Result<RunOutput, ToolError> {
+        use std::os::unix::process::CommandExt;
         let program = argv[0].clone();
-        let mut child = Command::new(&program)
-            .args(&argv[1..])
+        let mut child = crate::operator_config::command(&program, &argv[1..])
+            .map_err(|source| ToolError::Spawn {
+                program: program.clone(),
+                source,
+            })?
+            .process_group(0)
             .current_dir(&self.workspace)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1108,14 +1124,15 @@ impl Tools {
                 Ok(Some(status)) => break status,
                 Ok(None) if Instant::now() >= deadline => {
                     timed_out = true;
-                    let _ = child.kill();
+                    signal_group(Some(child.id()), libc::SIGKILL);
                     break child
                         .wait()
                         .map_err(|source| ToolError::Spawn { program, source })?;
                 }
                 Ok(None) => thread::sleep(Duration::from_millis(10)),
                 Err(source) => {
-                    let _ = child.kill();
+                    signal_group(Some(child.id()), libc::SIGKILL);
+                    let _ = child.wait();
                     return Err(ToolError::Spawn { program, source });
                 }
             }

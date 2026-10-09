@@ -2234,6 +2234,36 @@ async fn transient_completion_statuses_retry_the_same_request() {
 }
 
 #[tokio::test]
+async fn structured_http_400_overload_retries_but_policy_and_message_text_do_not() {
+    for (body, retries) in [
+        (
+            r#"{"error":{"code":"server_is_overloaded","message":"Try later"}}"#,
+            true,
+        ),
+        (
+            r#"{"error":{"code":"cybersecurity_policy","message":"server_is_overloaded"}}"#,
+            false,
+        ),
+        (r#"{"error":{"code":"content_policy_violation"}}"#, false),
+        (r#"{"error":{"message":"server_is_overloaded"}}"#, false),
+        ("server_is_overloaded", false),
+    ] {
+        let server = FakeServer::start(vec![
+            Canned::Status(400, body.into()),
+            Canned::Json(a_text_reply()),
+        ]);
+        let client = ChatClient::new(&config_for(&server, None)).unwrap();
+        let result = client.complete(&a_conversation(), &[]).await;
+        assert_eq!(result.is_ok(), retries, "{body}");
+        let requests = server.received();
+        assert_eq!(requests.len(), if retries { 2 } else { 1 }, "{body}");
+        if retries {
+            assert_eq!(requests[0].body, requests[1].body);
+        }
+    }
+}
+
+#[tokio::test]
 async fn failed_response_streams_retry_without_returning_partial_tools() {
     let failed = sse_line(
         serde_json::json!({"type":"response.reasoning_summary_text.delta", "delta":"Discard me"}),

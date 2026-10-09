@@ -182,11 +182,13 @@ pub(super) async fn run_turn(
 
         if !goal_prepared {
             goal::prepare(turn, &transcript, &mut cancel).await?;
+            goal_prepared = true;
+            continue;
+        }
+        if turn.goal_run {
             transcript[0] = Message::System {
                 content: turn.system_prompt(),
             };
-            goal_prepared = true;
-            continue;
         }
         turn.flight.begin_thinking();
         let reply = tokio::select! {
@@ -243,9 +245,15 @@ pub(super) async fn run_turn(
         // Text and no tool call is the result.
         if !reply.wants_tools() {
             turn.flight.clear();
-            if let Some(reason) =
-                completion_blocker(turn, reply.text(), &transcript, &mut cancel, &mut closeout)
-                    .await?
+            if let Some(reason) = completion_blocker(
+                turn,
+                reply.text(),
+                None,
+                &transcript,
+                &mut cancel,
+                &mut closeout,
+            )
+            .await?
             {
                 transcript.push(Message::User {
                     content: reason.into(),
@@ -269,6 +277,15 @@ pub(super) async fn run_turn(
             if session.meta().is_ok_and(|meta| meta.archived) {
                 stopped = true;
             }
+            if turn.goal_run && !stopped && !finished && !turn_stop {
+                session.update(|meta| {
+                    if let Some(goal) = &mut meta.goal {
+                        goal.begin_tool_call();
+                        return true;
+                    }
+                    false
+                })?;
+            }
             if !finished {
                 if let Some(reason) = goal::goal_stop(turn)? {
                     result_text = reason;
@@ -285,10 +302,32 @@ pub(super) async fn run_turn(
             }
             if batch::parallel(&call.name) && !(closeout.file.is_some() && call.name == "run") {
                 let mut group = vec![call];
-                while calls.peek().is_some_and(|next| {
-                    batch::parallel(&next.name) && !(closeout.file.is_some() && next.name == "run")
-                }) {
+                let remaining = if turn.goal_run {
+                    session.meta()?.goal.map_or(0, |goal| {
+                        crate::goal::MAX_TOOL_CALLS_PER_RESUME
+                            .saturating_sub(goal.tool_calls_since_resume)
+                    }) as usize
+                } else {
+                    usize::MAX
+                };
+                while group.len() - 1 < remaining
+                    && calls.peek().is_some_and(|next| {
+                        batch::parallel(&next.name)
+                            && !(closeout.file.is_some() && next.name == "run")
+                    })
+                {
                     group.push(calls.next().unwrap());
+                }
+                if turn.goal_run && group.len() > 1 {
+                    session.update(|meta| {
+                        if let Some(goal) = &mut meta.goal {
+                            for _ in 1..group.len() {
+                                goal.begin_tool_call();
+                            }
+                            return true;
+                        }
+                        false
+                    })?;
                 }
                 let outcomes = batch::execute(turn, &group, &cancel, &closeout).await?;
                 let written: Vec<String> = outcomes
@@ -443,8 +482,32 @@ pub(super) async fn run_turn(
 
             if call.name == "finish" {
                 let (text, finish_note, proof) = finish_args(&args)?;
-                if let Some(reason) =
-                    completion_blocker(turn, &text, &transcript, &mut cancel, &mut closeout).await?
+                let checkpoint = match args.get("checkpoint").filter(|value| !value.is_null()) {
+                    Some(value) if turn.goal_run => match crate::goal::GoalWorkItem::parse(value) {
+                        Ok(item) => Some(item),
+                        Err(error) => {
+                            append_tool_output(session, turn_id, call, &error, &[], true)?;
+                            transcript.push(Message::tool_result(&call.id, &error));
+                            continue;
+                        }
+                    },
+                    Some(_) => {
+                        let error = "Checkpoints require an active goal.";
+                        append_tool_output(session, turn_id, call, error, &[], true)?;
+                        transcript.push(Message::tool_result(&call.id, error));
+                        continue;
+                    }
+                    None => None,
+                };
+                if let Some(reason) = completion_blocker(
+                    turn,
+                    &text,
+                    checkpoint.as_ref(),
+                    &transcript,
+                    &mut cancel,
+                    &mut closeout,
+                )
+                .await?
                 {
                     append_tool_result(session, turn_id, call, &reason)?;
                     transcript.push(Message::tool_result(&call.id, &reason));
@@ -525,6 +588,15 @@ pub(super) async fn run_turn(
     }
 
     goal::pause_unfinished(turn, &result_text)?;
+    if turn.goal_run
+        && session.meta()?.goal.is_some_and(|goal| {
+            goal.status == crate::goal::GoalStatus::Paused
+                && goal.tool_calls_since_resume >= crate::goal::MAX_TOOL_CALLS_PER_RESUME
+        })
+    {
+        tools.tasks().cancel_all();
+        tools.tasks().wait_idle().await;
+    }
 
     // A turn that ended any way but finish still owes a result event.
     if !finished {
@@ -570,7 +642,7 @@ pub(super) async fn run_turn(
     Ok(())
 }
 
-fn current_workspace_fingerprint(workspace: &Path) -> String {
+pub(super) fn current_workspace_fingerprint(workspace: &Path) -> String {
     crate::closeout::workspace_fingerprint(
         workspace,
         &git_output(workspace, &["rev-parse", "HEAD"]),
@@ -581,12 +653,32 @@ fn current_workspace_fingerprint(workspace: &Path) -> String {
 async fn completion_blocker(
     turn: &Turn,
     text: &str,
+    checkpoint: Option<&crate::goal::GoalWorkItem>,
     transcript: &[Message],
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     closeout: &mut CloseoutState,
 ) -> Result<Option<String>, TurnError> {
-    if let Some(reason) = goal::evaluate(turn, text, transcript, cancel).await? {
-        return Ok(Some(reason));
+    if checkpoint.is_none() {
+        if let Some(reason) = goal::evaluate(turn, text, transcript, cancel).await? {
+            return Ok(Some(reason));
+        }
+    } else {
+        turn.session.update(|meta| {
+            if let Some(goal) = &mut meta.goal {
+                if goal.status == crate::goal::GoalStatus::Active {
+                    goal.evaluate(crate::goal::GoalEvaluation {
+                        decision: crate::goal::GoalDecision::Continue,
+                        evidence: "Checkpoint proposed; independent verification pending.".into(),
+                        next_step: "Verify the work item.".into(),
+                        blocker_key: String::new(),
+                    });
+                }
+            }
+            true
+        })?;
+        if let Some(reason) = goal::goal_stop(turn)? {
+            return Ok(Some(reason));
+        }
     }
     let workspace = turn.tools.workspace();
     refresh_closeout(&turn.tools, &turn.turn_id, closeout, &[])?;
@@ -617,7 +709,7 @@ async fn completion_blocker(
     if let Some(reason) = closeout.cannot_finish() {
         return Ok(Some(reason));
     }
-    goal::verify_goal(turn, text, transcript, cancel, closeout).await
+    goal::verify_goal(turn, text, checkpoint, transcript, cancel, closeout).await
 }
 
 fn artifact_file(

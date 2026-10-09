@@ -24,8 +24,24 @@ ensure_run() {
       exit 1
     fi
   fi
+  case "$RUN_ID" in
+    ''|*[!a-zA-Z0-9_-]*)
+      echo "RUN_ID must contain only letters, digits, underscores, and hyphens" >&2
+      exit 1
+      ;;
+  esac
   export RUN_ID
   export VERIFY_KYOTOAGENT_HOME="/tmp/verify-kyotoagent-${RUN_ID}"
+  for directory in "$VERIFY_KYOTOAGENT_HOME" "$VERIFY_KYOTOAGENT_HOME/.kyotoagent" "$VERIFY_KYOTOAGENT_HOME/evidence" "$VERIFY_KYOTOAGENT_HOME/workspace"; do
+    if [ -L "$directory" ]; then
+      echo "verification directories must not be symlinks: $directory" >&2
+      exit 1
+    fi
+  done
+  if [ -L "$VERIFY_KYOTOAGENT_HOME/.kyotoagent/config.toml" ]; then
+    echo "verification configuration must not be a symlink" >&2
+    exit 1
+  fi
   export HOME="$VERIFY_KYOTOAGENT_HOME"
   export KYOTOAGENT_ROOT="$HOME/.kyotoagent"
   export EVIDENCE="$HOME/evidence"

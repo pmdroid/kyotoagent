@@ -829,6 +829,8 @@ impl FakeServer {
                     match listener.accept() {
                         Ok((stream, _)) => {
                             let _ = stream.set_nonblocking(false);
+                            let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+                            let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
                             serve_one(stream, &replies, &bodies, &stop);
                         }
                         Err(ref source) if source.kind() == std::io::ErrorKind::WouldBlock => {
@@ -868,7 +870,7 @@ fn serve_one(
     bodies: &Arc<Mutex<Vec<String>>>,
     stop: &Arc<AtomicBool>,
 ) {
-    let Some((path, body)) = read_request(&mut stream) else {
+    let Some((path, body)) = read_request(&mut stream, stop) else {
         return;
     };
     let request_body = body.clone();
@@ -964,14 +966,25 @@ fn content_event(text: &str) -> String {
     }))
 }
 
-fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
+fn read_request(stream: &mut TcpStream, stop: &AtomicBool) -> Option<(String, String)> {
     let mut raw = Vec::new();
     let mut chunk = [0_u8; 1024];
     let head_end = loop {
         if let Some(at) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
             break at;
         }
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
         match stream.read(&mut chunk) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) =>
+            {
+                continue
+            }
             Ok(0) | Err(_) => return None,
             Ok(n) => raw.extend_from_slice(&chunk[..n]),
         }
@@ -991,8 +1004,19 @@ fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
     }
     let mut body = raw[head_end + 4..].to_vec();
     while body.len() < length {
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
         match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) =>
+            {
+                continue
+            }
+            Ok(0) | Err(_) => return None,
             Ok(n) => body.extend_from_slice(&chunk[..n]),
         }
     }
@@ -1436,6 +1460,151 @@ async fn ask_with_two_choices_blocks_and_the_answer_shows_on_the_card() {
     assert!(fixture.events("91bc").iter().any(|event| {
         event.kind == EventKind::QuestionAnswer && event.body["answer"] == "Kyoto Agent"
     }));
+}
+
+#[test]
+fn fake_server_shutdown_interrupts_an_incomplete_request() {
+    let server = FakeServer::start(Vec::new());
+    let mut connection = TcpStream::connect(server.addr).unwrap();
+    connection
+        .write_all(b"POST /chat/completions HTTP/1.1\r\n")
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    let (done, received) = std::sync::mpsc::channel();
+    let shutdown = std::thread::spawn(move || {
+        drop(server);
+        done.send(()).unwrap();
+    });
+    let result = received.recv_timeout(Duration::from_secs(1));
+    drop(connection);
+    shutdown.join().unwrap();
+    assert!(
+        result.is_ok(),
+        "fake server shutdown blocked on an incomplete request"
+    );
+}
+
+#[tokio::test]
+async fn recovered_cancel_allows_a_new_permissioned_turn_to_finish() {
+    let fixture = Fixture::new(
+        "recovered-cancel-follow-up",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "write_file",
+                serde_json::json!({"path":"new.txt","contents":"approved"}),
+            )])),
+            Canned::Json(text_reply("Follow-up completed.")),
+        ],
+    );
+    let workspace = fixture.root.join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let session = Session::at(&fixture.root.join("session-recovered"));
+    let mut meta = SessionMeta::new("recovered", &workspace, "test/model", AT);
+    meta.status = Status::Waiting;
+    session.create(&meta).unwrap();
+    session
+        .append(
+            &Event::new("e1", AT, "t1", EventKind::UserAsk)
+                .with_body(&AskBody {
+                    images: Vec::new(),
+                    text: "Write old.txt".into(),
+                    context: String::new(),
+                    skill: String::new(),
+                    silent: false,
+                })
+                .unwrap(),
+        )
+        .unwrap();
+    session
+        .append(
+            &Event::new("e2", AT, "t1", EventKind::Permission)
+                .with_body(&PermissionBody::write(
+                    "Write old.txt",
+                    workspace.join("old.txt").to_str().unwrap(),
+                    &["+old"],
+                ))
+                .unwrap(),
+        )
+        .unwrap();
+    fixture
+        .runner
+        .reload(&[session.dir().to_path_buf()])
+        .unwrap();
+    fixture.cancel("recovered");
+    assert_eq!(fixture.view("recovered").status, Status::Idle);
+    fixture.cancel("recovered");
+    fixture.ask("recovered", "Write new.txt instead.");
+    fixture.wait_for_waiting_permission("recovered").await;
+    assert!(!workspace.join("old.txt").exists());
+    assert!(!workspace.join("new.txt").exists());
+    fixture.answer("recovered", Answer::allow_once());
+    fixture.wait_for_status("recovered", Status::Idle).await;
+    assert_eq!(
+        fs::read_to_string(workspace.join("new.txt")).unwrap(),
+        "approved"
+    );
+    assert!(!workspace.join("old.txt").exists());
+    assert!(fixture
+        .events("recovered")
+        .iter()
+        .any(|event| event.body["text"] == "Follow-up completed."));
+}
+
+#[tokio::test]
+async fn recovered_question_cancel_finishes_a_follow_up_turn_after_reload() {
+    let fixture = Fixture::new(
+        "recovered-question-cancel",
+        vec![Canned::Json(text_reply("Follow-up completed."))],
+    );
+    let workspace = fixture.root.join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let session = Session::at(&fixture.root.join("session-recovered"));
+    let mut meta = SessionMeta::new("recovered", &workspace, "test/model", AT);
+    meta.status = Status::Waiting;
+    session.create(&meta).unwrap();
+    session
+        .append(
+            &Event::new("e1", AT, "t1", EventKind::Question)
+                .with_body(&kyotoagent::events::QuestionBody {
+                    text: "Which?".into(),
+                    choices: vec!["a".into(), "b".into()],
+                    visuals: Vec::new(),
+                })
+                .unwrap(),
+        )
+        .unwrap();
+    fixture
+        .runner
+        .reload(&[session.dir().to_path_buf()])
+        .unwrap();
+    fixture.cancel("recovered");
+    assert_eq!(fixture.view("recovered").status, Status::Idle);
+    let config = Config::from_toml(&format!(
+        "base_url = {:?}\ntitle_model = \"\"\nmodel = \"test/model\"\n",
+        fixture._server.base_url()
+    ))
+    .unwrap();
+    let runner = Runner::new(&config).unwrap();
+    runner.reload(&[session.dir().to_path_buf()]).unwrap();
+    assert_eq!(runner.view("recovered").unwrap().status, Status::Idle);
+    runner.ask("recovered", "Continue").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if runner
+                .view("recovered")
+                .unwrap()
+                .cards
+                .iter()
+                .any(|card| card.body["text"] == "Follow-up completed.")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(runner.view("recovered").unwrap().status, Status::Idle);
 }
 
 #[tokio::test]
@@ -3385,6 +3554,512 @@ async fn reload_during_an_enhance_rewrite_goes_idle_without_a_stopped_result() {
 }
 
 #[tokio::test]
+async fn goal_tool_loop_pauses_without_a_finish_attempt_and_skips_late_writes() {
+    let fixture = Fixture::new(
+        "goal-tool-loop",
+        vec![Canned::Json(tool_call_reply(vec![
+            ("read_file", serde_json::json!({"path":"missing.txt"})),
+            (
+                "write_file",
+                serde_json::json!({"path":"late.txt","contents":"must not run"}),
+            ),
+        ]))],
+    );
+    let workspace = fixture.add_session("goal");
+    let session = Session::at(&fixture.root.join("session-goal"));
+    let mut value =
+        serde_json::to_value(kyotoagent::goal::Goal::new("Fix the failure", None)).unwrap();
+    value["tool_calls_since_resume"] = serde_json::json!(99);
+    value["criteria"] =
+        serde_json::json!([{"outcome":"Works","verification":"Run the regression"}]);
+    session
+        .update(|meta| {
+            meta.yolo = true;
+            meta.goal = Some(serde_json::from_value(value.clone()).unwrap());
+            true
+        })
+        .unwrap();
+    fixture.ask("goal", "Continue the goal.");
+    fixture.wait_for_turn_to_start("goal").await;
+    let paused = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let view = fixture.view("goal");
+            if view.status == Status::Idle
+                && view.goal.as_ref().unwrap().status == kyotoagent::goal::GoalStatus::Paused
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    fixture.cancel("goal");
+    assert!(
+        paused.is_ok(),
+        "a tool-only loop must pause without asking to finish"
+    );
+    assert!(!workspace.join("late.txt").exists());
+    let goal = fixture.view("goal").goal.unwrap();
+    assert!(goal.verification.contains("100 tool calls"));
+    assert_eq!(goal.rounds, 0);
+    assert_eq!(goal.evaluations_since_resume, 0);
+}
+
+#[tokio::test]
+async fn goal_parallel_calls_share_the_limit_and_stop_background_tasks() {
+    let fixture = Fixture::new(
+        "goal-parallel-limit",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "start_task",
+                serde_json::json!({"argv":["sleep","30"]}),
+            )])),
+            Canned::Json(tool_call_reply(vec![
+                ("read_file", serde_json::json!({"path":"missing-one"})),
+                ("read_file", serde_json::json!({"path":"missing-two"})),
+                ("read_file", serde_json::json!({"path":"missing-three"})),
+            ])),
+        ],
+    );
+    fixture.add_session("goal");
+    let session = Session::at(&fixture.root.join("session-goal"));
+    session
+        .update(|meta| {
+            let mut goal = kyotoagent::goal::Goal::new("Fix", None);
+            goal.tool_calls_since_resume = 97;
+            goal.criteria = vec![kyotoagent::goal::GoalCriterion {
+                outcome: "Works".into(),
+                verification: "Run tests".into(),
+            }];
+            meta.goal = Some(goal);
+            meta.yolo = true;
+            true
+        })
+        .unwrap();
+    fixture.ask("goal", "Continue");
+    fixture.wait_for_turn_to_start("goal").await;
+    fixture.wait_for_status("goal", Status::Idle).await;
+    let goal = fixture.view("goal").goal.unwrap();
+    assert_eq!(goal.status, kyotoagent::goal::GoalStatus::Paused);
+    assert_eq!(goal.tool_calls_since_resume, 100);
+    let events = fixture.events("goal");
+    assert!(events
+        .iter()
+        .any(|event| event.kind == EventKind::TaskDone && event.body["state"] == "stopped"));
+    let results: Vec<_> = events
+        .iter()
+        .filter(|event| event.kind == EventKind::ToolResult && event.body["tool"] == "read_file")
+        .collect();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[2].body["output"], "Skipped because the turn ended.");
+}
+
+#[tokio::test]
+async fn goal_completes_thirty_verified_work_items_without_the_old_global_stop() {
+    let mut replies = vec![goal_plan_reply()];
+    for index in 0..30 {
+        replies.extend([
+            Canned::Json(tool_call_reply(vec![("write_file", serde_json::json!({"path":"result.txt", "contents":format!("issue-{index}")}))])),
+            Canned::Json(tool_call_reply(vec![("finish", serde_json::json!({"text":"Work item ready", "checkpoint":{"work_item":format!("issue-{index}"), "evidence_refs":["result.txt"], "blocker":"", "next_action":"Next work item"}}))])),
+            Canned::Json(tool_call_reply(vec![("run", serde_json::json!({"argv":["cat","result.txt"]}))])),
+            Canned::Json(tool_call_reply(vec![("finish", serde_json::json!({"verified":true,"text":"Checked work item result"}))])),
+        ]);
+    }
+    replies.extend([
+        Canned::Json(text_reply("All work items done")),
+        goal_evaluation_reply("candidate_complete", ""),
+        Canned::Json(tool_call_reply(vec![(
+            "run",
+            serde_json::json!({"argv":["cat","result.txt"]}),
+        )])),
+        Canned::Json(tool_call_reply(vec![(
+            "finish",
+            serde_json::json!({"verified":true,"text":"Verified complete objective"}),
+        )])),
+    ]);
+    let fixture = Fixture::new("goal-thirty-checkpoints", replies);
+    fixture.add_session("goal");
+    Session::at(&fixture.root.join("session-goal"))
+        .set_yolo(true)
+        .unwrap();
+    fixture.ask("goal", "/goal Finish all thirty issues");
+    fixture.wait_for_turn_to_start("goal").await;
+    fixture.wait_for_status("goal", Status::Idle).await;
+    let goal = fixture.view("goal").goal.unwrap();
+    assert_eq!(goal.status, kyotoagent::goal::GoalStatus::Complete);
+    assert_eq!(goal.checkpoints.len(), 30);
+    assert_eq!(goal.evaluations_since_resume, 31);
+    assert_eq!(goal.evaluations_since_checkpoint, 1);
+    assert_eq!(goal.rounds, 1);
+    for (index, checkpoint) in goal.checkpoints.iter().enumerate() {
+        assert_eq!(checkpoint.item.work_item, format!("issue-{index}"));
+        assert_eq!(
+            checkpoint.evidence[0].output,
+            format!("exited 0\n\nissue-{index}")
+        );
+    }
+}
+
+#[tokio::test]
+async fn goal_checkpoint_cannot_bypass_required_closeout() {
+    let fixture = Fixture::new(
+        "goal-checkpoint-closeout",
+        vec![
+            goal_plan_reply(),
+            Canned::Json(tool_call_reply(vec![(
+                "write_file",
+                serde_json::json!({"path":"result.txt","contents":"expected"}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"Ready", "checkpoint":{"work_item":"issue-1", "evidence_refs":["result.txt"], "blocker":"", "next_action":"issue-2"}}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "ask",
+                serde_json::json!({"text":"Need the check?"}),
+            )])),
+        ],
+    );
+    let workspace = fixture.add_session("goal");
+    fs::create_dir_all(workspace.join(".kyotoagent")).unwrap();
+    fs::write(workspace.join(".kyotoagent/closeout.yaml"), "version: 1\nitems:\n  - id: test\n    kind: command\n    run: echo verified\n    hint: Check result\n").unwrap();
+    fixture.ask("goal", "/goal Finish issues");
+    fixture.wait_for_waiting_permission("goal").await;
+    fixture.answer("goal", Answer::allow_once());
+    fixture
+        .wait_for_tool_output("goal", "Cannot finish yet")
+        .await;
+    assert!(fixture.view("goal").goal.unwrap().checkpoints.is_empty());
+    assert!(!fixture
+        .chat_bodies()
+        .iter()
+        .any(|body| body.contains("Independently verify")));
+    fixture.cancel("goal");
+    fixture.wait_for_status("goal", Status::Idle).await;
+}
+
+#[tokio::test]
+async fn goal_checkpoint_requires_execution_and_does_not_complete_the_goal() {
+    let item = serde_json::json!({"work_item":"issue-1", "evidence_refs":["result.txt"], "blocker":"", "next_action":"issue-2"});
+    let fixture = Fixture::new(
+        "goal-checkpoint",
+        vec![
+            goal_plan_reply(),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"First item ready", "checkpoint":item}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"verified":true,"text":"Claimed ready"}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"Verify first item", "checkpoint":item}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "run",
+                serde_json::json!({"argv":["sh","-c","test $(cat result.txt) = expected && printf verified"]}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"verified":true,"text":"Checked result.txt"}),
+            )])),
+            Canned::Json(text_reply("All items ready")),
+            goal_evaluation_reply("candidate_complete", ""),
+            Canned::Json(tool_call_reply(vec![(
+                "run",
+                serde_json::json!({"argv":["cat","result.txt"]}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"verified":true,"text":"Checked entire objective"}),
+            )])),
+        ],
+    );
+    let workspace = fixture.add_session("goal");
+    fs::write(workspace.join("result.txt"), "expected").unwrap();
+    fixture.ask("goal", "/goal Complete two items");
+    fixture.wait_for_waiting_permission("goal").await;
+    assert!(fixture.view("goal").goal.unwrap().checkpoints.is_empty());
+    fixture.answer("goal", Answer::allow_once());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fixture.view("goal").goal.unwrap().checkpoints.is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.wait_for_waiting_permission("goal").await;
+    let active = fixture.view("goal").goal.unwrap();
+    assert_eq!(active.status, kyotoagent::goal::GoalStatus::Active);
+    assert_eq!(active.checkpoints.len(), 1);
+    assert_eq!(
+        active.checkpoints[0].evidence[0].output,
+        "exited 0\n\nverified"
+    );
+    assert_eq!(active.checkpoints[0].item.work_item, "issue-1");
+    assert_eq!(active.evaluations_since_resume, 3);
+    assert_eq!(active.evaluations_since_checkpoint, 1);
+    fixture.answer("goal", Answer::allow_once());
+    fixture.wait_for_status("goal", Status::Idle).await;
+    let complete = fixture.view("goal").goal.unwrap();
+    assert_eq!(complete.status, kyotoagent::goal::GoalStatus::Complete);
+    assert_eq!(complete.rounds, 1);
+    assert_eq!(complete.checkpoints, active.checkpoints);
+    let requests = fixture.chat_bodies();
+    let checkpoint_requests: Vec<serde_json::Value> = requests
+        .iter()
+        .filter(|body| body.contains("Verify only the proposed checkpoint work item"))
+        .map(|body| serde_json::from_str(body).unwrap())
+        .collect();
+    assert!(!checkpoint_requests.is_empty());
+    for request in checkpoint_requests {
+        let messages = request["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "system");
+        assert!(messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Verify only the proposed checkpoint work item"));
+        assert!(messages[1..]
+            .iter()
+            .all(|message| message["role"] != "system"));
+    }
+    let events = fixture.events("goal");
+    let projected =
+        kyotoagent::compact::projected_messages("system", &events, &workspace.to_string_lossy());
+    let finish = projected
+        .iter()
+        .find_map(|message| match message {
+            kyotoagent::chat::Message::Assistant { tool_calls, .. } => tool_calls
+                .iter()
+                .find(|call| call.name == "finish" && call.arguments.contains("Verify first item"))
+                .map(|call| call.id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let result = projected
+        .iter()
+        .find_map(|message| match message {
+            kyotoagent::chat::Message::Tool {
+                tool_call_id,
+                content,
+            } if tool_call_id == &finish => Some(content),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        result.starts_with("Verified checkpoint recorded for issue-1."),
+        "{result}"
+    );
+    assert!(!projected.iter().any(|message| matches!(message, kyotoagent::chat::Message::Assistant { tool_calls, .. } if tool_calls.iter().any(|call| call.name == "run"))));
+}
+
+#[tokio::test]
+async fn goal_restart_requires_reconciliation_without_replaying_external_actions() {
+    let fixture = Fixture::new(
+        "goal-reconcile",
+        vec![Canned::Json(tool_call_reply(vec![(
+            "ask",
+            serde_json::json!({"text":"Next item?"}),
+        )]))],
+    );
+    let workspace = fixture.add_session("goal");
+    let session = Session::at(&fixture.root.join("session-goal"));
+    let mut goal = kyotoagent::goal::Goal::new("Finish issues", None);
+    goal.criteria = vec![kyotoagent::goal::GoalCriterion {
+        outcome: "Issues complete".into(),
+        verification: "Check results".into(),
+    }];
+    goal.checkpoints.push(kyotoagent::goal::GoalCheckpoint {
+        item: kyotoagent::goal::GoalWorkItem {
+            work_item: "issue-1".into(),
+            evidence_refs: vec!["mock-pr-1".into()],
+            blocker: String::new(),
+            next_action: "issue-2".into(),
+        },
+        revision: "revision-1".into(),
+        workspace_fingerprint: "fingerprint-1".into(),
+        through_event_id: "e0".into(),
+        verification: "Previously verified".into(),
+        evidence: vec![kyotoagent::goal::GoalEvidence {
+            tool: "run".into(),
+            args: serde_json::json!({"argv":["mock-check-pr-1"]}),
+            output: "exited 0".into(),
+        }],
+    });
+    session
+        .update(|meta| {
+            meta.goal = Some(goal);
+            meta.status = Status::Working;
+            true
+        })
+        .unwrap();
+    fs::write(workspace.join("mock-pr"), "created-once").unwrap();
+    for (kind, body) in [
+        (
+            EventKind::ToolCall,
+            serde_json::json!({"tool":"run","args":{"argv":["mock-create-pr"]}}),
+        ),
+        (
+            EventKind::TaskStart,
+            serde_json::json!({"id":"task-pr","argv":["mock-create-pr"]}),
+        ),
+        (
+            EventKind::Schedule,
+            serde_json::json!({"id":"scheduled-pr","note":"Retry mock-create-pr", "dueAt":"2020-01-01T00:00:00.000Z"}),
+        ),
+    ] {
+        session
+            .append(
+                &Event::new(&session.next_event_id().unwrap(), AT, "t1", kind)
+                    .with_body(&body)
+                    .unwrap(),
+            )
+            .unwrap();
+    }
+    fixture
+        .runner
+        .reload(&[session.dir().to_path_buf()])
+        .unwrap();
+    let recovered = session.meta().unwrap().goal.unwrap();
+    assert_eq!(recovered.checkpoints[0].item.work_item, "issue-1");
+    let recovery = recovered.recovery.as_ref().unwrap();
+    assert_eq!(recovery.interrupted_tasks, vec!["task-pr"]);
+    assert!(recovery.event_ids.len() >= 3);
+    assert!(fixture.runner.ask("goal", "/goal resume").is_err());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(fixture.chat_bodies().is_empty());
+    assert_eq!(
+        fs::read_to_string(workspace.join("mock-pr")).unwrap(),
+        "created-once"
+    );
+    fixture
+        .runner
+        .reload(&[session.dir().to_path_buf()])
+        .unwrap();
+    assert_eq!(session.meta().unwrap().goal.unwrap(), recovered);
+    fixture.ask("goal", "/goal resume --reconciled");
+    fixture.wait_for_status("goal", Status::Waiting).await;
+    assert!(fixture.chat_bodies()[0].contains("User confirmed reconciliation"));
+    fixture.cancel("goal");
+    fixture.wait_for_status("goal", Status::Idle).await;
+    let cancelled = session.meta().unwrap().goal.unwrap();
+    assert_eq!(cancelled.status, kyotoagent::goal::GoalStatus::Paused);
+    fixture
+        .runner
+        .reload(&[session.dir().to_path_buf()])
+        .unwrap();
+    assert_eq!(session.meta().unwrap().goal.unwrap(), cancelled);
+    assert_eq!(fixture.chat_bodies().len(), 1);
+}
+
+#[tokio::test]
+async fn goal_retries_transient_overload_but_not_policy_refusal() {
+    for (name, failures, expected) in [
+        (
+            "transient",
+            vec![Canned::Status(
+                400,
+                r#"{"error":{"code":"server_is_overloaded"}}"#.into(),
+            )],
+            3,
+        ),
+        (
+            "policy",
+            vec![Canned::Status(
+                400,
+                r#"{"error":{"code":"cybersecurity_policy","message":"server_is_overloaded"}}"#
+                    .into(),
+            )],
+            1,
+        ),
+        (
+            "bounded",
+            vec![Canned::Status(400, r#"{"error":{"code":"server_is_overloaded"}}"#.into()); 4],
+            4,
+        ),
+    ] {
+        let mut replies = failures;
+        replies.push(goal_plan_reply());
+        replies.push(Canned::Status(403, "policy refusal".into()));
+        let fixture = Fixture::new(&format!("goal-provider-{name}"), replies);
+        fixture.add_session("goal");
+        fixture.ask("goal", "/goal Check the result");
+        fixture.wait_for_turn_to_start("goal").await;
+        fixture.wait_for_status("goal", Status::Idle).await;
+        let goal = fixture.view("goal").goal.unwrap();
+        assert_eq!(goal.status, kyotoagent::goal::GoalStatus::Paused);
+        assert_eq!(fixture.chat_bodies().len(), expected);
+        assert!(goal.checkpoints.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn goal_overload_retry_does_not_repeat_tool_effects_and_can_be_cancelled() {
+    for cancel in [false, true] {
+        let fixture = Fixture::new(
+            &format!("goal-overload-effects-{cancel}"),
+            vec![
+                goal_plan_reply(),
+                Canned::Json(tool_call_reply(vec![(
+                    "run",
+                    serde_json::json!({"argv":["sh","-c","printf once >> effects.txt"]}),
+                )])),
+                Canned::Status(400, r#"{"error":{"code":"server_is_overloaded"}}"#.into()),
+                Canned::Json(text_reply("Ready")),
+                goal_evaluation_reply("candidate_complete", ""),
+                Canned::Json(tool_call_reply(vec![(
+                    "run",
+                    serde_json::json!({"argv":["cat","effects.txt"]}),
+                )])),
+                Canned::Json(tool_call_reply(vec![(
+                    "finish",
+                    serde_json::json!({"verified":true,"text":"Effect happened once"}),
+                )])),
+            ],
+        );
+        let workspace = fixture.add_session("goal");
+        Session::at(&fixture.root.join("session-goal"))
+            .set_yolo(true)
+            .unwrap();
+        fixture.ask("goal", "/goal Record an effect once");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while fixture.view("goal").retry_status.is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        if cancel {
+            fixture.cancel("goal");
+        }
+        fixture.wait_for_status("goal", Status::Idle).await;
+        assert_eq!(
+            fs::read_to_string(workspace.join("effects.txt")).unwrap(),
+            "once"
+        );
+        let goal = fixture.view("goal").goal.unwrap();
+        assert_eq!(
+            goal.status,
+            if cancel {
+                kyotoagent::goal::GoalStatus::Paused
+            } else {
+                kyotoagent::goal::GoalStatus::Complete
+            }
+        );
+        assert!(fixture.view("goal").retry_status.is_none());
+        let requests = fixture.chat_bodies();
+        if cancel {
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+            assert_eq!(fixture.chat_bodies().len(), 3);
+        } else {
+            assert_eq!(requests[2], requests[3]);
+        }
+    }
+}
+
+#[tokio::test]
 async fn goal_evaluation_continues_with_flexible_todos_and_real_output() {
     let fixture = Fixture::new(
         "goal-continue",
@@ -4652,4 +5327,231 @@ async fn tool_batches_invalid_typed_arguments_return_errors_without_permission()
             ("search_replace", "replace_all must"),
         ],
     );
+}
+
+#[tokio::test]
+async fn btw_answers_while_permission_waits_without_steering_the_main_turn() {
+    let fixture = Fixture::new(
+        "btw-isolation",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "write_file",
+                serde_json::json!({"path":"main.txt", "contents":"main work"}),
+            )])),
+            Canned::Json(text_reply("SIDE-ANSWER-ONLY")),
+            Canned::Json(text_reply("Main done.")),
+        ],
+    );
+    let workspace = fixture.add_session("s");
+    fixture.ask("s", "Write the main file.");
+    fixture.wait_for_waiting_permission("s").await;
+    fixture.runner.btw("s", "SIDE-QUESTION-ONLY").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if fixture
+                .events("s")
+                .iter()
+                .any(|event| event.kind == EventKind::BtwResult)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fixture.runner.view("s").unwrap().status, Status::Waiting);
+    assert!(!workspace.join("main.txt").exists());
+    let side = fixture.chat_requests()[1].clone();
+    assert!(side
+        .get("tools")
+        .is_none_or(|tools| tools.as_array().is_some_and(|tools| tools.is_empty())));
+    assert_eq!(side["messages"].as_array().unwrap().len(), 2);
+    let view = fixture.runner.view("s").unwrap();
+    assert!(view
+        .cards
+        .iter()
+        .any(|card| card.kind == CardKind::Btw && card.body["state"] == "answered"));
+    fixture.answer("s", Answer::allow_once());
+    fixture.wait_for_status("s", Status::Idle).await;
+    let main = fixture.chat_requests()[2].to_string();
+    assert!(!main.contains("SIDE-QUESTION-ONLY"));
+    assert!(!main.contains("SIDE-ANSWER-ONLY"));
+    let compact = serde_json::to_string(&kyotoagent::compact::compact_request_messages(
+        &fixture.events("s"),
+    ))
+    .unwrap();
+    assert!(!compact.contains("SIDE-QUESTION-ONLY"));
+    assert!(!compact.contains("SIDE-ANSWER-ONLY"));
+    assert_eq!(
+        fs::read_to_string(workspace.join("main.txt")).unwrap(),
+        "main work"
+    );
+}
+
+#[tokio::test]
+async fn btw_tool_calls_are_never_dispatched_and_reload_settles_only_the_side_request() {
+    let fixture = Fixture::new(
+        "btw-no-tools",
+        vec![Canned::Json(tool_call_reply(vec![(
+            "write_file",
+            serde_json::json!({"path":"side.txt", "contents":"forbidden"}),
+        )]))],
+    );
+    let workspace = fixture.add_session("s");
+    fixture.runner.ask("s", "/btw inspect this").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if fixture
+                .events("s")
+                .iter()
+                .any(|event| event.kind == EventKind::BtwResult)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!workspace.join("side.txt").exists());
+    assert!(fixture
+        .events("s")
+        .iter()
+        .all(|event| event.kind != EventKind::UserAsk && event.kind != EventKind::ToolCall));
+    let session = Session::at(&fixture.root.join("session-s"));
+    let pending = session
+        .append_assigned(
+            &Event::new("btw-pending", AT, "btw", EventKind::BtwRequest)
+                .with_body(&serde_json::json!({"question":"recover"}))
+                .unwrap(),
+        )
+        .unwrap();
+    fixture
+        .runner
+        .reload(&[fixture.root.join("session-s")])
+        .unwrap();
+    assert_eq!(fixture.runner.view("s").unwrap().status, Status::Idle);
+    assert!(fixture
+        .events("s")
+        .iter()
+        .any(|event| event.kind == EventKind::BtwResult
+            && event.body["requestId"] == pending.id
+            && event.body["state"] == "failed"));
+}
+
+#[tokio::test]
+async fn btw_cancel_is_independent_and_releases_the_slot_for_retry() {
+    let gate = HoldGate::new();
+    let fixture = Fixture::new(
+        "btw-cancel",
+        vec![
+            Canned::Hold {
+                head: reasoning_event("side pending"),
+                tail: String::new(),
+                gate: gate.clone(),
+            },
+            Canned::Json(text_reply("Retried answer")),
+        ],
+    );
+    fixture.add_session("s");
+    let id = fixture.runner.btw("s", "original question").unwrap();
+    assert!(matches!(
+        fixture.runner.btw("s", "another"),
+        Err(kyotoagent::turn::TurnError::Busy)
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fixture.chat_requests().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fixture.runner.btw("s", "cancel").unwrap(), id);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !fixture
+            .events("s")
+            .iter()
+            .any(|event| event.kind == EventKind::BtwResult)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fixture.runner.view("s").unwrap().status, Status::Idle);
+    assert_eq!(
+        fixture.runner.view("s").unwrap().cards[0].body["state"],
+        "cancelled"
+    );
+    gate.release();
+    fixture.runner.btw("s", "retry").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fixture
+            .events("s")
+            .iter()
+            .filter(|event| event.kind == EventKind::BtwResult)
+            .count()
+            < 2
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        fixture.runner.view("s").unwrap().cards[1].body["state"],
+        "answered"
+    );
+    assert!(fixture.chat_requests()[1]
+        .to_string()
+        .contains("original question"));
+}
+
+#[tokio::test]
+async fn btw_finishes_while_the_main_command_is_running_and_preserves_the_queue() {
+    let fixture = Fixture::new(
+        "btw-working",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "run",
+                serde_json::json!({"argv":["sh","-c","printf started > started; while test ! -f release; do sleep 0.02; done; printf done > done"]}),
+            )])),
+            Canned::Json(text_reply("Side while working")),
+            Canned::Json(text_reply("Main finished")),
+        ],
+    );
+    let workspace = fixture.add_session("s");
+    fixture.ask("s", "Run the command");
+    fixture.wait_for_waiting_permission("s").await;
+    fixture.answer("s", Answer::allow_once());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !workspace.join("started").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.runner.ask("s", "queued work").unwrap();
+    let before = fixture.runner.view("s").unwrap();
+    fixture.runner.btw("s", "What are you doing?").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !fixture
+            .events("s")
+            .iter()
+            .any(|event| event.kind == EventKind::BtwResult)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let after = fixture.runner.view("s").unwrap();
+    assert_eq!(after.status, Status::Working);
+    assert_eq!(after.queue, before.queue);
+    assert_eq!(after.todos, before.todos);
+    assert!(!workspace.join("done").exists());
+    fs::write(workspace.join("release"), "").unwrap();
+    fixture.wait_for_status("s", Status::Idle).await;
+    assert_eq!(fs::read_to_string(workspace.join("done")).unwrap(), "done");
 }

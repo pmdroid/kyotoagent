@@ -44,6 +44,16 @@ pub fn keystroke(app: &App, event: KeyEvent) -> Option<Effect> {
             return Some(Effect::OpenImage(visuals[next].image.clone()));
         }
     }
+    if event.code == KeyCode::Enter
+        && event.modifiers.is_empty()
+        && (editor::active(app) || (app.overlay && editor::question(app)))
+        && editor::input(app)
+            .trim()
+            .strip_prefix("/btw")
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+    {
+        return Some(Effect::Submit);
+    }
     if editor::active(app) {
         if event.code == KeyCode::Tab && picker_is_open(app) {
             return Some(Effect::Complete);

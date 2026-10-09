@@ -46,6 +46,7 @@ use crate::tools::{RunOutput, ToolError, Tools};
 use crate::view;
 
 mod batch;
+mod btw;
 mod closeout;
 mod compact;
 mod dispatch;
@@ -343,6 +344,17 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
                     "text": { "type": "string" },
                     "note": { "type": "string" },
                     "proof": { "type": "string" },
+                    "checkpoint": {
+                        "type": "object",
+                        "properties": {
+                            "work_item": { "type": "string" },
+                            "evidence_refs": { "type": "array", "items": { "type": "string" } },
+                            "blocker": { "type": "string" },
+                            "next_action": { "type": "string" }
+                        },
+                        "required": ["work_item", "evidence_refs", "blocker", "next_action"],
+                        "additionalProperties": false
+                    },
                 },
                 "required": ["text"],
             }),
@@ -556,6 +568,7 @@ pub enum AskOutcome {
     Queued(String),
     Ignored,
     Enhancing(String),
+    Btw(String),
 }
 
 /// One running turn's cancel handle.
@@ -782,6 +795,7 @@ struct SessionState {
     turn: Mutex<Option<RunningTurn>>,
     compact: Arc<CompactSlot>,
     enhance: Arc<enhance::EnhanceSlot>,
+    btw: btw::BtwSlot,
     pending_wakes: Mutex<VecDeque<PendingWake>>,
     ask_queue: Mutex<VecDeque<QueuedAsk>>,
     flight: Arc<Flight>,
@@ -938,6 +952,7 @@ impl Runner {
             turn: Mutex::new(None),
             compact: CompactSlot::new(),
             enhance: enhance::EnhanceSlot::new(),
+            btw: Mutex::new(None),
             pending_wakes: Mutex::new(VecDeque::new()),
             ask_queue: Mutex::new(VecDeque::new()),
             flight: Flight::new(),
@@ -976,20 +991,6 @@ impl Runner {
                 self.forget(&meta.id);
                 continue;
             }
-            if meta
-                .goal
-                .as_ref()
-                .is_some_and(|goal| goal.status == crate::goal::GoalStatus::Active)
-            {
-                session.update(|meta| {
-                    if let Some(goal) = &mut meta.goal {
-                        goal.status = crate::goal::GoalStatus::Paused;
-                        goal.verification =
-                            "The server stopped. Use /goal resume to continue.".to_string();
-                    }
-                    true
-                })?;
-            }
             if meta.status == Status::Working {
                 let events = session.events()?;
                 if enhance::rewrite_in_flight(&events) {
@@ -1023,6 +1024,7 @@ impl Runner {
                     })?;
                 }
             }
+            btw::recover(&session)?;
             let tools = Tools::with_clock(&session, self.clock.clone())?;
             tools.schedules().listen(&meta.id, self.schedule_tx.clone());
             let state = Arc::new(SessionState {
@@ -1031,6 +1033,7 @@ impl Runner {
                 turn: Mutex::new(None),
                 compact: CompactSlot::new(),
                 enhance: enhance::EnhanceSlot::new(),
+                btw: Mutex::new(None),
                 pending_wakes: Mutex::new(VecDeque::new()),
                 ask_queue: Mutex::new(VecDeque::new()),
                 flight: Flight::new(),
@@ -1084,7 +1087,14 @@ impl Runner {
                 }
                 *state.ask_queue.lock().expect("ask queue") = queued;
             }
-            let _ = state.tools.tasks().settle_orphans();
+            let interrupted_tasks = state
+                .tools
+                .tasks()
+                .settle_orphans()?
+                .into_iter()
+                .map(|task| task.id)
+                .collect();
+            goal::recover(&session, interrupted_tasks)?;
             if !meta.archived {
                 state.tools.schedules().arm_pending();
             }
@@ -1124,6 +1134,16 @@ impl Runner {
             .ok_or(TurnError::NoSession)?;
         if state.session.meta().is_ok_and(|meta| meta.archived) {
             return Err(TurnError::Archived);
+        }
+        if let Some(question) = text
+            .trim()
+            .strip_prefix("/btw")
+            .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        {
+            if !images.is_empty() {
+                return Err(TurnError::Goal("Side questions take text only.".into()));
+            }
+            return self.btw(session_id, question).map(AskOutcome::Btw);
         }
         if let Some(command) = text
             .trim()
@@ -1508,10 +1528,21 @@ impl Runner {
         else {
             return;
         };
+        let _ = state.session.update(|meta| {
+            if let Some(goal) = &mut meta.goal {
+                if goal.status == crate::goal::GoalStatus::Active {
+                    goal.pause("Cancelled by the user.");
+                    return true;
+                }
+            }
+            false
+        });
         let turn = state.turn.lock().expect("the turn slot is not poisoned");
         if let Some(running) = turn.as_ref() {
             running.cancel.send_replace(true);
             state.tools.gate().cancel();
+        } else if state.tools.gate().is_held_open() || state.tools.gate().is_held_open_question() {
+            let _ = settle_recovered_cancel(&state);
         }
         drop(turn);
         state.compact.cancel();
@@ -1530,6 +1561,10 @@ impl Runner {
             return;
         };
         state.retiring.store(true, Ordering::Release);
+        btw::cancel(&state);
+        while state.btw.lock().expect("btw slot").is_some() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         self.cancel(session_id);
         let mut idle = state.turn_idle.subscribe();
         loop {
@@ -1583,6 +1618,7 @@ impl Runner {
             .expect("the session map is not poisoned")
             .remove(session_id);
         if let Some(state) = removed {
+            btw::cancel(&state);
             state.tools.schedules().abort_live();
             state.tools.tasks().cancel_all();
         }
@@ -1630,6 +1666,9 @@ impl Runner {
             .sessions
             .lock()
             .expect("the session map is not poisoned");
+        for state in sessions.values() {
+            btw::cancel(state);
+        }
         let open: Vec<(String, String, &'static str)> = sessions
             .iter()
             .map(|(id, state)| {
@@ -1672,6 +1711,17 @@ impl Runner {
             .ok_or(AnswerError::NothingOpen)?;
         let held = state.tools.gate().is_held_open();
         state.tools.gate().answer(answer.clone())?;
+        if answer.decision == crate::events::Decision::Deny {
+            let _ = state.session.update(|meta| {
+                if let Some(goal) = &mut meta.goal {
+                    if goal.status == crate::goal::GoalStatus::Active {
+                        goal.pause("Permission denied by the user.");
+                        return true;
+                    }
+                }
+                false
+            });
+        }
         if held {
             settle_held_answer(&state.session, &answer)?;
         }
@@ -1817,6 +1867,16 @@ impl Runner {
         schedule_id: Option<String>,
         silent: bool,
     ) {
+        if state.session.meta().is_ok_and(|meta| {
+            meta.goal.is_some_and(|goal| {
+                matches!(
+                    goal.status,
+                    crate::goal::GoalStatus::Paused | crate::goal::GoalStatus::BudgetExhausted
+                )
+            })
+        }) {
+            return;
+        }
         match self.start_turn(
             state,
             &ask,
@@ -2048,6 +2108,7 @@ impl Turn {
         );
         if self.goal_run {
             if let Some(goal) = self.session.meta().ok().and_then(|meta| meta.goal) {
+                text.push_str(&format!("\nVerified goal checkpoints: {}\nFor a multi-item goal, implement and verify one work item, record existing authorized PR/proof references, then call finish with checkpoint (work_item, evidence_refs, blocker, next_action) before moving on. This requests independent checkpoint verification, not overall completion. Never replay external actions recorded in checkpoints. A distinct verified workspace revision is required for progress credit.\n", serde_json::to_string(&goal.checkpoint_context()).unwrap_or_default()));
                 text.push_str(&format!("\nActive goal outcome criteria: {}\nPrior verification: {}\nThe objective remains authoritative; these criteria do not authorize extra work or narrow the request. Todos are flexible implementation memory. Produce actual behavior evidence, continue ready work without asking for go, and preserve existing permission gates.\n", serde_json::to_string(&goal.criteria).unwrap_or_default(), goal.verification));
             }
         }

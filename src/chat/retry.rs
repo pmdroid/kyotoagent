@@ -120,6 +120,16 @@ pub(super) fn message(body: &str) -> String {
         })
         .unwrap_or_else(|| "The provider is rate limiting requests.".to_string())
 }
+pub(super) fn transient(status: u16, body: &str) -> bool {
+    matches!(status, 500 | 502 | 503 | 504)
+        || (status == 400
+            && serde_json::from_str::<Value>(body)
+                .ok()
+                .is_some_and(|value| {
+                    value.pointer("/error/code").and_then(Value::as_str)
+                        == Some("server_is_overloaded")
+                }))
+}
 pub(super) fn permanent(body: &str) -> bool {
     let text = message(body).to_ascii_lowercase();
     [

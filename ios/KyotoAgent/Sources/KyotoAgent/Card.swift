@@ -6,6 +6,7 @@ nonisolated public enum CardKind: String, Codable, CaseIterable, Equatable, Send
     case answer
     case permission
     case result
+    case btw
     case proof
     case artifact
     case enhance
@@ -20,7 +21,7 @@ nonisolated public func cardEdge(_ kind: CardKind) -> CardEdge {
     switch kind {
     case .ask, .answer:
         return .trailing
-    case .question, .permission, .result, .proof, .artifact, .enhance:
+    case .question, .permission, .result, .proof, .artifact, .enhance, .btw:
         return .leading
     }
 }
@@ -91,6 +92,8 @@ nonisolated public struct PermissionCard: Codable, Equatable, Sendable {
 nonisolated public struct ResultCard: Codable, Equatable, Sendable {
     public var text: String
     public var note: String?
+    public var state: String? = nil
+    public var requestId: String? = nil
 }
 
 nonisolated public struct ProofItem: Codable, Equatable, Sendable {
@@ -157,7 +160,7 @@ nonisolated public struct Card: Codable, Equatable, Sendable {
             body = .answer(try container.decode(TextCard.self, forKey: .body))
         case .permission:
             body = .permission(try container.decode(PermissionCard.self, forKey: .body))
-        case .result:
+        case .result, .btw:
             body = .result(try container.decode(ResultCard.self, forKey: .body))
         case .artifact:
             body = .artifact(try container.decode(ArtifactCard.self, forKey: .body))
