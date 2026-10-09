@@ -708,14 +708,11 @@ impl ChatClient {
             let result = self
                 .complete_attempt(messages, tools, thoughts, status)
                 .await;
-            if !matches!(
-                &result,
-                Err(ChatError::Status {
-                    status: 500 | 502 | 503 | 504,
-                    ..
-                })
-            ) || attempt == retry::MAX_RETRIES
-            {
+            let transient = match &result {
+                Err(ChatError::Status { status, body }) => retry::transient(*status, body),
+                _ => false,
+            };
+            if !transient || attempt == retry::MAX_RETRIES {
                 return result;
             }
             if let (Some(sink), Some(length)) = (thoughts, thought_length) {
