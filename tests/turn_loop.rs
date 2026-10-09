@@ -3369,6 +3369,411 @@ async fn reload_during_an_enhance_rewrite_goes_idle_without_a_stopped_result() {
 }
 
 #[tokio::test]
+async fn goal_completes_thirty_verified_work_items_without_the_old_global_stop() {
+    let mut replies = vec![goal_plan_reply()];
+    for index in 0..30 {
+        replies.extend([
+            Canned::Json(tool_call_reply(vec![("write_file", serde_json::json!({"path":"result.txt", "contents":format!("issue-{index}")}))])),
+            Canned::Json(tool_call_reply(vec![("finish", serde_json::json!({"text":"Work item ready", "checkpoint":{"work_item":format!("issue-{index}"), "evidence_refs":["result.txt"], "blocker":"", "next_action":"Next work item"}}))])),
+            Canned::Json(tool_call_reply(vec![("run", serde_json::json!({"argv":["cat","result.txt"]}))])),
+            Canned::Json(tool_call_reply(vec![("finish", serde_json::json!({"verified":true,"text":"Checked work item result"}))])),
+        ]);
+    }
+    replies.extend([
+        Canned::Json(text_reply("All work items done")),
+        goal_evaluation_reply("candidate_complete", ""),
+        Canned::Json(tool_call_reply(vec![(
+            "run",
+            serde_json::json!({"argv":["cat","result.txt"]}),
+        )])),
+        Canned::Json(tool_call_reply(vec![(
+            "finish",
+            serde_json::json!({"verified":true,"text":"Verified complete objective"}),
+        )])),
+    ]);
+    let fixture = Fixture::new("goal-thirty-checkpoints", replies);
+    fixture.add_session("goal");
+    Session::at(&fixture.root.join("session-goal"))
+        .set_yolo(true)
+        .unwrap();
+    fixture.ask("goal", "/goal Finish all thirty issues");
+    fixture.wait_for_turn_to_start("goal").await;
+    fixture.wait_for_status("goal", Status::Idle).await;
+    let goal = fixture.view("goal").goal.unwrap();
+    assert_eq!(goal.status, kyotoagent::goal::GoalStatus::Complete);
+    assert_eq!(goal.checkpoints.len(), 30);
+    assert_eq!(goal.evaluations_since_resume, 31);
+    assert_eq!(goal.evaluations_since_checkpoint, 1);
+    assert_eq!(goal.rounds, 1);
+    for (index, checkpoint) in goal.checkpoints.iter().enumerate() {
+        assert_eq!(checkpoint.item.work_item, format!("issue-{index}"));
+        assert_eq!(
+            checkpoint.evidence[0].output,
+            format!("exited 0\n\nissue-{index}")
+        );
+    }
+}
+
+#[tokio::test]
+async fn goal_checkpoint_cannot_bypass_required_closeout() {
+    let fixture = Fixture::new(
+        "goal-checkpoint-closeout",
+        vec![
+            goal_plan_reply(),
+            Canned::Json(tool_call_reply(vec![(
+                "write_file",
+                serde_json::json!({"path":"result.txt","contents":"expected"}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"Ready", "checkpoint":{"work_item":"issue-1", "evidence_refs":["result.txt"], "blocker":"", "next_action":"issue-2"}}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "ask",
+                serde_json::json!({"text":"Need the check?"}),
+            )])),
+        ],
+    );
+    let workspace = fixture.add_session("goal");
+    fs::create_dir_all(workspace.join(".kyotoagent")).unwrap();
+    fs::write(workspace.join(".kyotoagent/closeout.yaml"), "version: 1\nitems:\n  - id: test\n    kind: command\n    run: echo verified\n    hint: Check result\n").unwrap();
+    fixture.ask("goal", "/goal Finish issues");
+    fixture.wait_for_waiting_permission("goal").await;
+    fixture.answer("goal", Answer::allow_once());
+    fixture
+        .wait_for_tool_output("goal", "Cannot finish yet")
+        .await;
+    assert!(fixture.view("goal").goal.unwrap().checkpoints.is_empty());
+    assert!(!fixture
+        .chat_bodies()
+        .iter()
+        .any(|body| body.contains("Independently verify")));
+    fixture.cancel("goal");
+    fixture.wait_for_status("goal", Status::Idle).await;
+}
+
+#[tokio::test]
+async fn goal_checkpoint_requires_execution_and_does_not_complete_the_goal() {
+    let item = serde_json::json!({"work_item":"issue-1", "evidence_refs":["result.txt"], "blocker":"", "next_action":"issue-2"});
+    let fixture = Fixture::new(
+        "goal-checkpoint",
+        vec![
+            goal_plan_reply(),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"First item ready", "checkpoint":item}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"verified":true,"text":"Claimed ready"}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"Verify first item", "checkpoint":item}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "run",
+                serde_json::json!({"argv":["sh","-c","test $(cat result.txt) = expected && printf verified"]}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"verified":true,"text":"Checked result.txt"}),
+            )])),
+            Canned::Json(text_reply("All items ready")),
+            goal_evaluation_reply("candidate_complete", ""),
+            Canned::Json(tool_call_reply(vec![(
+                "run",
+                serde_json::json!({"argv":["cat","result.txt"]}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"verified":true,"text":"Checked entire objective"}),
+            )])),
+        ],
+    );
+    let workspace = fixture.add_session("goal");
+    fs::write(workspace.join("result.txt"), "expected").unwrap();
+    fixture.ask("goal", "/goal Complete two items");
+    fixture.wait_for_waiting_permission("goal").await;
+    assert!(fixture.view("goal").goal.unwrap().checkpoints.is_empty());
+    fixture.answer("goal", Answer::allow_once());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fixture.view("goal").goal.unwrap().checkpoints.is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.wait_for_waiting_permission("goal").await;
+    let active = fixture.view("goal").goal.unwrap();
+    assert_eq!(active.status, kyotoagent::goal::GoalStatus::Active);
+    assert_eq!(active.checkpoints.len(), 1);
+    assert_eq!(
+        active.checkpoints[0].evidence[0].output,
+        "exited 0\n\nverified"
+    );
+    assert_eq!(active.checkpoints[0].item.work_item, "issue-1");
+    assert_eq!(active.evaluations_since_resume, 3);
+    assert_eq!(active.evaluations_since_checkpoint, 1);
+    fixture.answer("goal", Answer::allow_once());
+    fixture.wait_for_status("goal", Status::Idle).await;
+    let complete = fixture.view("goal").goal.unwrap();
+    assert_eq!(complete.status, kyotoagent::goal::GoalStatus::Complete);
+    assert_eq!(complete.rounds, 1);
+    assert_eq!(complete.checkpoints, active.checkpoints);
+    let requests = fixture.chat_bodies();
+    let checkpoint_requests: Vec<serde_json::Value> = requests
+        .iter()
+        .filter(|body| body.contains("Verify only the proposed checkpoint work item"))
+        .map(|body| serde_json::from_str(body).unwrap())
+        .collect();
+    assert!(!checkpoint_requests.is_empty());
+    for request in checkpoint_requests {
+        let messages = request["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "system");
+        assert!(messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Verify only the proposed checkpoint work item"));
+        assert!(messages[1..]
+            .iter()
+            .all(|message| message["role"] != "system"));
+    }
+    let events = fixture.events("goal");
+    let projected =
+        kyotoagent::compact::projected_messages("system", &events, &workspace.to_string_lossy());
+    let finish = projected
+        .iter()
+        .find_map(|message| match message {
+            kyotoagent::chat::Message::Assistant { tool_calls, .. } => tool_calls
+                .iter()
+                .find(|call| call.name == "finish" && call.arguments.contains("Verify first item"))
+                .map(|call| call.id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let result = projected
+        .iter()
+        .find_map(|message| match message {
+            kyotoagent::chat::Message::Tool {
+                tool_call_id,
+                content,
+            } if tool_call_id == &finish => Some(content),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        result.starts_with("Verified checkpoint recorded for issue-1."),
+        "{result}"
+    );
+    assert!(!projected.iter().any(|message| matches!(message, kyotoagent::chat::Message::Assistant { tool_calls, .. } if tool_calls.iter().any(|call| call.name == "run"))));
+}
+
+#[tokio::test]
+async fn goal_restart_requires_reconciliation_without_replaying_external_actions() {
+    let fixture = Fixture::new(
+        "goal-reconcile",
+        vec![Canned::Json(tool_call_reply(vec![(
+            "ask",
+            serde_json::json!({"text":"Next item?"}),
+        )]))],
+    );
+    let workspace = fixture.add_session("goal");
+    let session = Session::at(&fixture.root.join("session-goal"));
+    let mut goal = kyotoagent::goal::Goal::new("Finish issues", None);
+    goal.criteria = vec![kyotoagent::goal::GoalCriterion {
+        outcome: "Issues complete".into(),
+        verification: "Check results".into(),
+    }];
+    goal.checkpoints.push(kyotoagent::goal::GoalCheckpoint {
+        item: kyotoagent::goal::GoalWorkItem {
+            work_item: "issue-1".into(),
+            evidence_refs: vec!["mock-pr-1".into()],
+            blocker: String::new(),
+            next_action: "issue-2".into(),
+        },
+        revision: "revision-1".into(),
+        workspace_fingerprint: "fingerprint-1".into(),
+        through_event_id: "e0".into(),
+        verification: "Previously verified".into(),
+        evidence: vec![kyotoagent::goal::GoalEvidence {
+            tool: "run".into(),
+            args: serde_json::json!({"argv":["mock-check-pr-1"]}),
+            output: "exited 0".into(),
+        }],
+    });
+    session
+        .update(|meta| {
+            meta.goal = Some(goal);
+            meta.status = Status::Working;
+            true
+        })
+        .unwrap();
+    fs::write(workspace.join("mock-pr"), "created-once").unwrap();
+    for (kind, body) in [
+        (
+            EventKind::ToolCall,
+            serde_json::json!({"tool":"run","args":{"argv":["mock-create-pr"]}}),
+        ),
+        (
+            EventKind::TaskStart,
+            serde_json::json!({"id":"task-pr","argv":["mock-create-pr"]}),
+        ),
+        (
+            EventKind::Schedule,
+            serde_json::json!({"id":"scheduled-pr","note":"Retry mock-create-pr", "dueAt":"2020-01-01T00:00:00.000Z"}),
+        ),
+    ] {
+        session
+            .append(
+                &Event::new(&session.next_event_id().unwrap(), AT, "t1", kind)
+                    .with_body(&body)
+                    .unwrap(),
+            )
+            .unwrap();
+    }
+    fixture
+        .runner
+        .reload(&[session.dir().to_path_buf()])
+        .unwrap();
+    let recovered = session.meta().unwrap().goal.unwrap();
+    assert_eq!(recovered.checkpoints[0].item.work_item, "issue-1");
+    let recovery = recovered.recovery.as_ref().unwrap();
+    assert_eq!(recovery.interrupted_tasks, vec!["task-pr"]);
+    assert!(recovery.event_ids.len() >= 3);
+    assert!(fixture.runner.ask("goal", "/goal resume").is_err());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(fixture.chat_bodies().is_empty());
+    assert_eq!(
+        fs::read_to_string(workspace.join("mock-pr")).unwrap(),
+        "created-once"
+    );
+    fixture
+        .runner
+        .reload(&[session.dir().to_path_buf()])
+        .unwrap();
+    assert_eq!(session.meta().unwrap().goal.unwrap(), recovered);
+    fixture.ask("goal", "/goal resume --reconciled");
+    fixture.wait_for_status("goal", Status::Waiting).await;
+    assert!(fixture.chat_bodies()[0].contains("User confirmed reconciliation"));
+    fixture.cancel("goal");
+    fixture.wait_for_status("goal", Status::Idle).await;
+    let cancelled = session.meta().unwrap().goal.unwrap();
+    assert_eq!(cancelled.status, kyotoagent::goal::GoalStatus::Paused);
+    fixture
+        .runner
+        .reload(&[session.dir().to_path_buf()])
+        .unwrap();
+    assert_eq!(session.meta().unwrap().goal.unwrap(), cancelled);
+    assert_eq!(fixture.chat_bodies().len(), 1);
+}
+
+#[tokio::test]
+async fn goal_retries_transient_overload_but_not_policy_refusal() {
+    for (name, failures, expected) in [
+        (
+            "transient",
+            vec![Canned::Status(
+                400,
+                r#"{"error":{"code":"server_is_overloaded"}}"#.into(),
+            )],
+            3,
+        ),
+        (
+            "policy",
+            vec![Canned::Status(
+                400,
+                r#"{"error":{"code":"cybersecurity_policy","message":"server_is_overloaded"}}"#
+                    .into(),
+            )],
+            1,
+        ),
+        (
+            "bounded",
+            vec![Canned::Status(400, r#"{"error":{"code":"server_is_overloaded"}}"#.into()); 4],
+            4,
+        ),
+    ] {
+        let mut replies = failures;
+        replies.push(goal_plan_reply());
+        replies.push(Canned::Status(403, "policy refusal".into()));
+        let fixture = Fixture::new(&format!("goal-provider-{name}"), replies);
+        fixture.add_session("goal");
+        fixture.ask("goal", "/goal Check the result");
+        fixture.wait_for_turn_to_start("goal").await;
+        fixture.wait_for_status("goal", Status::Idle).await;
+        let goal = fixture.view("goal").goal.unwrap();
+        assert_eq!(goal.status, kyotoagent::goal::GoalStatus::Paused);
+        assert_eq!(fixture.chat_bodies().len(), expected);
+        assert!(goal.checkpoints.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn goal_overload_retry_does_not_repeat_tool_effects_and_can_be_cancelled() {
+    for cancel in [false, true] {
+        let fixture = Fixture::new(
+            &format!("goal-overload-effects-{cancel}"),
+            vec![
+                goal_plan_reply(),
+                Canned::Json(tool_call_reply(vec![(
+                    "run",
+                    serde_json::json!({"argv":["sh","-c","printf once >> effects.txt"]}),
+                )])),
+                Canned::Status(400, r#"{"error":{"code":"server_is_overloaded"}}"#.into()),
+                Canned::Json(text_reply("Ready")),
+                goal_evaluation_reply("candidate_complete", ""),
+                Canned::Json(tool_call_reply(vec![(
+                    "run",
+                    serde_json::json!({"argv":["cat","effects.txt"]}),
+                )])),
+                Canned::Json(tool_call_reply(vec![(
+                    "finish",
+                    serde_json::json!({"verified":true,"text":"Effect happened once"}),
+                )])),
+            ],
+        );
+        let workspace = fixture.add_session("goal");
+        Session::at(&fixture.root.join("session-goal"))
+            .set_yolo(true)
+            .unwrap();
+        fixture.ask("goal", "/goal Record an effect once");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while fixture.view("goal").retry_status.is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        if cancel {
+            fixture.cancel("goal");
+        }
+        fixture.wait_for_status("goal", Status::Idle).await;
+        assert_eq!(
+            fs::read_to_string(workspace.join("effects.txt")).unwrap(),
+            "once"
+        );
+        let goal = fixture.view("goal").goal.unwrap();
+        assert_eq!(
+            goal.status,
+            if cancel {
+                kyotoagent::goal::GoalStatus::Paused
+            } else {
+                kyotoagent::goal::GoalStatus::Complete
+            }
+        );
+        assert!(fixture.view("goal").retry_status.is_none());
+        let requests = fixture.chat_bodies();
+        if cancel {
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+            assert_eq!(fixture.chat_bodies().len(), 3);
+        } else {
+            assert_eq!(requests[2], requests[3]);
+        }
+    }
+}
+
+#[tokio::test]
 async fn goal_evaluation_continues_with_flexible_todos_and_real_output() {
     let fixture = Fixture::new(
         "goal-continue",

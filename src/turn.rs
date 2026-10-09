@@ -343,6 +343,17 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
                     "text": { "type": "string" },
                     "note": { "type": "string" },
                     "proof": { "type": "string" },
+                    "checkpoint": {
+                        "type": "object",
+                        "properties": {
+                            "work_item": { "type": "string" },
+                            "evidence_refs": { "type": "array", "items": { "type": "string" } },
+                            "blocker": { "type": "string" },
+                            "next_action": { "type": "string" }
+                        },
+                        "required": ["work_item", "evidence_refs", "blocker", "next_action"],
+                        "additionalProperties": false
+                    },
                 },
                 "required": ["text"],
             }),
@@ -971,20 +982,6 @@ impl Runner {
                 self.forget(&meta.id);
                 continue;
             }
-            if meta
-                .goal
-                .as_ref()
-                .is_some_and(|goal| goal.status == crate::goal::GoalStatus::Active)
-            {
-                session.update(|meta| {
-                    if let Some(goal) = &mut meta.goal {
-                        goal.status = crate::goal::GoalStatus::Paused;
-                        goal.verification =
-                            "The server stopped. Use /goal resume to continue.".to_string();
-                    }
-                    true
-                })?;
-            }
             if meta.status == Status::Working {
                 let events = session.events()?;
                 if enhance::rewrite_in_flight(&events) {
@@ -1054,7 +1051,14 @@ impl Runner {
             if yolo_open {
                 let _ = self.answer(&session_id, Answer::allow_once());
             }
-            let _ = state.tools.tasks().settle_orphans();
+            let interrupted_tasks = state
+                .tools
+                .tasks()
+                .settle_orphans()?
+                .into_iter()
+                .map(|task| task.id)
+                .collect();
+            goal::recover(&session, interrupted_tasks)?;
             if !meta.archived {
                 state.tools.schedules().arm_pending();
             }
@@ -1412,6 +1416,15 @@ impl Runner {
         else {
             return;
         };
+        let _ = state.session.update(|meta| {
+            if let Some(goal) = &mut meta.goal {
+                if goal.status == crate::goal::GoalStatus::Active {
+                    goal.pause("Cancelled by the user.");
+                    return true;
+                }
+            }
+            false
+        });
         let turn = state.turn.lock().expect("the turn slot is not poisoned");
         if let Some(running) = turn.as_ref() {
             running.cancel.send_replace(true);
@@ -1576,6 +1589,17 @@ impl Runner {
             .ok_or(AnswerError::NothingOpen)?;
         let held = state.tools.gate().is_held_open();
         state.tools.gate().answer(answer.clone())?;
+        if answer.decision == crate::events::Decision::Deny {
+            let _ = state.session.update(|meta| {
+                if let Some(goal) = &mut meta.goal {
+                    if goal.status == crate::goal::GoalStatus::Active {
+                        goal.pause("Permission denied by the user.");
+                        return true;
+                    }
+                }
+                false
+            });
+        }
         if held {
             settle_held_answer(&state.session, &answer)?;
         }
@@ -1721,6 +1745,16 @@ impl Runner {
         schedule_id: Option<String>,
         silent: bool,
     ) {
+        if state.session.meta().is_ok_and(|meta| {
+            meta.goal.is_some_and(|goal| {
+                matches!(
+                    goal.status,
+                    crate::goal::GoalStatus::Paused | crate::goal::GoalStatus::BudgetExhausted
+                )
+            })
+        }) {
+            return;
+        }
         match self.start_turn(
             state,
             &ask,
@@ -1952,6 +1986,7 @@ impl Turn {
         );
         if self.goal_run {
             if let Some(goal) = self.session.meta().ok().and_then(|meta| meta.goal) {
+                text.push_str(&format!("\nVerified goal checkpoints: {}\nFor a multi-item goal, implement and verify one work item, record existing authorized PR/proof references, then call finish with checkpoint (work_item, evidence_refs, blocker, next_action) before moving on. This requests independent checkpoint verification, not overall completion. Never replay external actions recorded in checkpoints. A distinct verified workspace revision is required for progress credit.\n", serde_json::to_string(&goal.checkpoint_context()).unwrap_or_default()));
                 text.push_str(&format!("\nActive goal outcome criteria: {}\nPrior verification: {}\nThe objective remains authoritative; these criteria do not authorize extra work or narrow the request. Todos are flexible implementation memory. Produce actual behavior evidence, continue ready work without asking for go, and preserve existing permission gates.\n", serde_json::to_string(&goal.criteria).unwrap_or_default(), goal.verification));
             }
         }
