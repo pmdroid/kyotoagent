@@ -628,8 +628,13 @@ impl Session {
     /// Add one line to the log. The write is appended and flushed, so a turn
     /// that ends here leaves a log another process can read.
     pub fn append(&self, event: &Event) -> Result<(), SessionError> {
+        self.append_assigned(event).map(|_| ())
+    }
+
+    pub fn append_assigned(&self, event: &Event) -> Result<Event, SessionError> {
         let path = self.events_path();
-        let mut line = serde_json::to_string(event).map_err(|source| SessionError::Json {
+        let mut event = event.clone();
+        let mut line = serde_json::to_string(&event).map_err(|source| SessionError::Json {
             path: path.clone(),
             source,
         })?;
@@ -654,6 +659,15 @@ impl Session {
             path: path.clone(),
             source,
         })?;
+        let next_id = format!("e{}", Self::event_lines(&path) + 1);
+        if event.id != next_id {
+            event.id = next_id;
+            line = serde_json::to_string(&event).map_err(|source| SessionError::Json {
+                path: path.clone(),
+                source,
+            })?;
+            line.push('\n');
+        }
         if let Err(source) = file.write_all(line.as_bytes()).and_then(|()| file.flush()) {
             cache.stamp = None;
             file.set_len(before.len)
@@ -678,7 +692,15 @@ impl Session {
             cache.stamp = None;
         }
         cache.generation = cache.generation.wrapping_add(1);
-        Ok(())
+        Ok(event)
+    }
+
+    pub(self) fn event_lines(path: &Path) -> usize {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
     }
 
     pub(crate) fn recover_event_log(&self) -> Result<(), SessionError> {
@@ -836,6 +858,61 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn concurrent_handles_keep_unique_event_ids() {
+        let dir = temp_dir("event-race");
+        let first = Session::at(&dir);
+        first
+            .create(&SessionMeta::new(
+                "race",
+                Path::new("/w"),
+                "gpt",
+                "2026-10-08T00:00:00.000Z",
+            ))
+            .unwrap();
+        let second = Session::at(&dir);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
+        let left = std::thread::spawn({
+            let started_tx = started_tx.clone();
+            let release_rx = std::sync::Arc::clone(&release_rx);
+            move || {
+                let id = first.next_event_id().unwrap();
+                let event = Event::new(&id, "2026-10-08T00:00:01.000Z", "t1", EventKind::Result);
+                started_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+                first.append_assigned(&event).unwrap().id
+            }
+        });
+        let right = std::thread::spawn(move || {
+            let id = second.next_event_id().unwrap();
+            let event = Event::new(&id, "2026-10-08T00:00:02.000Z", "t1", EventKind::Proof);
+            started_tx.send(()).unwrap();
+            release_rx.lock().unwrap().recv().unwrap();
+            second.append_assigned(&event).unwrap().id
+        });
+        started_rx.recv().unwrap();
+        started_rx.recv().unwrap();
+        release_tx.send(()).unwrap();
+        release_tx.send(()).unwrap();
+        let left = left.join().unwrap();
+        let right = right.join().unwrap();
+        let ids: Vec<_> = Session::at(&dir)
+            .events()
+            .unwrap()
+            .into_iter()
+            .map(|event| event.id)
+            .collect();
+        assert_ne!(left, right, "allocated ids collided: {ids:?}");
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        assert_eq!(
+            ids.iter().collect::<std::collections::HashSet<_>>().len(),
+            2
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

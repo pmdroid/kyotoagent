@@ -266,6 +266,9 @@ pub(super) async fn run_turn(
             if *cancel.borrow() || tools.gate().rejected() {
                 stopped = true;
             }
+            if session.meta().is_ok_and(|meta| meta.archived) {
+                stopped = true;
+            }
             if !finished {
                 if let Some(reason) = goal::goal_stop(turn)? {
                     result_text = reason;

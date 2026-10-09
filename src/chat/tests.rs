@@ -314,6 +314,9 @@ fn a_catalog_row_keeps_advertised_context_length() {
     assert_eq!(rows[0].id, "grok-4.6");
     assert_eq!(rows[0].context_length, Some(256000));
     assert_eq!(rows[0].aliases, vec!["grok-4"]);
+    assert_eq!(canonical_model(&rows, "grok-4"), Some("grok-4.6".into()));
+    assert_eq!(canonical_model(&rows, "grok-4.6"), Some("grok-4.6".into()));
+    assert_eq!(canonical_model(&rows, "other"), None);
     assert_eq!(rows[0].reasoning_efforts, vec!["low", "high"]);
 }
 

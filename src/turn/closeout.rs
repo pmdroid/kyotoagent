@@ -133,10 +133,17 @@ async fn execute_closeout(
 
     let review = closeout.file.as_ref().unwrap().reviews.get(id).cloned();
     let model = reviewer_model.unwrap_or(&turn.config.model);
-    if review.as_ref().is_some_and(|review| {
-        review.independence.different_model
-            && (model.is_empty() || turn.config.model.is_empty() || model == turn.config.model)
-    }) {
+    let catalog = chat::model_catalog(&turn.config, turn.root.as_deref()).await;
+    let author = chat::canonical_model(&catalog.models, &turn.config.model);
+    let reviewer = chat::canonical_model(&catalog.models, model);
+    let same_model = match (author, reviewer) {
+        (Some(author), Some(reviewer)) => author == reviewer,
+        _ => model.is_empty() || turn.config.model.is_empty() || model == turn.config.model,
+    };
+    if review
+        .as_ref()
+        .is_some_and(|review| review.independence.different_model && same_model)
+    {
         return Ok(format!("Review {id} requires a different model. Call run_closeout with model set to a different available model."));
     }
     let (argv, timeout) = if let Some(review) = &review {
@@ -307,6 +314,16 @@ async fn execute_closeout(
     let mut body = crate::closeout::run_body(id, attempt, &output);
     body.transcript = Some(file.clone());
     body.passed = Some(passed);
+    body.policy_digest = closeout
+        .file
+        .as_ref()
+        .map(|file| file.policy_digest.clone())
+        .unwrap_or_default();
+    body.workspace_fingerprint = crate::closeout::workspace_fingerprint(
+        tools.workspace(),
+        &git_output(tools.workspace(), &["rev-parse", "HEAD"]),
+        &git_output(tools.workspace(), &["status", "--porcelain"]),
+    );
     let event = Event::new(
         &session.next_event_id()?,
         &now(),

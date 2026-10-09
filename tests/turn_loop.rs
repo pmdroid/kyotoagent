@@ -511,6 +511,8 @@ async fn interrupted_turn_reloads_its_collected_files_in_the_original_turn_versi
                     attempt: 1,
                     exit: 1,
                     tail: "failed check".into(),
+                    workspace_fingerprint: String::new(),
+                    policy_digest: String::new(),
                 })
                 .unwrap(),
         )

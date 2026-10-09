@@ -1054,6 +1054,31 @@ impl Runner {
             if yolo_open {
                 let _ = self.answer(&session_id, Answer::allow_once());
             }
+            if let Ok(events) = session.events() {
+                let mut queued = VecDeque::new();
+                let mut removed = std::collections::HashSet::new();
+                for event in events.iter().rev() {
+                    if event.kind == EventKind::AskDequeued {
+                        if let Ok(body) = event.body_as::<crate::events::ScheduleCancelBody>() {
+                            removed.insert(body.id);
+                        }
+                    }
+                    if event.kind == EventKind::AskQueued {
+                        if let Ok(body) = event.body_as::<crate::events::AskQueuedBody>() {
+                            if removed.contains(&body.id) {
+                                continue;
+                            }
+                            queued.push_front(QueuedAsk {
+                                id: body.id,
+                                text: body.text,
+                                enhance: body.enhance,
+                                images: body.images,
+                            });
+                        }
+                    }
+                }
+                *state.ask_queue.lock().expect("ask queue") = queued;
+            }
             let _ = state.tools.tasks().settle_orphans();
             if !meta.archived {
                 state.tools.schedules().arm_pending();
@@ -1176,12 +1201,26 @@ impl Runner {
             .as_nanos();
         let count = QUEUED_COUNTER.fetch_add(1, Ordering::Relaxed);
         let id = format!("{nanos:x}-{count:x}");
-        queue.push_back(QueuedAsk {
+        let queued = QueuedAsk {
             id: id.clone(),
             text: text.to_string(),
             enhance,
             images,
-        });
+        };
+        let event = Event::new(
+            &state.session.next_event_id()?,
+            &crate::events::now(),
+            "queue",
+            EventKind::AskQueued,
+        )
+        .with_body(&crate::events::AskQueuedBody {
+            id: queued.id.clone(),
+            text: queued.text.clone(),
+            enhance: queued.enhance,
+            images: queued.images.clone(),
+        })?;
+        state.session.append(&event)?;
+        queue.push_back(queued);
         Ok(id)
     }
 
@@ -1201,10 +1240,21 @@ impl Runner {
             return Ok(false);
         };
         queue.remove(index);
+        let event = Event::new(
+            &state.session.next_event_id()?,
+            &crate::events::now(),
+            "queue",
+            EventKind::AskDequeued,
+        )
+        .with_body(&crate::events::ScheduleCancelBody { id: id.to_string() })?;
+        state.session.append(&event)?;
         Ok(true)
     }
 
     fn drain_asks(self: &Arc<Self>, state: &Arc<SessionState>) {
+        if state.session.meta().is_ok_and(|meta| meta.archived) {
+            return;
+        }
         if self.waiting(state)
             || self.occupied(state)
             || self.enhance_open(state)
@@ -1236,6 +1286,19 @@ impl Runner {
                 .lock()
                 .expect("the ask queue is not poisoned")
                 .push_front(queued);
+            return;
+        }
+        if let Ok(event_id) = state.session.next_event_id() {
+            if let Ok(event) = Event::new(
+                &event_id,
+                &crate::events::now(),
+                "queue",
+                EventKind::AskDequeued,
+            )
+            .with_body(&crate::events::ScheduleCancelBody { id: queued.id })
+            {
+                let _ = state.session.append(&event);
+            }
         }
     }
 
@@ -1254,31 +1317,58 @@ impl Runner {
         images: Vec<crate::attachment::ImageAttachment>,
     ) -> Result<TurnStart, TurnError> {
         let runner = self.me.upgrade().expect("the runner is still held");
+        state.turn_idle.send_replace(false);
+        if state.session.meta().is_ok_and(|meta| meta.archived)
+            || state.retiring.load(Ordering::Acquire)
+        {
+            state.turn_idle.send_replace(true);
+            return Ok(TurnStart::Busy);
+        }
         let mut turn = state.turn.lock().expect("the turn slot is not poisoned");
         if state.retiring.load(Ordering::Acquire)
+            || state.session.meta().is_ok_and(|meta| meta.archived)
             || turn.is_some()
             || state.tools.gate().open_permission().is_some()
             || state.tools.gate().open_question().is_some()
             || self.enhance_open(state)
             || self.enhance_running(state)
         {
+            state.turn_idle.send_replace(true);
             return Ok(TurnStart::Busy);
         }
 
         // The turn id is counted under the turn slot, so two asks cannot share
         // one even if the first task has not written its ask to the log yet.
         let turn_id = next_turn_id(&state.session);
+        if state.session.meta().is_ok_and(|meta| meta.archived)
+            || state.retiring.load(Ordering::Acquire)
+        {
+            state.turn_idle.send_replace(true);
+            return Ok(TurnStart::Busy);
+        }
         state.tools.gate().reset_cancel();
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         let session = state.session.clone();
         let tools = state.tools.clone();
-        let config = self.config_for_session(&state.session)?;
+        let config = match self.config_for_session(&state.session) {
+            Ok(config) => config,
+            Err(error) => {
+                state.turn_idle.send_replace(true);
+                return Err(error);
+            }
+        };
         let root = self
             .config_path
             .as_ref()
             .and_then(|path| path.parent())
             .map(Path::to_path_buf);
-        let client = ChatClient::in_root(&config, root.as_deref())?;
+        let client = match ChatClient::in_root(&config, root.as_deref()) {
+            Ok(client) => client,
+            Err(error) => {
+                state.turn_idle.send_replace(true);
+                return Err(error.into());
+            }
+        };
         let compact_percent = config.compact_percent;
         let workspace = state.tools.workspace().to_path_buf();
         let meta = state.session.meta().ok();
@@ -1333,6 +1423,7 @@ impl Runner {
         };
         if let Some(id) = schedule_id {
             if !state.tools.schedules().fire(id) {
+                state.turn_idle.send_replace(true);
                 return Ok(TurnStart::Spent);
             }
         }

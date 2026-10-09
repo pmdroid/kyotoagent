@@ -396,14 +396,21 @@ impl CloseoutState {
             .collect();
         changed.sort();
         changed.dedup();
-        if rebase_in_progress(workspace) {
-            changed.clear();
+        let reported = if rebase_in_progress(workspace) {
+            Vec::new()
         } else if let Some(paths) = paths_against_base(workspace, self.base_ref_name.as_deref()) {
-            changed.retain(|path| paths.contains(path));
-        }
+            changed
+                .iter()
+                .filter(|path| paths.contains(*path))
+                .cloned()
+                .collect()
+        } else {
+            changed.clone()
+        };
         for path in &changed {
             self.record_write(path);
         }
+        changed = reported;
         self.snapshot = current;
         changed
     }
@@ -1313,6 +1320,8 @@ pub fn run_body(id: &str, attempt: u32, output: &RunOutput) -> CloseoutRunBody {
         attempt,
         exit: output.exit.unwrap_or(-1),
         tail: tail_of(output),
+        workspace_fingerprint: String::new(),
+        policy_digest: String::new(),
     }
 }
 
@@ -1868,6 +1877,32 @@ mod tests {
     }
 
     #[test]
+    fn restoring_one_of_two_changed_paths_invalidates_the_pass() {
+        let dir = temp_dir("restore-one");
+        write_file(&dir, "version: 1\nitems:\n  - id: test\n    kind: command\n    run: cmp a b\n    hint: Compare the files\n");
+        git(&dir, &["init", "-b", "main"]);
+        git(&dir, &["config", "user.name", "Closeout Test"]);
+        git(&dir, &["config", "user.email", "closeout@example.test"]);
+        std::fs::write(dir.join("a"), "base\n").unwrap();
+        std::fs::write(dir.join("b"), "base\n").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-m", "Base"]);
+        git(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        std::fs::write(dir.join("a"), "changed\n").unwrap();
+        std::fs::write(dir.join("b"), "changed\n").unwrap();
+        let mut state = CloseoutState::new(&dir).unwrap();
+        state.refresh_workspace(&dir);
+        state.item_mut("test").passed = true;
+        std::fs::write(dir.join("a"), "base\n").unwrap();
+        state.refresh_workspace(&dir);
+        assert!(
+            !state.item_mut("test").passed,
+            "restoring one changed path must invalidate the pass"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn refresh_skips_rebase_changes_and_updates_the_snapshot() {
         let dir = temp_dir("rebase");
         write_file(&dir, "version: 1\nitems:\n  - id: test\n    kind: command\n    run: true\n    hint: Check changes\n");
@@ -1895,8 +1930,13 @@ mod tests {
             .unwrap();
         assert!(!rebased.status.success());
         assert!(rebase_in_progress(&dir));
+        state.item_mut("test").passed = true;
         assert!(state.refresh_workspace(&dir).is_empty());
-        assert!(state.written_paths.is_empty());
+        assert!(
+            !state.item_mut("test").passed,
+            "a rebase mutation must invalidate the pass before path filtering"
+        );
+        state.written_paths.clear();
         assert!(!state.tracks_path("imported"));
         std::fs::write(dir.join("file"), "resolved feature\n").unwrap();
         git(&dir, &["add", "file"]);
