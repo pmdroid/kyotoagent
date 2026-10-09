@@ -198,7 +198,7 @@ impl Fixture {
                 .iter()
                 .map(|event| event.body_as().expect("a permission body parses"))
                 .collect();
-            if cards.len() >= count {
+            if cards.len() >= count && self.tools.gate().open_permission().is_some() {
                 return cards;
             }
             assert!(
