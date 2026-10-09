@@ -479,6 +479,7 @@ fn kinds(app: &App) -> Vec<&'static str> {
             Card::Answer { .. } => "answer",
             Card::Permission { .. } => "permission",
             Card::Result { .. } => "result",
+            Card::Btw { .. } => "btw",
             Card::Proof { .. } => "proof",
             Card::Enhance { .. } => "enhance",
             Card::Artifact { .. } => "artifact",
@@ -4177,4 +4178,55 @@ async fn the_save_layout_command_persists_and_applies_to_other_clients_and_sessi
     poll(&mut other, &fixture.client).await.unwrap();
     assert!(!screen_model(&other).right_open);
     assert!(screen_model(&other).right_panes.is_empty());
+}
+
+#[tokio::test]
+async fn btw_typed_in_the_composer_answers_without_resolving_permission() {
+    let fixture = Fixture::with_replies("btw-composer", vec![
+        Canned::Json(tool_call_reply(vec![("write_file", serde_json::json!({"path":"main.txt", "contents":"work"}))])),
+        Canned::Json(serde_json::json!({"choices":[{"message":{"role":"assistant","content":"A separate answer."}}]}).to_string()),
+    ]).await;
+    let mut app = fixture.app();
+    start_session(&mut app, &fixture.client, "Write main.txt").await;
+    wait_until(&mut app, &fixture.client, |app| {
+        app.selected_session()
+            .is_some_and(|row| row.status == Status::Waiting)
+    })
+    .await;
+    drive(&mut app, &fixture.client, press(KeyCode::Esc)).await;
+    type_text(&mut app, &fixture.client, "/btw Why?").await;
+    drive(&mut app, &fixture.client, press(KeyCode::Enter)).await;
+    type_text(&mut app, &fixture.client, "/unsent draft").await;
+    wait_until(&mut app, &fixture.client, |app| {
+        app.cards
+            .iter()
+            .any(|card| matches!(card, Card::Btw { text } if text.contains("A separate answer.")))
+    })
+    .await;
+    assert_eq!(app.ask, "/unsent draft");
+    assert_eq!(app.selected_session().unwrap().status, Status::Waiting);
+    assert!(draw(&app).contains("BTW"));
+    assert!(!fixture.workspace.join("main.txt").exists());
+}
+
+#[tokio::test]
+async fn btw_in_a_question_composer_does_not_answer_the_question() {
+    let (fixture, mut app) = start_question("btw-question", &["Yes", "No"]).await;
+    fixture._fake.set_replies(vec![Canned::Json(serde_json::json!({"choices":[{"message":{"role":"assistant","content":"A side explanation"}}]}).to_string())]);
+    type_text(&mut app, &fixture.client, "/btw Explain this decision").await;
+    drive(&mut app, &fixture.client, press(KeyCode::Enter)).await;
+    wait_until(&mut app, &fixture.client, |app| {
+        app.cards
+            .iter()
+            .any(|card| matches!(card, Card::Btw { text } if text.contains("side explanation")))
+    })
+    .await;
+    assert_eq!(app.selected_session().unwrap().status, Status::Waiting);
+    assert!(app
+        .cards
+        .iter()
+        .any(|card| matches!(card, Card::Question { answer: None, .. })));
+    assert!(!log_text(&fixture.client, &app.selected)
+        .await
+        .contains("question_answer"));
 }

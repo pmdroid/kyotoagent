@@ -258,6 +258,12 @@ pub(super) fn apply_poll(app: &mut App, data: PollData) {
             app.question_cursor = None;
         }
         let before = arrived_lists(app);
+        let work_cards: Vec<_> = app
+            .cards
+            .iter()
+            .filter(|card| !matches!(card, Card::Btw { .. }))
+            .cloned()
+            .collect();
         app.cards.clear();
         app.card_event_ids.clear();
         for card in &view.cards {
@@ -344,7 +350,12 @@ pub(super) fn apply_poll(app: &mut App, data: PollData) {
         }
         if app.cards.is_empty() {
             app.scroll = 0;
-        } else if app.follow {
+        } else if app.follow
+            && work_cards.iter().ne(app
+                .cards
+                .iter()
+                .filter(|card| !matches!(card, Card::Btw { .. })))
+        {
             app.scroll = follow_tail(app);
         } else {
             let tail = follow_tail(app);

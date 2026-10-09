@@ -409,6 +409,7 @@ impl Server {
                 "/v1/sessions/{id}/messages",
                 post(message).layer(axum::extract::DefaultBodyLimit::max(30 * 1024 * 1024)),
             )
+            .route("/v1/sessions/{id}/btw", post(btw).delete(cancel_btw))
             .route("/v1/sessions/{id}/queue/{queued_id}", delete(remove_queued))
             .route("/v1/sessions/{id}/compact", post(compact))
             .route("/v1/sessions/{id}/answers", post(answer))
@@ -1153,6 +1154,9 @@ async fn message(
             StatusCode::ACCEPTED,
             Json(serde_json::json!({ "turnId": turn_id })),
         )),
+        Ok(crate::turn::AskOutcome::Btw(id)) => {
+            Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"btwId": id}))))
+        }
         Ok(crate::turn::AskOutcome::Enhancing(id)) => Ok((
             StatusCode::OK,
             Json(serde_json::json!({ "id": id, "state": "enhancing" })),
@@ -1170,6 +1174,39 @@ async fn message(
         Err(TurnError::QueueFull) => Err(ApiError::conflict("the queue is full")),
         Err(TurnError::Goal(message)) => Err(ApiError::bad_request(message)),
         Err(source) => Err(ApiError::server(source.to_string())),
+    }
+}
+
+async fn btw(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<MessageRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !body.images.is_empty() {
+        return Err(ApiError::bad_request("Side questions take text only."));
+    }
+    btw_response(&state, &id, &body.text)
+}
+
+async fn cancel_btw(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    btw_response(&state, &id, "cancel")
+}
+
+fn btw_response(
+    state: &AppState,
+    id: &str,
+    text: &str,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    match state.runner.btw(id, text) {
+        Ok(id) => Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"btwId": id})))),
+        Err(TurnError::NoSession) => Err(ApiError::not_found()),
+        Err(TurnError::Busy) => Err(ApiError::conflict("A side question is already running.")),
+        Err(TurnError::Archived) => Err(ApiError::conflict("The session is archived.")),
+        Err(TurnError::Goal(message)) => Err(ApiError::bad_request(message)),
+        Err(error) => Err(ApiError::server(error.to_string())),
     }
 }
 

@@ -24,7 +24,13 @@ pub(super) fn spawn_compact(
             let turn_id = session
                 .events()
                 .ok()
-                .and_then(|events| events.last().map(|event| event.turn_id.clone()))
+                .and_then(|events| {
+                    events
+                        .iter()
+                        .rev()
+                        .find(|event| event.kind == EventKind::UserAsk)
+                        .map(|event| event.turn_id.clone())
+                })
                 .unwrap_or_else(|| "t1".to_string());
             let _ = append_result(&session, &turn_id, &error.to_string(), "");
         }
