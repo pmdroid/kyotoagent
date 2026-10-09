@@ -9,6 +9,8 @@ let modelConfirmSentence = "Save as default for all sessions"
 final class CommandTests: XCTestCase {
     func testSlashClassificationMatchesTheTUIRules() {
         let efforts = ["low", "medium", "high"]
+        XCTAssertEqual(slashCommand("/btw why?", efforts: efforts), .btw)
+        XCTAssertEqual(slashCommand("/btw cancel", efforts: efforts), .btw)
         XCTAssertEqual(slashCommand("/compact", efforts: efforts), .compact)
         XCTAssertEqual(slashCommand("  /compact  ", efforts: efforts), .compact)
         XCTAssertEqual(slashCommand("/compact now", efforts: efforts), .ask)
@@ -48,6 +50,7 @@ final class CommandTests: XCTestCase {
             "Help",
             "/model",
             "/effort",
+            "/btw",
             "/compact",
             "/yolo",
             "/goal",

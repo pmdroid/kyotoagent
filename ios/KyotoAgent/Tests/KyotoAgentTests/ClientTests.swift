@@ -6,6 +6,24 @@ import FoundationNetworking
 
 @MainActor
 final class ClientTests: XCTestCase {
+    func testBtwUsesItsOwnAuthenticatedEndpointAndPreservesErrors() async throws {
+        let gate = Gate()
+        gate.handler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/sessions/s/btw")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
+            XCTAssertEqual(request.httpMethod, "POST")
+            let payload = try! JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+            XCTAssertEqual(payload["text"] as? String, "Why?")
+            return HostResponse(status: 202, body: Data(#"{"btwId":"btw-1"}"#.utf8))
+        }
+        let client = ServeClient(baseURL: URL(string: "https://example.test")!, transport: gate, token: "test-token")
+        let result = try await client.ask("s", text: "/btw Why?")
+        XCTAssertEqual(result, .started("btw-1"))
+        gate.handler = { _ in HostResponse(status: 409, body: Data("Side question running".utf8)) }
+        do { _ = try await client.ask("s", text: "/btw Another?"); XCTFail("Expected busy error") }
+        catch { XCTAssertEqual(error as? HostError, .status(409, "Side question running")) }
+    }
+
     func testCloseoutRequirementsDecodeAndExplainWhetherChecksRun() throws {
         let body = Data("""
         [{"id":"src","kind":"command","hint":"source","status":"not_required","required":false},{"id":"docs","kind":"command","hint":"docs","status":"missing","required":true}]

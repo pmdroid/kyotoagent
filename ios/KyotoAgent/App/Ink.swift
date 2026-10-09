@@ -43,7 +43,7 @@ func kindColor(_ kind: CardKind) -> Color {
         return Ink.result
     case .proof, .artifact:
         return Ink.proof
-    case .enhance:
+    case .enhance, .btw:
         return Ink.accent
     }
 }
