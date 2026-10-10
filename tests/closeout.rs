@@ -890,6 +890,107 @@ async fn get_closeout_tracks_paths_passes_and_later_edits() {
 }
 
 #[tokio::test]
+async fn committed_candidates_require_recorded_checks_across_sessions_and_turns() {
+    let calls = vec![
+        ("get_closeout", serde_json::json!({})),
+        ("run_closeout", serde_json::json!({"id":"test"})),
+        (
+            "ask",
+            serde_json::json!({"text":"Check failed", "choices":["stop"]}),
+        ),
+        ("get_closeout", serde_json::json!({})),
+        ("run_closeout", serde_json::json!({"id":"test"})),
+        ("get_closeout", serde_json::json!({})),
+        ("finish", serde_json::json!({"text":"Verified"})),
+        ("get_closeout", serde_json::json!({})),
+        ("finish", serde_json::json!({"text":"Still verified"})),
+    ];
+    let fixture = Fixture::new(
+        "committed-continuation",
+        calls
+            .into_iter()
+            .map(|call| Canned::Json(tool_call_reply(vec![call])))
+            .collect(),
+    );
+    let workspace = fixture.add_session("91bc");
+    fs::create_dir_all(workspace.join(".agents")).unwrap();
+    fs::write(workspace.join(".agents/closeout.yaml"), "specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 3\n  scope: task\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: [sh, -c, 'test -f ../ready']\n    timeoutSeconds: 5\n    paths: ['candidate.txt']\n").unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    git(&["init", "-b", "main"]);
+    git(&["config", "user.name", "Closeout Test"]);
+    git(&["config", "user.email", "closeout@example.test"]);
+    fs::write(workspace.join("candidate.txt"), "base").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "Base"]);
+    git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(&["checkout", "-b", "feature"]);
+    fs::write(workspace.join("candidate.txt"), "candidate").unwrap();
+    git(&["commit", "-am", "Candidate"]);
+    assert!(git(&["status", "--porcelain"]).is_empty());
+    let first = Session::at(&fixture.root.join("session-91bc"));
+    first
+        .update(|meta| {
+            meta.task_id = Some("github-91".into());
+            true
+        })
+        .unwrap();
+    fixture.ask("91bc", "Verify the committed branch without editing");
+    fixture.respond("91bc", Answer::allow_once()).await;
+    fixture.wait_for_waiting_question("91bc").await;
+    let first_reports = tool_outputs(&fixture.log("91bc"), "get_closeout");
+    let first_report: serde_json::Value = serde_json::from_str(&first_reports[0]).unwrap();
+    assert_eq!(first_report["pending"], serde_json::json!(["test"]));
+    assert_eq!(
+        first_report["required"][0]["matched_paths"],
+        serde_json::json!(["candidate.txt"])
+    );
+    assert!(fixture.view("91bc").closeout[0].required);
+    fixture.runner.cancel("91bc");
+    fixture.wait_for_status("91bc", Status::Idle).await;
+
+    fs::write(fixture.root.join("ready"), "ready").unwrap();
+    let second = Session::at(&fixture.root.join("session-92bc"));
+    let mut meta = SessionMeta::new("92bc", &workspace, "test/model", AT);
+    meta.task_id = Some("github-91".into());
+    second.create(&meta).unwrap();
+    fixture.runner.add_session(&second).unwrap();
+    fixture.ask("92bc", "Continue verifying the same committed candidate");
+    fixture.respond("92bc", Answer::allow_once()).await;
+    fixture.wait_for_status("92bc", Status::Idle).await;
+    fixture.ask("92bc", "Confirm the recorded pass survives another turn");
+    fixture.wait_for_log("92bc", "Still verified").await;
+    fixture.wait_for_status("92bc", Status::Idle).await;
+    let reports: Vec<serde_json::Value> = tool_outputs(&fixture.log("92bc"), "get_closeout")
+        .iter()
+        .map(|output| serde_json::from_str(output).unwrap())
+        .collect();
+    assert_eq!(reports.len(), 3);
+    assert_eq!(reports[0]["required"][0]["status"], "failed");
+    assert_eq!(reports[0]["required"][0]["remaining_attempts"], 2);
+    for report in &reports[1..] {
+        assert_eq!(report["required"][0]["status"], "passed");
+        assert_eq!(report["required"][0]["remaining_attempts"], 2);
+        assert_eq!(report["pending"], serde_json::json!([]));
+    }
+    assert_eq!(fixture.closeout_runs("91bc"), 1);
+    assert_eq!(fixture.closeout_runs("92bc"), 1);
+    assert_eq!(second.meta().unwrap().task_id.as_deref(), Some("github-91"));
+    assert!(git(&["status", "--porcelain"]).is_empty());
+}
+
+#[tokio::test]
 async fn get_closeout_without_a_policy_has_no_requirements() {
     let fixture = Fixture::new(
         "get-closeout-empty",
