@@ -1,100 +1,60 @@
 ---
 name: verify-kyotoagent
-description: Drive Kyoto Agent over unix-socket /v1 against the live goldbox OpenAI-compatible server, with an isolated HOME and KYOTOAGENT_ROOT. Use when proving serve, catalog, a permissioned ask, or when running /verify-kyotoagent.
+description: Test Kyoto Agent through its real /v1 routes in a disposable instance with an explicitly supplied OpenAI-compatible provider and model.
 ---
 
-# Verify kyotoagent
+# Verify Kyoto Agent
 
-Kyoto Agent speaks HTTP on a unix socket. This skill launches `kyotoagent serve` under `/tmp/verify-kyotoagent-$RUN_ID`, talks to it the way the TUI does (`Host: kyotoagent` over that socket), and points the model at goldbox. Read [features/README.md](features/README.md) before driving. Drive one mapped feature per run unless the change touches more.
-
-Never set `HOME` to the operator's home. Never read or write `~/.kyotoagent` on the real account.
+Read [features/README.md](features/README.md), then the relevant recipe. Use the ordinary binary and `/v1` routes for observed behavior.
 
 ## Launch
 
+Build the checkout with `cargo build --bin kyotoagent`, then run:
+
 ```sh
-cd "$(git rev-parse --show-toplevel)"
-export RUN_ID="${RUN_ID:-$(date +%s)-$$}"
-.agents/skills/verify-kyotoagent/helpers/verify.sh launch
+.agents/skills/verify-kyotoagent/helpers/verify.sh run
 ```
 
-`launch` builds `target/debug/kyotoagent` with the operator HOME so rustc and mise stay put, then creates `/tmp/verify-kyotoagent-$RUN_ID`, sets `HOME` to that directory and `KYOTOAGENT_ROOT=$HOME/.kyotoagent`, writes `config.toml` for goldbox using the required `KYOTOAGENT_E2E_BASE_URL` shell environment variable, starts `$BIN serve`, and waits until `GET /v1/sessions` on the socket returns 200. stdout is one JSON object (also saved as `$HOME/instance.json`). Ready means that file exists and `doctor` exits 0.
+Set these shell variables before running:
 
-Teardown is `helpers/verify.sh cleanup`.
+- `KYOTOAGENT_E2E_BASE_URL`: your OpenAI-compatible provider root ending in `/v1`.
+- `KYOTOAGENT_E2E_MODEL`: the exact model ID.
+- `KYOTOAGENT_E2E_API_KEY_ENV`: the name of the environment variable holding the provider key, when authentication is required.
+- `BIN`: optional path to the chosen build; defaults to this checkout's `target/debug/kyotoagent`.
+- `KYOTOAGENT_E2E_TIMEOUT`: optional total run deadline in seconds; defaults to 240.
+
+The default run creates a session, asks for `pong`, and checks that the result came from a model reply or successful `finish`. Use `run --text "..."` for another prompt.
+
+The foreground runner creates a fresh `/tmp/verify-kyotoagent-*` home, config, workspace and socket. It sets HOME and KYOTOAGENT_ROOT together, configures the supplied model for chat and titles, enables HTTPS on `127.0.0.1:0`, and discovers the actual address through `/v1/https`. It prints instance metadata after readiness. Never read/write the operator's Kyoto configuration or stop the installed server.
 
 ## Doctor
 
-Run first whenever anything looks off.
-
-```sh
-.agents/skills/verify-kyotoagent/helpers/verify.sh doctor
-```
-
-Checks, in order:
-
-1. `GET $BASE/models` returns 200 within 5 seconds. On any other outcome it prints `goldbox GET $BASE/models did not answer 200` and exits 1.
-2. `GET /v1/sessions` on the serve socket returns 200.
-3. `/proc/$pid/exe` is the `target/debug/kyotoagent` this run built.
-
-A down goldbox fails step 1 and stops. Do not drive after a failed doctor.
+The runner validates the selected provider model after startup. Inside a custom driver, `"$VERIFY_HELPER" doctor` also checks server process ownership and the sessions route. Stop on failure.
 
 ## Drive
 
-Harness is curl over the unix socket, same routes the TUI uses. `helpers/verify.sh v1 METHOD PATH [BODY]` is the wrapper. Stable handles are the `/v1` paths, JSON fields `id`, `status`, `waiting`, `cards[].kind`, `cards[].body.text`, and permission event ids in `events.jsonl`.
+Use `-- COMMAND ARGS...` to run a verification command inside the temporary workspace. The runner exports `VERIFY_HELPER`, `SOCKET`, `VERIFY_ADDRESS`, `WORKSPACE`, and `EVIDENCE` along with the private HOME/root.
 
 ```sh
-.agents/skills/verify-kyotoagent/helpers/verify.sh v1 GET /v1/sessions
-.agents/skills/verify-kyotoagent/helpers/verify.sh catalog
-.agents/skills/verify-kyotoagent/helpers/verify.sh ask --text "Reply with the single word pong."
-.agents/skills/verify-kyotoagent/helpers/verify.sh permission
+.agents/skills/verify-kyotoagent/helpers/verify.sh run -- bash -ec '"$VERIFY_HELPER" doctor; "$VERIFY_HELPER" permission'
 ```
 
-`ask` is POST `/v1/sessions` then POST `/v1/sessions/:id/messages`. While the view is `waiting` on a permission it posts `allow_once` (the TUI yolo path). It does not answer questions. When the session is idle it requires a result card with non-empty `body.text`. One turn. No compact. No second ask.
+A custom driver can call `"$VERIFY_HELPER" v1 METHOD PATH [BODY] [--label NAME]`, `catalog`, `ask [--text TEXT]`, or `permission`. `doctor` checks process ownership, the provider's selected model, and the live run's sessions route. Stop on failure.
 
-Feature recipes live under [features/](features/).
+`ask` posts one session and message, answers permission events with `allow_once`, and waits for a model result. A waiting question is captured and reported for the scenario driver to handle by its event ID. Drive one mapped feature per run unless a change touches more.
+
+Use `start_task` for the foreground runner, then collect its completion through `check_task`.
 
 ## Evidence
 
-`/tmp/verify-kyotoagent-$RUN_ID/evidence/` keeps the proof. Cleanup leaves this directory.
-
-| file | source |
-| --- | --- |
-| `instance.json` | launch metadata (pid, socket, binary, base URL, model) |
-| `models.json` | goldbox `GET /models` body |
-| `sessions.json` | socket `GET /v1/sessions` |
-| `session.json` | `POST /v1/sessions` body |
-| `message.json` | `POST .../messages` status and body |
-| `view-idle.json` | `GET .../view` once idle |
-| `events.jsonl` | copy of the session log |
-| `permission-answer.json` | each `allow_once` reply |
-| `workspace-ls.txt` | workspace listing after a write |
-
-Proof standards:
-
-- Drive `/v1` the way the TUI does. Do not call `ChatClient` or write session files by hand as the action.
-- Capture the request and the resulting view, not only the idle screen.
-- For a write, read the file back from the workspace.
-- Goldbox is a real model server. A canned fake in `tests/` is a different path.
+The final line names the retained evidence directory. It contains `instance.json`, `outcome.json`, `serve.log`, `driver.log`, the provider catalog, and the action/view/event files produced by the recipe. The supplied credential is redacted from retained text. Inspect evidence before publishing it.
 
 ## Cleanup
 
-```sh
-.agents/skills/verify-kyotoagent/helpers/verify.sh cleanup
-```
-
-Sends SIGTERM, then SIGKILL after 2 seconds, to the pid recorded at launch. Removes `$HOME/.kyotoagent` scratch besides the evidence directory. Leaves `/tmp/verify-kyotoagent-$RUN_ID/evidence/`. Never `pkill kyotoagent`. Run cleanup after every attempt, failed included.
-
-Confirm the evidence files are still under `/tmp/verify-kyotoagent-$RUN_ID/evidence/` before you report.
+On completion, startup failure, timeout, or interruption, the runner verifies server ownership, stops its process groups, waits for the processes, and removes temporary config/workspace/certificates. Evidence remains. Exit 124 means timeout; driver failures preserve their nonzero status.
 
 ## Helpers
 
-```sh
-.agents/skills/verify-kyotoagent/helpers/verify.sh launch
-.agents/skills/verify-kyotoagent/helpers/verify.sh doctor
-.agents/skills/verify-kyotoagent/helpers/verify.sh v1 METHOD PATH [BODY] [--label NAME]
-.agents/skills/verify-kyotoagent/helpers/verify.sh catalog
-.agents/skills/verify-kyotoagent/helpers/verify.sh ask [--text TEXT]
-.agents/skills/verify-kyotoagent/helpers/verify.sh permission
-.agents/skills/verify-kyotoagent/helpers/verify.sh cleanup
-```
+`helpers/verify.sh run` owns the lifecycle. Its recipe commands reuse `common.sh` to validate the temporary instance. `helpers/test_run.py` exercises the runner with the real binary and a local scripted provider through `cargo test --test verify_helper` on Linux.
 
-`helpers/common.sh` is sourced by `verify.sh`. It owns `RUN_ID`, `HOME`, `KYOTOAGENT_ROOT`, `BASE`, and the socket path.
+Capture both the action and its resulting view. For writes, read back the file and retain the readback. A scripted provider establishes deterministic harness behavior; a real-provider run establishes the live-model behavior. A failed prerequisite or model error is not a passing verification.

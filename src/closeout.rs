@@ -415,18 +415,15 @@ impl CloseoutState {
         changed
     }
     pub(crate) fn active_written_paths(&self) -> Vec<String> {
-        if self.written_paths.is_empty() {
-            return Vec::new();
-        }
-        let paths = self
+        let mut paths: Vec<_> = self
             .workspace
             .as_deref()
-            .and_then(|workspace| paths_against_base(workspace, self.base_ref_name.as_deref()));
-        self.written_paths
-            .iter()
-            .filter(|path| paths.as_ref().is_none_or(|paths| paths.contains(*path)))
-            .cloned()
-            .collect()
+            .and_then(|workspace| paths_against_base(workspace, self.base_ref_name.as_deref()))
+            .map(|paths| paths.into_iter().collect())
+            .unwrap_or_else(|| self.written_paths.clone());
+        paths.sort();
+        paths.dedup();
+        paths
     }
 
     pub(crate) fn tracks_path(&self, path: &str) -> bool {
@@ -1764,6 +1761,51 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         output
+    }
+
+    #[test]
+    fn fresh_sessions_require_checks_for_committed_and_pending_candidate_paths() {
+        let dir = temp_dir("resumed-candidate");
+        write_file(&dir, "version: 1\nitems:\n  - id: source\n    kind: command\n    run: true\n    hint: Check source\n    paths: ['src/**']\n  - id: docs\n    kind: command\n    run: true\n    hint: Check docs\n    paths: ['docs/**']\n");
+        git(&dir, &["init", "-b", "main"]);
+        git(&dir, &["config", "user.name", "Closeout Test"]);
+        git(&dir, &["config", "user.email", "closeout@example.test"]);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "base\n").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-m", "Base"]);
+        git(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        assert!(CloseoutState::new(&dir).unwrap().cannot_finish().is_none());
+        git(&dir, &["checkout", "-b", "feature"]);
+        std::fs::write(dir.join("src/lib.rs"), "candidate\n").unwrap();
+        git(&dir, &["commit", "-am", "Candidate"]);
+        assert!(git_text(&dir, &["status", "--porcelain"])
+            .unwrap()
+            .is_empty());
+
+        let mut state = CloseoutState::new(&dir).unwrap();
+        assert_eq!(state.report()["pending"], serde_json::json!(["source"]));
+        assert_eq!(state.active_written_paths(), vec!["src/lib.rs"]);
+        assert!(state.cannot_finish().is_some());
+        state.refresh_workspace(&dir);
+        state.item_mut("source").passed = true;
+        state.refresh_workspace(&dir);
+        assert!(state.cannot_finish().is_none());
+
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(dir.join("docs/new.md"), "pending\n").unwrap();
+        let mut resumed = CloseoutState::new(&dir).unwrap();
+        assert_eq!(
+            resumed.report()["pending"],
+            serde_json::json!(["source", "docs"])
+        );
+        resumed.base_ref_name = Some("feature".into());
+        assert_eq!(resumed.report()["pending"], serde_json::json!(["docs"]));
+        resumed.base_ref_name = None;
+        git(&dir, &["restore", "--source=origin/main", "src/lib.rs"]);
+        std::fs::remove_file(dir.join("docs/new.md")).unwrap();
+        assert!(resumed.cannot_finish().is_none());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -1,29 +1,29 @@
 # Kyoto Agent verification map
 
-This directory is the maintained source for verifying Kyoto Agent over its unix-socket `/v1` API against goldbox. Read the index before driving, then use the matching feature file as the recipe.
+This directory is the maintained source for verifying Kyoto Agent over its unix-socket `/v1` API against the explicitly configured OpenAI-compatible provider. Read the index before driving, then use the matching feature file as the recipe.
 
 ## Baseline preconditions
 
-- `RUN_ID` is set. `HOME` is `/tmp/verify-kyotoagent-$RUN_ID`.
-- `KYOTOAGENT_ROOT` is `$HOME/.kyotoagent`. Config, socket, and sessions live there.
-- `kyotoagent serve` was started by `helpers/verify.sh launch` from a `cargo build` of this checkout.
-- `helpers/verify.sh doctor` exits 0.
-- Set `KYOTOAGENT_E2E_BASE_URL` in your shell environment to the model server URL ending in `/v1`.
-- Never drive a serve whose socket is `~/.kyotoagent/kyotoagent.sock` on the operator account.
+- Start each recipe with `helpers/verify.sh run -- COMMAND ARGS...`.
+- The runner supplies a fresh HOME, matching KYOTOAGENT_ROOT, socket, workspace and evidence directory to the command.
+- Build the chosen binary first. The runner consumes `BIN` or this checkout's `target/debug/kyotoagent`.
+- Set `KYOTOAGENT_E2E_BASE_URL`, `KYOTOAGENT_E2E_MODEL`, and the optional `KYOTOAGENT_E2E_API_KEY_ENV` before the run.
+- `"$VERIFY_HELPER" doctor` exits 0 inside the run.
+- Never drive the operator account's server or use its saved configuration.
 
 ## Driving conventions
 
 - Start every recipe from the baseline unless its preconditions say otherwise.
 - Talk HTTP/1.1 to the unix socket with `Host: kyotoagent`, the way the TUI client does.
 - Treat every command as literal.
-- Auto-allow permissions with `allow_once`. Leave questions unanswered and report them.
+- The ask recipe answers permissions with `allow_once`. Capture waiting questions and let the scenario decide the answer.
 - One user ask per session unless the feature says otherwise.
 
 ## Proof and skip reporting
 
 - Capture the action (curl status and body) and the resulting view.
 - Copy `events.jsonl` into evidence after the session is idle.
-- A skipped goldbox (catalog GET failed) is a miss, not a pass.
+- A failed provider catalog request or unavailable selected model is a prerequisite failure, not a pass.
 - Do not report a skipped entry point as verified through a different path.
 
 ## Feature entry contract
@@ -39,4 +39,4 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 
 - [Serve and ask](./serve-and-ask.md) covers creating a session, posting one ask, and reading a result card.
 - [Permission](./permission.md) covers a write that waits, `allow_once`, and the file on disk.
-- [Catalog](./catalog.md) covers goldbox `GET /models` id and advertised length.
+- [Catalog](./catalog.md) covers the selected provider model and its advertised metadata.

@@ -3,11 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/common.sh"
-ORIG_HOME="${HOME}"
 
 usage() {
   cat <<'EOF'
-Usage: verify.sh <launch|doctor|v1|catalog|ask|permission|cleanup> [args]
+Usage: verify.sh run [--text TEXT | -- COMMAND ARGS...]
+Inside run: verify.sh <doctor|v1|catalog|ask|permission> [args]
 EOF
 }
 
@@ -24,7 +24,7 @@ v1() {
   local body="${3:-}"
   local label="${4:-}"
   local out tmp code
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$HOME/request-XXXXXX")"
   if [ -n "$body" ]; then
     code="$(curl --unix-socket "$SOCKET" -sS -o "$tmp" -w '%{http_code}' \
       --max-time 30 \
@@ -41,54 +41,13 @@ v1() {
       "http://kyotoagent${path}")"
   fi
   if [ -n "$label" ]; then
+    [[ "$label" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "invalid evidence label" >&2; return 2; }
     cp "$tmp" "$EVIDENCE/${label}.json"
     printf '%s\n' "$code" > "$EVIDENCE/${label}.status"
   fi
   printf '%s\n' "$code"
   cat "$tmp"
   rm -f "$tmp"
-}
-
-wait_socket() {
-  local i
-  for i in $(seq 1 80); do
-    if curl --unix-socket "$SOCKET" -sS -o /dev/null --max-time 1 \
-      -H 'Host: kyotoagent' "http://kyotoagent/v1/sessions"; then
-      return 0
-    fi
-    sleep 0.1
-  done
-  echo "serve socket did not answer GET /v1/sessions" >&2
-  return 1
-}
-
-write_config() {
-  local model="$1"
-  cat > "$KYOTOAGENT_ROOT/config.toml" <<EOF
-base_url = "$BASE"
-model = "$model"
-max_steps = 8
-EOF
-}
-
-first_model() {
-  local body id
-  body="$(curl -sS --max-time 5 "$BASE/models" || true)"
-  if [ -z "$body" ]; then
-    printf '%s\n' "qwen3.8-flash-next"
-    return
-  fi
-  printf '%s\n' "$body" > "$EVIDENCE/models.json"
-  id="$(python3 -c 'import json,sys
-d=json.load(sys.stdin)
-rows=d.get("data") or []
-print(rows[0]["id"] if rows else "")
-' <<<"$body" 2>/dev/null || true)"
-  if [ -n "$id" ]; then
-    printf '%s\n' "$id"
-  else
-    printf '%s\n' "qwen3.8-flash-next"
-  fi
 }
 
 open_permission_id() {
@@ -133,6 +92,11 @@ wait_idle() {
           -X POST --data "$body" \
           "http://kyotoagent/v1/sessions/${sid}/answers")"
         printf '%s\n' "$code" > "$EVIDENCE/permission-answer.status"
+        [ "$code" = 204 ] || { echo "permission answer returned $code" >&2; return 1; }
+      else
+        printf '%s\n' "$view" > "$EVIDENCE/view-waiting.json"
+        echo "session is waiting for a question answer" >&2
+        return 1
       fi
     fi
     sleep 1
@@ -143,8 +107,18 @@ wait_idle() {
 
 require_result() {
   python3 -c '
-import json,sys
+import json,os,sys
 view=json.load(sys.stdin)
+events=[json.loads(line) for line in open(os.path.join(os.environ["EVIDENCE"], "events.jsonl"))]
+results=[event for event in events if event.get("kind")=="result"]
+if not results:
+    sys.exit("no result event")
+turn=results[-1].get("turnId")
+turn_events=[event for event in events if event.get("turnId")==turn]
+model_texts=[event["body"].get("text") for event in turn_events if event.get("kind")=="model_message"]
+finished=any(event.get("kind")=="tool_result" and event["body"].get("tool")=="finish" and not event["body"].get("is_error") and event["body"].get("output")==results[-1]["body"].get("text") for event in turn_events)
+if not finished and results[-1]["body"].get("text") not in model_texts:
+    sys.exit("turn ended without a model result")
 cards=view.get("cards") or []
 result=next((c for c in cards if c.get("kind")=="result"), None)
 if result is None:
@@ -158,117 +132,13 @@ print(text)
 '
 }
 
-do_launch() {
-  BASE="$(default_base)"
-  export BASE
-  export RUN_ID="${RUN_ID:-$(date +%s)-$$}"
-  ensure_run
-  mkdirs
-  if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-    echo "serve already running for RUN_ID=$RUN_ID pid=$(cat "$PIDFILE")" >&2
-    exit 1
-  fi
-  HOME="$ORIG_HOME" cargo build --manifest-path "$REPO/Cargo.toml" --offline >/tmp/verify-kyotoagent-build.log 2>&1 || \
-    HOME="$ORIG_HOME" cargo build --manifest-path "$REPO/Cargo.toml" >/tmp/verify-kyotoagent-build.log 2>&1
-  local model
-  model="$(first_model)"
-  write_config "$model"
-  "$BIN" serve >"$HOME/serve.log" 2>&1 &
-  local pid=$!
-  printf '%s\n' "$pid" > "$PIDFILE"
-  if ! wait_socket; then
-    kill "$pid" 2>/dev/null || true
-    exit 1
-  fi
-  python3 -c '
-import json,os,sys
-meta={
-  "runId": os.environ["RUN_ID"],
-  "home": os.environ["HOME"],
-  "kyotoagentRoot": os.environ["KYOTOAGENT_ROOT"],
-  "socket": os.environ["SOCKET"],
-  "pid": int(open(os.environ["PIDFILE"]).read().strip()),
-  "bin": os.environ["BIN"],
-  "baseUrl": os.environ["BASE"],
-  "model": sys.argv[1],
-  "evidence": os.environ["EVIDENCE"],
-  "workspace": os.environ["WORKSPACE"],
-}
-text=json.dumps(meta)+"\n"
-open(os.environ["INSTANCE"],"w").write(text)
-open(os.path.join(os.environ["EVIDENCE"],"instance.json"),"w").write(text)
-print(json.dumps(meta))
-' "$model"
-}
-
 do_doctor() {
-  BASE="$(default_base)"
-  export BASE
   ensure_run
-  mkdirs
-  local code exe expected pid
-  code="$(curl -sS -o "$EVIDENCE/models.json" -w '%{http_code}' --max-time 5 "$BASE/models" || true)"
-  if [ "${code:-000}" != "200" ]; then
-    echo "goldbox GET $BASE/models did not answer 200 (got ${code:-000})" >&2
-    exit 1
-  fi
-  if [ ! -S "$SOCKET" ]; then
-    echo "serve socket missing: $SOCKET" >&2
-    exit 1
-  fi
-  code="$(curl --unix-socket "$SOCKET" -sS -o "$EVIDENCE/sessions.json" -w '%{http_code}' \
-    --max-time 5 -H 'Host: kyotoagent' "http://kyotoagent/v1/sessions" || true)"
-  if [ "${code:-000}" != "200" ]; then
-    echo "serve GET /v1/sessions did not answer 200 (got ${code:-000})" >&2
-    exit 1
-  fi
-  if [ ! -f "$PIDFILE" ]; then
-    echo "no pidfile at $PIDFILE" >&2
-    exit 1
-  fi
-  pid="$(cat "$PIDFILE")"
-  if [ ! -d "/proc/$pid" ]; then
-    echo "serve pid $pid is not running" >&2
-    exit 1
-  fi
-  exe="$(readlink -f "/proc/$pid/exe" | sed 's/ (deleted)$//')"
-  expected="$(readlink -f "$BIN")"
-  if [ "$exe" != "$expected" ]; then
-    echo "serve binary is $exe, expected $expected" >&2
-    exit 1
-  fi
-  echo "doctor ok pid=$pid model=$(python3 -c 'import json,sys; print((json.load(sys.stdin).get("data") or [{}])[0].get("id",""))' < "$EVIDENCE/models.json")"
+  python3 "$SCRIPT_DIR/run.py" doctor
 }
 
 do_catalog() {
-  BASE="$(default_base)"
-  export BASE
-  ensure_run
-  mkdirs
-  local code
-  code="$(curl -sS -o "$EVIDENCE/models.json" -w '%{http_code}' --max-time 5 "$BASE/models" || true)"
-  if [ "${code:-000}" != "200" ]; then
-    echo "goldbox GET $BASE/models did not answer 200 (got ${code:-000})" >&2
-    exit 1
-  fi
-  python3 -c '
-import json,sys
-d=json.load(open(sys.argv[1]))
-rows=d.get("data") or []
-if not rows:
-    sys.stderr.write("catalog has no rows\n")
-    sys.exit(1)
-row=rows[0]
-ident=row.get("id") or ""
-if not ident:
-    sys.stderr.write("first row has no id\n")
-    sys.exit(1)
-length=row.get("context_length") or row.get("max_model_len") or row.get("context_window") or row.get("max_input_tokens")
-if not length:
-    sys.stderr.write("first row has no advertised length\n")
-    sys.exit(1)
-print(f"{ident} length={length}")
-' "$EVIDENCE/models.json"
+  do_doctor
 }
 
 do_ask() {
@@ -280,17 +150,19 @@ do_ask() {
       *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
   done
-  local created sid code view
+  local created sid code view request
   created="$(curl --unix-socket "$SOCKET" -sS --max-time 10 \
     -H 'Host: kyotoagent' -H 'Content-Type: application/json' \
     -X POST --data "$(python3 -c 'import json,os; print(json.dumps({"workspace":os.environ["WORKSPACE"]}))')" \
     "http://kyotoagent/v1/sessions")"
   printf '%s\n' "$created" > "$EVIDENCE/session.json"
   sid="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$created")"
+  request="$(python3 -c 'import json,sys; print(json.dumps({"text":sys.argv[1]}))' "$text")"
+  printf '%s\n' "$request" > "$EVIDENCE/request.json"
   code="$(curl --unix-socket "$SOCKET" -sS -o "$EVIDENCE/message.json" -w '%{http_code}' \
     --max-time 10 \
     -H 'Host: kyotoagent' -H 'Content-Type: application/json' \
-    -X POST --data "$(python3 -c 'import json,sys; print(json.dumps({"text":sys.argv[1]}))' "$text")" \
+    -X POST --data "$request" \
     "http://kyotoagent/v1/sessions/${sid}/messages")"
   printf '%s\n' "$code" > "$EVIDENCE/message.status"
   if [ "$code" != "202" ]; then
@@ -312,6 +184,7 @@ do_permission() {
     exit 1
   fi
   ls -la "$WORKSPACE" > "$EVIDENCE/workspace-ls.txt"
+  cp "$WORKSPACE/ping.txt" "$EVIDENCE/ping.txt"
   python3 -c '
 import sys
 text=open(sys.argv[1]).read()
@@ -320,26 +193,6 @@ if "pong" not in text.lower():
     sys.exit(1)
 print("ping.txt ok")
 ' "$WORKSPACE/ping.txt"
-}
-
-do_cleanup() {
-  ensure_run
-  local pid
-  if [ -f "$PIDFILE" ]; then
-    pid="$(cat "$PIDFILE")"
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -TERM "$pid" 2>/dev/null || true
-      sleep 2
-      if kill -0 "$pid" 2>/dev/null; then
-        kill -KILL "$pid" 2>/dev/null || true
-      fi
-    fi
-    rm -f "$PIDFILE"
-  fi
-  if [ -d "$KYOTOAGENT_ROOT" ]; then
-    rm -rf "$KYOTOAGENT_ROOT"
-  fi
-  echo "cleaned serve for RUN_ID=$RUN_ID; evidence at $EVIDENCE"
 }
 
 do_v1() {
@@ -363,12 +216,11 @@ do_v1() {
 }
 
 case "$cmd" in
-  launch) do_launch "$@" ;;
+  run) exec /usr/bin/python3 "$SCRIPT_DIR/run.py" "$@" ;;
   doctor) do_doctor "$@" ;;
   catalog) do_catalog "$@" ;;
   ask) do_ask "$@" ;;
   permission) do_permission "$@" ;;
-  cleanup) do_cleanup "$@" ;;
   v1) do_v1 "$@" ;;
   *) usage; exit 2 ;;
 esac
