@@ -2297,6 +2297,135 @@ async fn finish_without_proof_stays_working() {
     }
 }
 
+#[test]
+fn sandbox_configuration_is_applied_on_each_turn() {
+    if std::env::var_os("KYOTO_SANDBOX_TURN_CHILD").is_some() {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(check_sandbox_turns());
+        return;
+    }
+    let home = std::env::temp_dir().join(format!(
+        "kyoto-sandbox-turn-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(home.join(".kyotoagent")).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = home.join("temporary-root");
+    fs::create_dir(&root).unwrap();
+    assert_eq!(root.canonicalize().unwrap(), root);
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "sandbox_configuration_is_applied_on_each_turn",
+            "--nocapture",
+        ])
+        .env("HOME", &home)
+        .env("KYOTOAGENT_ROOT", &root)
+        .env("KYOTO_SANDBOX_TURN_CHILD", "1")
+        .output()
+        .unwrap();
+    fs::remove_dir_all(home).unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+async fn check_sandbox_turns() {
+    let mut replies = Vec::new();
+    for _ in 0..3 {
+        replies.extend([
+            Canned::Json(tool_call_reply(vec![("run", serde_json::json!({"argv":["sh", "-c", "printf command > \"$HOME/.kyotoagent/command\""]}))])),
+            Canned::Json(tool_call_reply(vec![("start_task", serde_json::json!({"argv":["sh", "-c", "printf task > \"$HOME/.kyotoagent/task\""]}))])),
+            Canned::Json(tool_call_reply(vec![("run_closeout", serde_json::json!({"id":"test"}))])),
+            Canned::Json(text_reply("Turn done")),
+        ]);
+    }
+    let mut fixture = Fixture::new("sandbox-turns", replies);
+    fs::create_dir_all(&fixture.root).unwrap();
+    let path = fixture.root.join("config.toml");
+    let base = format!(
+        "base_url = '{}'\nmodel = 'test/model'\ntitle_model = ''\n",
+        fixture._server.base_url()
+    );
+    fs::write(&path, &base).unwrap();
+    fixture.runner = Runner::with_config_file(&Config::load(&path).unwrap(), &path).unwrap();
+    let workspace = fixture.add_session("sandbox");
+    fs::create_dir(workspace.join(".kyotoagent")).unwrap();
+    fs::write(workspace.join(".kyotoagent/closeout.yaml"), "version: 1\nitems:\n  - id: test\n    kind: command\n    run: 'printf check > \"$HOME/.kyotoagent/check\"'\n    hint: Check sandbox\n").unwrap();
+    let hook = "printf hook > \"$HOME/.kyotoagent/hook\"; exit 0";
+    plant_hooks(
+        &workspace,
+        serde_json::json!({"hooks":{
+            "PreToolUse":[{"hooks":[{"type":"command","command":hook}]}],
+            "PostToolUse":[{"hooks":[{"type":"command","command":hook}]}],
+            "Stop":[{"hooks":[{"type":"command","command":hook}]}]
+        }}),
+    );
+    let protected = PathBuf::from(std::env::var_os("HOME").unwrap()).join(".kyotoagent");
+    let mut permissions = 0;
+    for sandbox in [None, Some(true), Some(false)] {
+        let setting = sandbox
+            .map(|enabled| format!("sandbox = {enabled}\n"))
+            .unwrap_or_default();
+        fs::write(&path, format!("{base}{setting}")).unwrap();
+        fixture.ask("sandbox", "Exercise configured command execution");
+        let unsupported = sandbox == Some(true)
+            && (!cfg!(target_os = "linux") || !std::path::Path::new("/usr/bin/bwrap").is_file());
+        if unsupported {
+            fixture
+                .wait_for_tool_output("sandbox", "sandbox = true requires")
+                .await;
+        }
+        for permission in 1..=if unsupported { 2 } else { 3 } {
+            permissions += 1;
+            fixture
+                .wait_for_permission_count("sandbox", permissions)
+                .await;
+            assert!(!protected.join("command").exists() || permission > 1);
+            fixture.answer("sandbox", Answer::allow_once());
+        }
+        fixture.wait_for_status("sandbox", Status::Idle).await;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let view = fixture.view("sandbox");
+            if view
+                .tasks
+                .iter()
+                .all(|task| task.state != kyotoagent::events::TaskStatus::Running)
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "background command did not exit");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        for name in ["command", "task", "check", "hook"] {
+            let output = protected.join(name);
+            assert_eq!(
+                output.exists(),
+                sandbox != Some(true),
+                "{name}, sandbox={sandbox:?}"
+            );
+            if output.exists() {
+                fs::remove_file(output).unwrap();
+            }
+        }
+    }
+    assert!(
+        !Session::at(&fixture.root.join("session-sandbox"))
+            .meta()
+            .unwrap()
+            .yolo
+    );
+}
+
 #[tokio::test]
 async fn switching_provider_is_picked_up_on_the_next_turn() {
     let office = FakeServer::start(vec![Canned::Json(text_reply("from office"))]);

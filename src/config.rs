@@ -151,6 +151,8 @@ struct File {
     #[serde(default)]
     yolo: Option<bool>,
     #[serde(default)]
+    sandbox: bool,
+    #[serde(default)]
     enhance: Option<bool>,
     #[serde(default)]
     show_closeout: Option<bool>,
@@ -221,6 +223,7 @@ pub struct Config {
     pub listen_key: Option<String>,
     pub title_model: Option<String>,
     pub yolo: bool,
+    pub sandbox: bool,
     pub enhance: bool,
     pub show_closeout: bool,
     pub profile: Option<String>,
@@ -315,6 +318,7 @@ impl Default for Config {
             listen_key: None,
             title_model: None,
             yolo: false,
+            sandbox: false,
             enhance: false,
             show_closeout: true,
             profile: None,
@@ -434,6 +438,7 @@ impl Config {
             push: file.push,
             title_model: file.title_model,
             yolo: file.yolo.unwrap_or(false),
+            sandbox: file.sandbox,
             enhance: file.enhance.unwrap_or(false),
             show_closeout: file.show_closeout.unwrap_or(true),
             profile: filled(file.profile),
@@ -2004,6 +2009,19 @@ path = "/work/acpbot"
         )
         .expect("blank");
         assert_eq!(blank.exa_api_key_env, "EXA_API_KEY");
+    }
+
+    #[test]
+    fn sandbox_is_disabled_by_default_and_requires_an_explicit_boolean() {
+        assert!(!Config::default().sandbox);
+        let base = "base_url = 'http://127.0.0.1:1/v1'\nmodel = 'test'\n";
+        assert!(!Config::from_toml(base).unwrap().sandbox);
+        for enabled in [false, true] {
+            let config = Config::from_toml(&format!("{base}sandbox = {enabled}\n")).unwrap();
+            assert_eq!(config.sandbox, enabled);
+            assert!(!config.yolo);
+        }
+        assert!(Config::from_toml(&format!("{base}sandbox = 'false'\n")).is_err());
     }
 
     #[test]
