@@ -75,6 +75,24 @@ written into `config.toml`.
 A file that still has top-level `base_url` and `model` loads as it did. That is
 the current provider when `provider` and `[providers]` are absent.
 
+## Command sandbox
+
+`sandbox` is a top-level boolean, off by default on every operating system:
+
+```toml
+sandbox = false
+```
+
+With `false`, commands, background tasks, closeout checks, and command hooks
+run directly with the server user's permissions. They can modify files that
+user can write. Permission prompts and the direct file tools' operator-config
+write guards remain enabled; this setting does not enable yolo mode.
+
+Set `sandbox = true` to opt into Linux Bubblewrap protection. It requires a
+working `/usr/bin/bwrap` and host namespace permissions. Explicitly enabling
+it on an unsupported host returns an error rather than running unprotected.
+The setting is read for each new turn and applies to child-agent turns too.
+
 ## Projects and approval defaults
 
 A `[projects.<id>]` table names a folder a new session can start in. `path` is
