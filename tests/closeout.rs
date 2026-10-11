@@ -299,6 +299,8 @@ async fn accepting_exhausted_closeout_persists_only_for_the_approved_session() {
             write("third.txt"),
             report(),
             finish(),
+            write("fourth.txt"),
+            check("test"),
         ],
     );
     let workspace = fixture.add_session("91bc");
@@ -323,9 +325,14 @@ async fn accepting_exhausted_closeout_persists_only_for_the_approved_session() {
         question.body["choices"],
         serde_json::json!(["Stop", "Accept failed closeout for this session"])
     );
+    assert!(fixture.runner.ask("91bc", "/closeout enable").is_err());
     fixture.answer_question("91bc", "Accept failed closeout for this session");
     fixture.wait_for_status("91bc", Status::Idle).await;
     assert_eq!(fixture.closeout_runs("91bc"), 1);
+    assert_eq!(
+        serde_json::to_value(fixture.view("91bc")).unwrap()["closeout_bypassed"],
+        true
+    );
     let events = first.events().unwrap();
     assert!(events
         .iter()
@@ -371,6 +378,33 @@ async fn accepting_exhausted_closeout_persists_only_for_the_approved_session() {
     fixture.answer_question("92bc", "Stop");
     fixture.wait_for_status("92bc", Status::Idle).await;
     assert_eq!(fixture.closeout_runs("92bc"), 0);
+    fixture.ask("91bc", "/closeout enable");
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert_eq!(
+        serde_json::to_value(fixture.view("91bc")).unwrap()["closeout_bypassed"],
+        false
+    );
+    fixture.ask("91bc", "/closeout enable");
+    let events = first.events().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind.label() == "closeout_enabled")
+            .count(),
+        1
+    );
+    fixture.ask("91bc", "Check again after enabling closeout");
+    fixture.respond("91bc", Answer::allow_once()).await;
+    fixture.allow_closeout("91bc").await;
+    let question = fixture.wait_for_waiting_question("91bc").await;
+    assert!(question.body["text"]
+        .as_str()
+        .unwrap()
+        .contains("failed 1 time"));
+    fixture.answer_question("91bc", "Stop");
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert_eq!(fixture.closeout_runs("91bc"), 2);
+    assert_eq!(fixture.view("91bc").closeout[0].runs.len(), 2);
 }
 
 #[tokio::test]
