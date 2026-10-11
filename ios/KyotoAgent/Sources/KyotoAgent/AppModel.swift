@@ -435,6 +435,11 @@ public final class AppModel {
         await postAsk(id, client, "/btw " + action, preserveDraft: true)
     }
 
+    public func enableCloseout() async {
+        guard connected, !sending, displayedStatus == .idle, let id = selection, let client else { return }
+        await postAsk(id, client, "/closeout enable", preserveDraft: true)
+    }
+
     public func goalCommand(_ command: String) async {
         guard connected, !sending, let id = selection, let client,
               ["status", "pause", "resume", "clear"].contains(command) else {
@@ -865,6 +870,10 @@ public final class AppModel {
             if let id {
                 await setArchived(id, archived: false)
             }
+            return .finished
+        case .enableCloseout:
+            await enableCloseout()
+            dismissOverlay()
             return .finished
         case .goal:
             updateDraft("/goal ")

@@ -20,6 +20,11 @@ nonisolated public enum AnswerSheet: Equatable, Sendable, Identifiable {
         return false
     }
 
+    public var isCloseoutAcceptance: Bool {
+        guard case .question(let question) = self else { return false }
+        return question.choices == ["Stop", "Accept failed closeout for this session"]
+    }
+
     public static func front(
         cards: [Card],
         dismissed: String?,

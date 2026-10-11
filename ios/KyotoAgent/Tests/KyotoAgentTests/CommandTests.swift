@@ -41,6 +41,7 @@ final class CommandTests: XCTestCase {
             "Open model",
             "Effort",
             "Compact",
+            "Enable closeout",
             "Yolo",
             "Profile",
             "Cancel",
@@ -53,6 +54,7 @@ final class CommandTests: XCTestCase {
             "/btw",
             "/compact",
             "/yolo",
+            "/closeout",
             "/goal",
             "/preflight",
         ])
@@ -61,6 +63,7 @@ final class CommandTests: XCTestCase {
             "Open model",
             "Effort",
             "Compact",
+            "Enable closeout",
             "Yolo",
             "Profile",
             "Cancel",
@@ -82,7 +85,7 @@ final class CommandTests: XCTestCase {
         XCTAssertEqual(liveProfileField("Everything"), "")
         XCTAssertEqual(liveProfileField("review"), "review")
         XCTAssertTrue(filteredCatalog(skills: skills, query: "/").isEmpty)
-        XCTAssertEqual(slashSuggestions(skills, draft: "/").map(\.title), ["/btw", "/compact", "/effort", "/goal", "/model", "/preflight", "/yolo"])
+        XCTAssertEqual(slashSuggestions(skills, draft: "/").map(\.title), ["/btw", "/closeout", "/compact", "/effort", "/goal", "/model", "/preflight", "/yolo"])
         XCTAssertEqual(slashSuggestions(skills, draft: "/pr").map(\.title), ["/preflight"])
         XCTAssertTrue(slashSuggestions(skills, draft: filledSkill("preflight")).isEmpty)
         XCTAssertTrue(slashSuggestions(skills, draft: "/preflight check this").isEmpty)
@@ -107,7 +110,7 @@ final class CommandTests: XCTestCase {
             Skill(name: "hidden", description: "Hidden", disable_model_invocation: false, user_invocable: false, path: "hidden")
         ]
         let all = slashSuggestions(skills, draft: "/")
-        XCTAssertEqual(all.count, 18)
+        XCTAssertEqual(all.count, 19)
         XCTAssertEqual(all.filter { $0.title == "/model" }.count, 1)
         XCTAssertEqual(all.first { $0.title == "/model" }?.kind, .openModel)
         XCTAssertFalse(all.contains { $0.title == "/hidden" })
@@ -428,6 +431,39 @@ final class CommandClientTests: XCTestCase {
         gate.calls.filter { $0.method == "POST" }.map(\.path)
     }
 
+    func testEnablingCloseoutUsesTheSessionCommandAndKeepsTheDraft() async throws {
+        let gate = try scriptGate(idle: true)
+        let model = try await open(gate)
+        await model.refreshOpenView()
+        model.updateDraft("Keep this unsent")
+        await model.runPalette(.enableCloseout)
+        let posted = try XCTUnwrap(gate.calls.last { $0.path.hasSuffix("/messages") })
+        XCTAssertEqual(try JSONDecoder().decode(MessageText.self, from: posted.body ?? Data()).text, "/closeout enable")
+        XCTAssertEqual(model.draft, "Keep this unsent")
+        XCTAssertNil(model.notice)
+        model.updateDraft("/clo")
+        let suggestion = try XCTUnwrap(model.composerSuggestions.first)
+        model.completeSlash(suggestion)
+        XCTAssertEqual(model.draft, "/closeout ")
+        model.updateDraft("/closeout enable")
+        await model.send()
+        XCTAssertEqual(model.draft, "")
+        let commands = try gate.calls.filter { $0.path.hasSuffix("/messages") }.map {
+            try JSONDecoder().decode(MessageText.self, from: $0.body ?? Data()).text
+        }
+        XCTAssertEqual(commands, ["/closeout enable", "/closeout enable"])
+        XCTAssertNil(model.notice)
+    }
+
+    func testEnablingCloseoutWaitsUntilTheSessionIsIdle() async throws {
+        let gate = try scriptGate()
+        let model = try await open(gate)
+        await model.refreshOpenView()
+        let before = gate.calls.count
+        await model.enableCloseout()
+        XCTAssertEqual(gate.calls.count, before)
+    }
+
     func testGoalControlsPostMessagesDuringAQuestionAndKeepTheDraft() async throws {
         let gate = try scriptGate()
         let model = try await open(gate)
@@ -509,9 +545,9 @@ final class CommandClientTests: XCTestCase {
         return model
     }
 
-    private func scriptGate() throws -> Gate {
+    private func scriptGate(idle: Bool = false) throws -> Gate {
         let sessions = try commandFixture("sessions.json")
-        let view = try commandFixture("view.json")
+        let view = idle ? Data(#"{"status":"idle","cards":[],"revision":1}"#.utf8) : try commandFixture("view.json")
         let models = try commandFixture("models.json")
         let gate = Gate()
         gate.handler = { request in
@@ -529,7 +565,9 @@ final class CommandClientTests: XCTestCase {
                 return HostResponse(status: 204, body: Data())
             }
             if path.hasSuffix("/messages") {
-                return HostResponse(status: 202, body: Data("{\"turnId\":\"t1\"}".utf8))
+                let message = try JSONDecoder().decode(MessageText.self, from: request.httpBody ?? Data())
+                let body = message.text == "/closeout enable" ? "{}" : "{\"turnId\":\"t1\"}"
+                return HostResponse(status: 202, body: Data(body.utf8))
             }
             if path.hasSuffix("/view") {
                 return HostResponse(status: 200, body: view)
