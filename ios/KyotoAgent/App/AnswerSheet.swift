@@ -29,7 +29,7 @@ struct AnswerSheetView: SwiftUI.View {
             .navigationTitle(sheetTitle)
             .navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if case .question(let question) = sheet {
+                if case .question(let question) = sheet, !sheet.isCloseoutAcceptance {
                     VStack(spacing: 8) {
                         if !(question.visuals ?? []).isEmpty {
                             questionChoices(question)
