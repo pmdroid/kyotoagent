@@ -6,7 +6,7 @@ public enum YoloFlag: Equatable, Sendable {
     case off
 }
 
-public let fastTier = "fast"
+nonisolated public let fastTier = "fast"
 
 public enum SlashCommand: Equatable, Sendable {
     case openModel
