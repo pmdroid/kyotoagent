@@ -138,8 +138,10 @@ retry:
 Both fields are required. The limit is between 1 and 100000. Use `task` to keep
 the limit across commits and sessions, or `candidate` to count failures for the
 same base and head. Public policies without `retry` have no failure limit.
-Imported policies cannot set it. Exhaustion blocks completion and PR creation
-and asks the operator for help.
+Imported policies cannot set it. When a check reaches its retry limit, Kyoto
+offers "Stop" or "Accept failed closeout for this session". Explicit acceptance
+allows completion and PR creation and skips further closeout checks in that
+session. Kyoto records the acceptance alongside the original failures.
 
 Goal runs use their persisted goal ID. Ordinary sessions default to their session
 ID. To share a retry budget across sessions, supply the same ID with

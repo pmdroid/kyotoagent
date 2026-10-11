@@ -8,6 +8,9 @@ pub(super) async fn run_closeout(
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     closeout: &mut CloseoutState,
 ) -> Result<String, TurnError> {
+    if closeout.bypassed {
+        return Ok("The user accepted failed closeout for this session. Further closeout checks are skipped.".into());
+    }
     let tools = &turn.tools;
     refresh_closeout(tools, turn_id, closeout, &[])?;
     let Some(file) = closeout.file.as_ref() else {
@@ -87,48 +90,9 @@ async fn execute_closeout(
     } else {
         None
     };
-    if retry.is_some() && closeout.item_mut(id).failures >= max_failures {
+    if closeout.item_mut(id).failures >= max_failures {
         drop(ledger);
-        let gate = tools.gate().clone();
-        let turn_id = turn_id.to_string();
-        let question = format!("Check {id} is exhausted after {max_failures} failed attempts. Closeout is blocked. Ask the operator for help; retrying cannot accept this work.");
-        closeout.record_run(crate::events::ProofItem {
-            id: id.into(),
-            kind: item.kind.label().into(),
-            outcome: "exhausted".into(),
-            argv: Vec::new(),
-            exit: None,
-            tail: question.clone(),
-        });
-        tokio::task::spawn_blocking(move || {
-            gate.ask_question(&turn_id, &question, &["stop".into()])
-        })
-        .await??;
-        closeout.stop = Some(id.into());
-        return Ok(format!(
-            "Check {id} is exhausted. Closeout remains blocked."
-        ));
-    }
-    if retry.is_none() && closeout.item_mut(id).failures >= max_failures {
-        let gate = tools.gate().clone();
-        let turn_id = turn_id.to_string();
-        let question = format!("Check {id} used all {max_failures} failed attempts.");
-        let answer = tokio::task::spawn_blocking(move || {
-            gate.ask_question(
-                &turn_id,
-                &question,
-                &["continue".to_string(), "stop".to_string()],
-            )
-        })
-        .await??;
-        if answer == "stop" {
-            closeout.stop = Some(id.to_string());
-            return Ok(format!("Check {id} did not pass. The turn is stopping."));
-        }
-        closeout.item_mut(id).failures = 0;
-        return Ok(format!(
-            "The failure count for {id} was cleared. Run it again."
-        ));
+        return exhausted_closeout(turn, id, turn_id, cancel, closeout).await;
     }
 
     let review = closeout.file.as_ref().unwrap().reviews.get(id).cloned();
@@ -350,9 +314,14 @@ async fn execute_closeout(
         format!("Check {id} passed on attempt {attempt}.")
     } else {
         let mut text = format!(
-            "Check {id} failed on attempt {attempt}. Hint: {}. Fix this and run_closeout again, or ask if you are stuck.",
+            "Check {id} failed on attempt {attempt}. Hint: {}.",
             item.hint
         );
+        if closeout.item_mut(id).failures >= max_failures {
+            text.push_str(" Retry limit reached.");
+        } else {
+            text.push_str(" Fix this and run_closeout again, or ask if you are stuck.");
+        }
         if unchanged {
             text.push_str(" This output is unchanged.");
         }
@@ -363,7 +332,50 @@ async fn execute_closeout(
         serde_json::to_string(&file)?,
         file.id
     ));
+    drop(ledger);
+    if !passed && closeout.item_mut(id).failures >= max_failures && !*cancel.borrow() {
+        let decision = exhausted_closeout(turn, id, turn_id, cancel, closeout).await?;
+        text.push_str(&format!("\n{decision}"));
+    }
     Ok(text)
+}
+
+pub(super) async fn exhausted_closeout(
+    turn: &Turn,
+    id: &str,
+    turn_id: &str,
+    cancel: &tokio::sync::watch::Receiver<bool>,
+    closeout: &mut CloseoutState,
+) -> Result<String, TurnError> {
+    let failures = closeout.item_mut(id).failures;
+    let question = crate::closeout::exhausted_question(id, failures);
+    let gate = turn.tools.gate().clone();
+    let question_turn = turn_id.to_string();
+    let answer = tokio::task::spawn_blocking(move || {
+        gate.ask_question(
+            &question_turn,
+            &question,
+            &[
+                "Stop".into(),
+                crate::closeout::ACCEPT_FAILED_CLOSEOUT.into(),
+            ],
+        )
+    })
+    .await??;
+    if answer == crate::closeout::ACCEPT_FAILED_CLOSEOUT && !*cancel.borrow() {
+        append_with_body(
+            &turn.session,
+            turn_id,
+            EventKind::CloseoutBypassed,
+            &serde_json::json!({"id": id, "failed_attempts": failures}),
+        )?;
+        closeout.bypassed = true;
+        return Ok("The user accepted failed closeout for this session. Failures remain recorded. Continue the work and finish when ready.".into());
+    }
+    closeout.stop = Some(id.into());
+    Ok(format!(
+        "Check {id} did not pass. Closeout remains blocked. The turn is stopping."
+    ))
 }
 
 async fn review_output(
@@ -593,6 +605,9 @@ pub(super) async fn sync_retry(
     closeout: &mut CloseoutState,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Option<String> {
+    if closeout.bypassed {
+        return None;
+    }
     let file = closeout.file.as_ref()?;
     let policy = file.retry.clone()?;
     let ids: Vec<_> = file

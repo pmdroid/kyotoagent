@@ -786,15 +786,19 @@ fn the_golden_frames_carry_their_lines() {
 
     let asked = golden("closeout-asked.txt");
     assert!(
-        asked.contains("Check test used all 3 failed attempts."),
+        asked.contains("Check test failed 3 times."),
         "the question names the check and the attempt count"
     );
     assert!(
         asked.contains("waiting question"),
         "the row names the question"
     );
-    assert!(asked.contains("1  continue"), "the first numbered choice");
-    assert!(asked.contains("2  stop"), "the second numbered choice");
+    assert!(asked.contains("1  Stop"), "the first numbered choice");
+    assert!(
+        asked.contains("2  Accept failed closeout for this"),
+        "the second numbered choice"
+    );
+    assert!(asked.contains("session"), "the acceptance scope is visible");
     assert!(!asked.contains("RESULT"), "no result card");
     assert_eq!(
         asked.lines().last().expect("a bottom row").trim(),

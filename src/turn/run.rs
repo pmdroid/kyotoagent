@@ -511,6 +511,10 @@ pub(super) async fn run_turn(
                 {
                     append_tool_result(session, turn_id, call, &reason)?;
                     transcript.push(Message::tool_result(&call.id, &reason));
+                    if let Some(id) = closeout.stop.take() {
+                        result_text = format!("Check {id} did not pass.");
+                        turn_stop = true;
+                    }
                     continue;
                 }
                 result_text = goal::verified_result(turn, &text)?;
@@ -625,6 +629,12 @@ pub(super) async fn run_turn(
             proof_files.push(artifact.file);
         }
     }
+    if closeout.bypassed {
+        if !proof_text.is_empty() {
+            proof_text.push('\n');
+        }
+        proof_text.push_str("Closeout failures accepted by the user for this session.");
+    }
     let proof = ProofBody {
         files: proof_files,
         text: proof_text,
@@ -684,6 +694,26 @@ async fn completion_blocker(
     refresh_closeout(&turn.tools, &turn.turn_id, closeout, &[])?;
     if let Some(error) = sync_retry(turn, closeout, cancel).await {
         return Ok(Some(error));
+    }
+    if !closeout.bypassed {
+        let exhausted = closeout.file.as_ref().and_then(|file| {
+            file.setup
+                .iter()
+                .chain(&file.items)
+                .find(|item| {
+                    closeout.is_required(item)
+                        && closeout.items.get(&item.id).is_some_and(|state| {
+                            !state.passed && state.failures >= file.max_failures
+                        })
+                })
+                .map(|item| item.id.clone())
+        });
+        if let Some(id) = exhausted {
+            let decision = exhausted_closeout(turn, &id, &turn.turn_id, cancel, closeout).await?;
+            if !closeout.bypassed {
+                return Ok(Some(decision));
+            }
+        }
     }
     if let Some(reason) = closeout.cannot_finish() {
         return Ok(Some(reason));
