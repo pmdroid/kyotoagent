@@ -65,7 +65,8 @@ final class ComposerTests: XCTestCase {
         let closeout = app.buttons["palette-closeout"]
         XCTAssertTrue(closeout.waitForExistence(timeout: 10))
         closeout.tap()
-        let sheet = app.descendants(matching: .any)["dock-sheet-closeout"].firstMatch
+        let sheet = app.otherElements.matching(identifier: "phone-popup")
+            .containing(.navigationBar, identifier: "Closeout").firstMatch
         XCTAssertTrue(sheet.waitForExistence(timeout: 10))
         XCTAssertTrue(sheet.staticTexts["closeout-accepted"].exists)
         XCTAssertTrue(sheet.staticTexts["Test suite failed"].exists)
