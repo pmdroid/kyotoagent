@@ -20,6 +20,24 @@ final class SessionStateTests: XCTestCase {
         XCTAssertEqual(SessionSheets(view).closeout.map(\.id), ["tests"])
     }
 
+    func testAcceptedCloseoutKeepsFailureEvidenceAndSurvivesCaching() throws {
+        var view = try fixture(View.self, "view.json")
+        XCTAssertFalse(view.closeoutBypassed)
+        view.closeoutBypassed = true
+        view.closeout[0].status = .failed
+        view.closeout[0].tail = "Tests failed"
+        let cached = try JSONDecoder().decode(View.self, from: JSONEncoder().encode(view))
+        let sheets = SessionSheets(cached)
+        XCTAssertTrue(sheets.closeoutBypassed)
+        let row = try XCTUnwrap(sheets.closeout.first)
+        XCTAssertEqual(row.status, .failed)
+        XCTAssertEqual(row.tail, "Tests failed")
+        XCTAssertTrue(closeoutSummary(row, bypassed: sheets.closeoutBypassed).contains("Checks skipped for this session"))
+        XCTAssertFalse(closeoutRequirement(row, bypassed: true).contains("Required"))
+        let legacy = try JSONDecoder().decode(View.self, from: Data(#"{"status":"idle","cards":[],"revision":0}"#.utf8))
+        XCTAssertFalse(legacy.closeoutBypassed)
+    }
+
     func testFixtureRowsMapIntoTheSheets() throws {
         let sheets = SessionSheets(try fixture(View.self, "view.json"))
         let todo = try XCTUnwrap(sheets.todos.first)

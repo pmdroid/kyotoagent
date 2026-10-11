@@ -40,7 +40,8 @@ struct PaneColumn: SwiftUI.View {
                             todoLinks
                         }
                         if !sheets.closeout.isEmpty {
-                            columnHeader("Closeout checks are required", id: "closeout")
+                            columnHeader("Closeout", id: "closeout")
+                            CloseoutNotice(model: model)
                             closeoutLinks
                         }
                         if !sheets.tasks.isEmpty {
@@ -84,10 +85,7 @@ struct DockPaneSheet: SwiftUI.View {
                         todoLinks
                     case .closeout:
                         if !(model.sheets?.closeout.isEmpty ?? true) {
-                            Text("Closeout checks are required")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(Ink.text)
-                                .accessibilityIdentifier("closeout-required")
+                            CloseoutNotice(model: model)
                         }
                         closeoutLinks
                     case .tasks:
@@ -103,6 +101,38 @@ struct DockPaneSheet: SwiftUI.View {
             .navigationBarTitleDisplayMode(.inline)
         }
         .accessibilityIdentifier("dock-sheet-" + pane.rawValue)
+    }
+}
+
+private struct CloseoutNotice: SwiftUI.View {
+    @Bindable var model: AppModel
+
+    var body: some SwiftUI.View {
+        if model.sheets?.closeoutBypassed == true {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Failed closeout accepted for this session")
+                    .font(.subheadline.weight(.semibold))
+                    .accessibilityIdentifier("closeout-accepted")
+                Text("Checks are skipped. Enabling closeout starts a fresh retry budget and keeps previous failures.")
+                    .font(.subheadline)
+                    .foregroundStyle(Ink.faint)
+                Button {
+                    Swift.Task { await model.enableCloseout() }
+                } label: {
+                    Text("Enable closeout")
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .disabled(!model.connected || model.sending || model.displayedStatus != .idle)
+                .accessibilityIdentifier("closeout-enable")
+            }
+            .foregroundStyle(Ink.text)
+        } else {
+            Text("Closeout checks are required")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Ink.text)
+                .accessibilityIdentifier("closeout-required")
+        }
     }
 }
 
@@ -141,7 +171,7 @@ struct PaneLinks {
                 CloseoutDetail(model: model, id: row.id)
             } label: {
                 VStack(alignment: .leading, spacing: 8) {
-                    paneCard(row.id, closeoutSummary(row))
+                    paneCard(row.id, closeoutSummary(row, bypassed: model.sheets?.closeoutBypassed ?? false))
                     if !row.tail.isEmpty {
                         Text(row.tail)
                             .font(.caption.monospaced())
@@ -290,7 +320,7 @@ struct CloseoutDetail: SwiftUI.View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 if let row {
-                    Text(closeoutRequirement(row))
+                    Text(closeoutRequirement(row, bypassed: model.sheets?.closeoutBypassed ?? false))
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Ink.faint)
                 }

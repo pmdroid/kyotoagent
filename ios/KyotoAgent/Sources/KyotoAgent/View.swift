@@ -107,6 +107,7 @@ nonisolated public struct View: Codable, Equatable, Sendable {
     public var queue: [String]
     public var allow: AllowList
     public var closeout: [CloseoutCheck]
+    public var closeoutBypassed: Bool
     public var context: ContextUsage?
     public var goal: Goal?
 
@@ -126,6 +127,7 @@ nonisolated public struct View: Codable, Equatable, Sendable {
         queue = try container.decodeIfPresent([String].self, forKey: .queue) ?? []
         allow = try container.decodeIfPresent(AllowList.self, forKey: .allow) ?? AllowList()
         closeout = try container.decodeIfPresent([CloseoutCheck].self, forKey: .closeout) ?? []
+        closeoutBypassed = try container.decodeIfPresent(Bool.self, forKey: .closeoutBypassed) ?? false
         context = try container.decodeIfPresent(ContextUsage.self, forKey: .context)
         goal = try container.decodeIfPresent(Goal.self, forKey: .goal)
     }
@@ -146,6 +148,7 @@ nonisolated public struct View: Codable, Equatable, Sendable {
         try container.encode(queue, forKey: .queue)
         try container.encode(allow, forKey: .allow)
         try container.encode(closeout, forKey: .closeout)
+        try container.encode(closeoutBypassed, forKey: .closeoutBypassed)
         try container.encodeIfPresent(context, forKey: .context)
         try container.encodeIfPresent(goal, forKey: .goal)
     }
@@ -165,6 +168,7 @@ nonisolated public struct View: Codable, Equatable, Sendable {
         case queue
         case allow
         case closeout
+        case closeoutBypassed = "closeout_bypassed"
         case context
         case goal
     }
