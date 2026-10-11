@@ -78,16 +78,17 @@ nonisolated public struct CloseoutRow: Equatable, Sendable, Identifiable {
     }
 }
 
-nonisolated public func closeoutSummary(_ row: CloseoutRow) -> String {
+nonisolated public func closeoutSummary(_ row: CloseoutRow, bypassed: Bool = false) -> String {
     if row.status == .notRequired {
         return [row.id, row.kind, closeoutRequirement(row)].joined(separator: " · ")
     }
     let attempt = row.attempt.map(String.init) ?? "—"
     let exit = row.exit.map(String.init) ?? "—"
-    return [row.id, row.kind, closeoutRequirement(row), row.status.rawValue, attempt, exit].joined(separator: " · ")
+    return [row.id, row.kind, closeoutRequirement(row, bypassed: bypassed), row.status.rawValue, attempt, exit].joined(separator: " · ")
 }
 
-nonisolated public func closeoutRequirement(_ row: CloseoutRow) -> String {
+nonisolated public func closeoutRequirement(_ row: CloseoutRow, bypassed: Bool = false) -> String {
+    if bypassed { return "Checks skipped for this session" }
     if row.required {
         return "Required for this turn"
     }
@@ -180,6 +181,7 @@ nonisolated public struct ContextSheet: Equatable, Sendable {
 nonisolated public struct SessionSheets: Equatable, Sendable {
     public var todos: [TodoRow]
     public var closeout: [CloseoutRow]
+    public var closeoutBypassed: Bool
     public var tasks: [TaskLine]
     public var schedules: [ScheduleRow]
     public var phase: Phase?
@@ -189,6 +191,7 @@ nonisolated public struct SessionSheets: Equatable, Sendable {
     public init(_ view: View) {
         todos = view.todos.map(TodoRow.init)
         closeout = view.closeout.map(CloseoutRow.init).filter(\.required)
+        closeoutBypassed = view.closeoutBypassed
         tasks = view.tasks.map(TaskLine.init)
         schedules = view.schedules.map(ScheduleRow.init)
         phase = view.phase
