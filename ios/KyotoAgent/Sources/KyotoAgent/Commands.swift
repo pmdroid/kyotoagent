@@ -33,6 +33,7 @@ public enum CommandKind: Equatable, Sendable {
     case help
     case skill(String)
     case goal
+    case enableCloseout
 }
 
 public struct CommandEntry: Equatable, Sendable, Identifiable {
@@ -177,6 +178,7 @@ public func commandCatalog(skills: [Skill]) -> [CommandEntry] {
         CommandEntry(id: "open-model", title: "Open model", hint: "open the model list", kind: .openModel),
         CommandEntry(id: "effort", title: "Effort", hint: "open the effort list", kind: .openEffort),
         CommandEntry(id: "compact", title: "Compact", hint: "summarize the older transcript", kind: .compact),
+        CommandEntry(id: "enable-closeout", title: "Enable closeout", hint: "restore checks with a fresh retry budget", kind: .enableCloseout),
         CommandEntry(id: "yolo", title: "Yolo", hint: "allow writes and commands", kind: .yolo),
         CommandEntry(id: "profile", title: "Profile", hint: "limit this session's tools and skills", kind: .profile),
         CommandEntry(id: "cancel", title: "Cancel", hint: "stop the turn", kind: .cancel),
@@ -189,6 +191,7 @@ public func commandCatalog(skills: [Skill]) -> [CommandEntry] {
         CommandEntry(id: "slash-btw", title: "/btw", hint: "ask a side question, cancel, or retry", kind: .btw),
         CommandEntry(id: "slash-compact", title: "/compact", hint: "summarize the older transcript", kind: .compact),
         CommandEntry(id: "slash-yolo", title: "/yolo", hint: "turn yolo on or off", kind: .yolo),
+        CommandEntry(id: "slash-closeout", title: "/closeout", hint: "enable checks again with /closeout enable", kind: .enableCloseout),
         CommandEntry(id: "slash-goal", title: "/goal", hint: "set a goal, or status, pause, resume, clear", kind: .goal),
     ]
     for skill in skills where skill.user_invocable {
