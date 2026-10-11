@@ -110,6 +110,7 @@ nonisolated public struct CreatedSession: Codable, Equatable, Sendable {
 nonisolated public enum AskAcceptance: Equatable, Sendable {
     case started(String)
     case queued
+    case ignored
 }
 
 nonisolated public struct URLSessionTransport: HostTransport {
@@ -277,6 +278,9 @@ nonisolated public struct ServeClient: Sendable {
             }
             if (try? JSONDecoder().decode(AskQueued.self, from: response.body)) != nil {
                 return .queued
+            }
+            if let body = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any], body.isEmpty {
+                return .ignored
             }
         }
         throw HostError.status(response.status, responseText(response.body))
