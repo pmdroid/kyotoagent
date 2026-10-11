@@ -286,7 +286,10 @@ final class CommandClientTests: XCTestCase {
         await model.openModelList()
         await model.saveModel("grok-4.7", effort: "xhigh")
         let dropped = try XCTUnwrap(gate.calls.last { $0.path.hasSuffix("/model/session") })
-        XCTAssertNil(try JSONDecoder().decode(ModelPayload.self, from: dropped.body ?? Data()).effort)
+        XCTAssertEqual(
+            try JSONDecoder().decode(ModelPayload.self, from: dropped.body ?? Data()).effort,
+            "low"
+        )
         await model.saveModel("grok-4.7", effort: "medium")
         let chosen = try XCTUnwrap(gate.calls.last { $0.path.hasSuffix("/model/session") })
         XCTAssertEqual(
