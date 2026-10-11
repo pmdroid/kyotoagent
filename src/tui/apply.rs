@@ -961,9 +961,11 @@ pub(super) async fn apply_model_row(app: &mut App, client: &Client, row: ModelRo
         row_takes_effort(&row)
     };
     let effort = if keep_effort {
-        app.effort
-            .clone()
-            .filter(|effort| app.server.is_none() || row.reasoning_efforts.contains(effort))
+        if app.server.is_none() {
+            app.effort.clone()
+        } else {
+            row.effort_for(app.effort.as_deref())
+        }
     } else {
         None
     };
@@ -1033,6 +1035,7 @@ pub(super) async fn apply_model_id(app: &mut App, client: &Client, id: &str) {
             id: id.to_string(),
             aliases: Vec::new(),
             reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
             context_length: None,
             provider: None,
         },

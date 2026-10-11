@@ -227,21 +227,27 @@ struct ModelSheet: SwiftUI.View {
         let id = current?.model ?? model.models.first?.id ?? ""
         chosenID = id
         chosenProvider = model.models.first { $0.id == id && $0.provider == current?.provider }?.provider
-        let choices = efforts
-        if let effort = current?.effort, choices.contains(effort) {
-            chosenEffort = effort
-        } else {
-            chosenEffort = nil
-        }
+        chosenEffort = selectedEffort(
+            current?.effort,
+            choices: efforts,
+            fallback: model.models.first { $0.id == id && $0.provider == chosenProvider }?.default_reasoning_effort
+        )
     }
 
     private func select(_ row: Model) {
         chosenID = row.id
         chosenProvider = row.provider
-        let choices = row.reasoning_efforts
-        if choices.isEmpty || !choices.contains(chosenEffort ?? "") {
-            chosenEffort = nil
+        chosenEffort = selectedEffort(chosenEffort, choices: row.reasoning_efforts, fallback: row.default_reasoning_effort)
+    }
+
+    private func selectedEffort(_ current: String?, choices: [String], fallback: String?) -> String? {
+        if let current, choices.contains(current) {
+            return current
         }
+        if let fallback, choices.contains(fallback) {
+            return fallback
+        }
+        return choices.first
     }
 
     private func applySelection() {

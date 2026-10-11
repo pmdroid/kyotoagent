@@ -126,17 +126,7 @@ pub fn resolve_model(
         .provider
         .clone()
         .or_else(|| current_provider.map(str::to_string));
-    let effort = match parent.effort.as_deref() {
-        Some(effort)
-            if !row.reasoning_efforts.is_empty()
-                && !row.reasoning_efforts.iter().any(|known| known == effort) =>
-        {
-            return Err(format!(
-                "reasoning effort {effort} is not available for {requested}"
-            ))
-        }
-        other => other.map(str::to_string),
-    };
+    let effort = row.effort_for(parent.effort.as_deref());
     Ok(SessionModel {
         model: requested.to_string(),
         effort,

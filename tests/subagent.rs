@@ -66,7 +66,8 @@ impl FakeServer {
                     "id": model,
                     "context_length": 128000,
                     "aliases": aliases_for(model),
-                    "reasoning_efforts": ["low", "high"]
+                    "reasoning_efforts": ["low", "high"],
+                    "default_reasoning_effort": default_effort_for(model)
                 }]
             })
             .to_string(),
@@ -120,6 +121,14 @@ impl Drop for FakeServer {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+    }
+}
+
+fn default_effort_for(model: &str) -> &'static str {
+    if model == "grok-4" {
+        "high"
+    } else {
+        "low"
     }
 }
 
@@ -650,21 +659,25 @@ async fn a_same_provider_child_keeps_the_parent_provider_and_effort() {
 }
 
 #[tokio::test]
-async fn an_unsupported_child_effort_fails_before_inference() {
-    let grok = FakeServer::start_catalog(Vec::new(), Vec::new(), "grok-4");
+async fn a_child_model_without_the_parent_effort_uses_its_default() {
+    let grok = FakeServer::start_catalog(
+        Vec::new(),
+        vec![Canned::Json(finish_reply("Done.", "default effort"))],
+        "grok-4",
+    );
     let fixture = Fixture::with_config(
-        "bad-effort",
+        "child-default-effort",
         &format!(
-            "provider = \"grok\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\n",
+            "provider = \"codex\"\n\n[providers.codex]\nbase_url = \"http://127.0.0.1:9\"\nmodel = \"gpt-5\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\n",
             grok.base_url()
         ),
     );
     fixture.add_session("parent");
     Session::at(&fixture.root.join("session-parent"))
         .set_session_model(kyotoagent::session::SessionModel {
-            model: "grok-4".into(),
+            model: "gpt-5".into(),
             effort: Some("max".into()),
-            provider: Some("grok".into()),
+            provider: Some("codex".into()),
         })
         .expect("parent selection");
     let summary = fixture
@@ -677,9 +690,13 @@ async fn an_unsupported_child_effort_fails_before_inference() {
             })),
         )
         .await;
-    assert!(summary.contains("not available"), "{summary}");
-    assert_eq!(fixture.session_count(), 1);
-    assert!(grok.bodies().iter().all(|body| !body.contains("grok-4.7")));
+    let id = child_id(&summary);
+    fixture.wait_status(&id, Status::Idle).await;
+    let child = Session::at(&fixture.root.join(&id))
+        .meta()
+        .expect("child meta");
+    assert_eq!(child.effort.as_deref(), Some("high"));
+    assert!(grok.bodies().iter().any(|body| body.contains("grok-4.7")));
 }
 
 #[tokio::test]
