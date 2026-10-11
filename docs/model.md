@@ -182,10 +182,10 @@ The session log records the result of the turn.
 
 ## Fast mode
 
-OpenAI names this `service_tier`. A model exposes it by listing `fast` in
-`service_tiers`, `supported_service_tiers`, or
-`capabilities.service_tier`. Codex uses `supported_service_tiers` on a visible
-model. `priority` is the old name and is not a separate mode.
+OpenAI names this `service_tier`. Kyoto reads tier names from strings or objects
+with an `id` in `service_tiers`, `supported_service_tiers`, and
+`capabilities.service_tier`. Codex also advertises `additional_speed_tiers`.
+`priority` is normalized to `fast`, so both provider names enable the same switch.
 
 `/fast`, `/fast on`, and `/fast off` switch the current session. The command
 palette lists it as **Service tier**. A model that does not list `fast` refuses
