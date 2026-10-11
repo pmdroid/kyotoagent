@@ -561,6 +561,17 @@ async fn an_explicit_child_model_is_sent_only_to_its_provider() {
             })),
         )
         .await;
+    let catalog = fixture.runner.model_catalog().await;
+    assert!(
+        summary.contains("\"id\""),
+        "spawn={summary}; catalog_errors={:?}; models={:?}",
+        catalog.errors,
+        catalog
+            .models
+            .iter()
+            .map(|row| format!("{}@{:?}", row.id, row.provider))
+            .collect::<Vec<_>>()
+    );
     let id = child_id(&summary);
     fixture.wait_status(&id, Status::Idle).await;
     let child = Session::at(&fixture.root.join(&id))
