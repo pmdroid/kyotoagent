@@ -440,6 +440,7 @@ final class CommandClientTests: XCTestCase {
         let posted = try XCTUnwrap(gate.calls.last { $0.path.hasSuffix("/messages") })
         XCTAssertEqual(try JSONDecoder().decode(MessageText.self, from: posted.body ?? Data()).text, "/closeout enable")
         XCTAssertEqual(model.draft, "Keep this unsent")
+        XCTAssertNil(model.notice)
         model.updateDraft("/clo")
         let suggestion = try XCTUnwrap(model.composerSuggestions.first)
         model.completeSlash(suggestion)
@@ -451,6 +452,7 @@ final class CommandClientTests: XCTestCase {
             try JSONDecoder().decode(MessageText.self, from: $0.body ?? Data()).text
         }
         XCTAssertEqual(commands, ["/closeout enable", "/closeout enable"])
+        XCTAssertNil(model.notice)
     }
 
     func testEnablingCloseoutWaitsUntilTheSessionIsIdle() async throws {
@@ -563,7 +565,9 @@ final class CommandClientTests: XCTestCase {
                 return HostResponse(status: 204, body: Data())
             }
             if path.hasSuffix("/messages") {
-                return HostResponse(status: 202, body: Data("{\"turnId\":\"t1\"}".utf8))
+                let message = try JSONDecoder().decode(MessageText.self, from: request.httpBody ?? Data())
+                let body = message.text == "/closeout enable" ? "{}" : "{\"turnId\":\"t1\"}"
+                return HostResponse(status: 202, body: Data(body.utf8))
             }
             if path.hasSuffix("/view") {
                 return HostResponse(status: 200, body: view)

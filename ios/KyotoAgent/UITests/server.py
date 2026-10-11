@@ -75,7 +75,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.endswith("/model/session"):
             self.reply(204, {})
         else:
-            self.reply(202, {"turnId": "fixture"})
+            self.reply(202, {} if body.get("text") == "/closeout enable" else {"turnId": "fixture"})
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

@@ -24,6 +24,24 @@ final class ClientTests: XCTestCase {
         catch { XCTAssertEqual(error as? HostError, .status(409, "Side question running")) }
     }
 
+    func testSessionCommandsAcceptTheServersEmptyAcknowledgement() async throws {
+        let gate = Gate()
+        gate.handler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/sessions/s/messages")
+            return HostResponse(status: 202, body: Data("{}".utf8))
+        }
+        let client = ServeClient(baseURL: URL(string: "https://example.test")!, transport: gate)
+        let result = try await client.ask("s", text: "/closeout enable")
+        XCTAssertEqual(result, .ignored)
+        gate.handler = { _ in HostResponse(status: 202, body: Data(#"{"turnId":""}"#.utf8)) }
+        do {
+            _ = try await client.ask("s", text: "/closeout enable")
+            XCTFail("Malformed acknowledgements must remain errors")
+        } catch {
+            XCTAssertEqual(error as? HostError, .status(202, #"{"turnId":""}"#))
+        }
+    }
+
     func testCloseoutRequirementsDecodeAndExplainWhetherChecksRun() throws {
         let body = Data("""
         [{"id":"src","kind":"command","hint":"source","status":"not_required","required":false},{"id":"docs","kind":"command","hint":"docs","status":"missing","required":true}]
