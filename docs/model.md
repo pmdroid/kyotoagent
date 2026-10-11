@@ -75,6 +75,24 @@ written into `config.toml`.
 A file that still has top-level `base_url` and `model` loads as it did. That is
 the current provider when `provider` and `[providers]` are absent.
 
+## Command sandbox
+
+`sandbox` is a top-level boolean, off by default on every operating system:
+
+```toml
+sandbox = false
+```
+
+With `false`, commands, background tasks, closeout checks, and command hooks
+run directly with the server user's permissions. They can modify files that
+user can write. Permission prompts and the direct file tools' operator-config
+write guards remain enabled; this setting does not enable yolo mode.
+
+Set `sandbox = true` to opt into Linux Bubblewrap protection. It requires a
+working `/usr/bin/bwrap` and host namespace permissions. Explicitly enabling
+it on an unsupported host returns an error rather than running unprotected.
+The setting is read for each new turn and applies to child-agent turns too.
+
 ## Projects and approval defaults
 
 A `[projects.<id>]` table names a folder a new session can start in. `path` is
@@ -138,12 +156,17 @@ retry:
 Both fields are required. The limit is between 1 and 100000. Use `task` to keep
 the limit across commits and sessions, or `candidate` to count failures for the
 same base and head. Public policies without `retry` have no failure limit.
-Imported policies cannot set it. Exhaustion blocks completion and PR creation
-and asks the operator for help.
+Imported policies cannot set it. When a check reaches its retry limit, Kyoto
+offers "Stop" or "Accept failed closeout for this session". Explicit acceptance
+allows completion and PR creation and skips further closeout checks in that
+session. Kyoto records the acceptance alongside the original failures.
+Use `/closeout enable` to restore checks with a fresh retry budget for that
+session. Earlier failures and transcripts stay recorded.
 
-Goal runs use their persisted goal ID. For ordinary sessions, supply the same
-ID with `kyoto new --task <id>` or `taskId` when creating a session through the
-API. A task ID must be nonblank and at most 256 bytes. Kyoto retains the retry
+Goal runs use their persisted goal ID. Ordinary sessions default to their session
+ID. To share a retry budget across sessions, supply the same ID with
+`kyoto new --task <id>` or `taskId` when creating a session through the API.
+A task ID must be nonblank and at most 256 bytes. Kyoto retains the retry
 records under its server root and serializes attempts sharing a repository.
 Failed review findings count; invalid, stale, and independence results do not.
 
@@ -156,3 +179,16 @@ using the Responses API follow their configured protocol.
 
 A transport failure or an unsuccessful reply reaches the turn loop as an error.
 The session log records the result of the turn.
+
+## Fast mode
+
+OpenAI names this `service_tier`. A model exposes it by listing `fast` in
+`service_tiers`, `supported_service_tiers`, or
+`capabilities.service_tier`. Codex uses `supported_service_tiers` on a visible
+model. `priority` is the old name and is not a separate mode.
+
+`/fast`, `/fast on`, and `/fast off` switch the current session. The command
+palette lists it as **Service tier**. A model that does not list `fast` refuses
+the switch. An enabled session sends `service_tier: "fast"` on its chat completion
+or Responses request. Title and rewrite requests stay on the default tier.
+A new session starts off. A subagent keeps the parent's tier.

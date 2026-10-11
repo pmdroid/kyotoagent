@@ -101,6 +101,7 @@ impl Runner {
         meta.profile = parent.profile.clone();
         meta.effort = selection.effort.clone();
         meta.model_override = Some(selection);
+        meta.service_tier = parent.service_tier.clone();
         meta.requested_workspace = parent
             .requested_workspace
             .clone()

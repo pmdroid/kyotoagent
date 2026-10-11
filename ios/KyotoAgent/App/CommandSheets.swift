@@ -162,6 +162,16 @@ struct ModelSheet: SwiftUI.View {
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("model-row-" + row.id)
                     }
+                    if exposesFast {
+                        Button {
+                            guard !applying, !model.savingModel else { return }
+                            Swift.Task { await model.applyFast(model.sessions.first { $0.id == model.selection }?.serviceTier == fastTier ? .off : .on) }
+                        } label: {
+                            effortLabel(fastTier, chosen: model.sessions.first { $0.id == model.selection }?.serviceTier == fastTier)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("model-fast")
+                    }
                     if !efforts.isEmpty {
                         Text("Effort")
                             .font(.headline)
@@ -220,6 +230,10 @@ struct ModelSheet: SwiftUI.View {
 
     private var efforts: [String] {
         model.models.first { $0.id == chosenID && $0.provider == chosenProvider }?.reasoning_efforts ?? []
+    }
+
+    private var exposesFast: Bool {
+        modelExposesFast(chosenID, provider: chosenProvider, in: model.models)
     }
 
     private func seed() {

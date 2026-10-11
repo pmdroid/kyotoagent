@@ -239,6 +239,7 @@ pub struct Tools {
     tasks: Tasks,
     schedules: Schedules,
     approval: Option<Arc<Mutex<Option<Approval>>>>,
+    sandbox: bool,
 }
 
 impl Tools {
@@ -259,7 +260,14 @@ impl Tools {
             tasks: Tasks::at(session)?,
             schedules: Schedules::at(session, clock),
             approval: None,
+            sandbox: false,
         })
+    }
+
+    pub fn with_sandbox(mut self, enabled: bool) -> Self {
+        self.sandbox = enabled;
+        self.tasks.sandbox = enabled;
+        self
     }
 
     pub fn tasks(&self) -> &Tasks {
@@ -1015,12 +1023,12 @@ impl Tools {
             source: std::io::Error::other("the command waiter did not report"),
         };
 
-        let command = crate::operator_config::command(&program, &argv[1..]).map_err(|source| {
-            ToolError::Spawn {
+        let command = crate::operator_config::command(&program, &argv[1..], self.sandbox).map_err(
+            |source| ToolError::Spawn {
                 program: program.clone(),
                 source,
-            }
-        })?;
+            },
+        )?;
         let mut child = TokioCommand::from(command)
             .process_group(0)
             .current_dir(&self.workspace)
@@ -1097,7 +1105,7 @@ impl Tools {
     fn execute(&self, argv: &[String], timeout: u64) -> Result<RunOutput, ToolError> {
         use std::os::unix::process::CommandExt;
         let program = argv[0].clone();
-        let mut child = crate::operator_config::command(&program, &argv[1..])
+        let mut child = crate::operator_config::command(&program, &argv[1..], self.sandbox)
             .map_err(|source| ToolError::Spawn {
                 program: program.clone(),
                 source,

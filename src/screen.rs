@@ -314,6 +314,7 @@ pub struct SessionRow {
     pub enhance: bool,
     pub model: String,
     pub effort: Option<String>,
+    pub service_tier: Option<String>,
     pub project: Option<String>,
     pub project_name: Option<String>,
     pub parent_id: Option<String>,
@@ -768,6 +769,7 @@ pub struct ScreenModel {
     pub skill_picker: Option<SkillPicker>,
     pub model: String,
     pub effort: Option<String>,
+    pub service_tier: Option<String>,
     pub compacting: bool,
     pub todos: Vec<TodoItem>,
     pub tasks: Vec<TaskLine>,
@@ -834,6 +836,7 @@ impl Default for ScreenModel {
             skill_picker: None,
             model: String::new(),
             effort: None,
+            service_tier: None,
             compacting: false,
             todos: Vec::new(),
             tasks: Vec::new(),
@@ -1188,6 +1191,9 @@ fn header_left(model: &ScreenModel) -> Line<'static> {
     }
     if model.enhance {
         spans.push(Span::styled(" enhance ", theme::faint()));
+    }
+    if model.service_tier.as_deref() == Some(crate::chat::FAST_TIER) {
+        spans.push(Span::styled(" fast ", theme::faint()));
     }
     if let Some(percent) = model.context_percent {
         spans.push(Span::styled(format!(" {percent}%"), theme::faint()));

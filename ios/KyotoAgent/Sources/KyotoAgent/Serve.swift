@@ -70,6 +70,7 @@ nonisolated public enum ServeCall: Equatable, Sendable {
     case models
     case compact(String)
     case yolo(id: String, yolo: Bool)
+    case serviceTier(id: String, serviceTier: String?)
     case setModel(id: String, model: String, effort: String?, provider: String? = nil, saveAsDefault: Bool = false)
     case profiles
     case setProfile(id: String, profile: String)
@@ -110,6 +111,7 @@ nonisolated public struct CreatedSession: Codable, Equatable, Sendable {
 nonisolated public enum AskAcceptance: Equatable, Sendable {
     case started(String)
     case queued
+    case ignored
 }
 
 nonisolated public struct URLSessionTransport: HostTransport {
@@ -278,6 +280,9 @@ nonisolated public struct ServeClient: Sendable {
             if (try? JSONDecoder().decode(AskQueued.self, from: response.body)) != nil {
                 return .queued
             }
+            if let body = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any], body.isEmpty {
+                return .ignored
+            }
         }
         throw HostError.status(response.status, responseText(response.body))
     }
@@ -359,6 +364,10 @@ nonisolated public struct ServeClient: Sendable {
 
     nonisolated public func setYolo(_ id: String, yolo: Bool) async throws {
         try await expectEmpty(.yolo(id: id, yolo: yolo))
+    }
+
+    nonisolated public func setServiceTier(_ id: String, serviceTier: String?) async throws {
+        try await expectEmpty(.serviceTier(id: id, serviceTier: serviceTier))
     }
 
     nonisolated public func setModel(_ id: String, model: String, effort: String?, provider: String? = nil, saveAsDefault: Bool = false) async throws {
@@ -462,6 +471,10 @@ nonisolated public func serveRequest(baseURL: URL, call: ServeCall) -> URLReques
         path = "/v1/sessions/" + id + "/yolo"
         method = "POST"
         body = try? JSONEncoder().encode(YoloPayload(yolo: yolo))
+    case .serviceTier(let id, let serviceTier):
+        path = "/v1/sessions/" + id + "/service-tier"
+        method = "POST"
+        body = try? JSONEncoder().encode(ServiceTierPayload(service_tier: serviceTier))
     case .setModel(let id, let model, let effort, let provider, let saveAsDefault):
         path = "/v1/sessions/" + id + (saveAsDefault ? "/model" : "/model/session")
         method = "POST"
@@ -491,6 +504,23 @@ nonisolated struct MessagePayload: Encodable {
 
 nonisolated struct YoloPayload: Encodable {
     var yolo: Bool
+}
+
+nonisolated struct ServiceTierPayload: Encodable {
+    var service_tier: String?
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let service_tier {
+            try container.encode(service_tier, forKey: .service_tier)
+        } else {
+            try container.encodeNil(forKey: .service_tier)
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case service_tier
+    }
 }
 
 nonisolated struct ArchivePayload: Encodable {

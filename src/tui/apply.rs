@@ -386,6 +386,11 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
             post_yolo(app, client, next).await?;
             poll(app, client).await?;
         }
+        Effect::ToggleFast => {
+            let next = app.service_tier.as_deref() != Some(crate::chat::FAST_TIER);
+            post_fast(app, client, next).await?;
+            poll(app, client).await?;
+        }
         Effect::ProofFileMove | Effect::ProofFileChoose(_) => {}
         Effect::OpenProof => proof::open(app),
         Effect::OpenCheckTranscripts => proof::open_checks(app),
@@ -763,6 +768,11 @@ pub(super) async fn run_palette(app: &mut App, client: &Client) {
             let _ = post_yolo(app, client, next).await;
             let _ = poll(app, client).await;
         }
+        CommandAction::ToggleFast => {
+            let next = app.service_tier.as_deref() != Some(crate::chat::FAST_TIER);
+            let _ = post_fast(app, client, next).await;
+            let _ = poll(app, client).await;
+        }
         CommandAction::ToggleEnhance => {
             let next = !app.enhance;
             let _ = post_enhance(app, client, next).await;
@@ -1036,6 +1046,7 @@ pub(super) async fn apply_model_id(app: &mut App, client: &Client, id: &str) {
             aliases: Vec::new(),
             reasoning_efforts: Vec::new(),
             default_reasoning_effort: None,
+            service_tiers: Vec::new(),
             context_length: None,
             provider: None,
         },
@@ -1058,6 +1069,9 @@ pub(super) fn slash_command(ask: &str) -> Option<SlashCommand<'_>> {
         ("yolo", None | Some("")) => Some(SlashCommand::Yolo(None)),
         ("yolo", Some("on")) => Some(SlashCommand::Yolo(Some(true))),
         ("yolo", Some("off")) => Some(SlashCommand::Yolo(Some(false))),
+        ("fast", None | Some("")) => Some(SlashCommand::Fast(None)),
+        ("fast", Some("on")) => Some(SlashCommand::Fast(Some(true))),
+        ("fast", Some("off")) => Some(SlashCommand::Fast(Some(false))),
         ("enhance", None | Some("")) => Some(SlashCommand::Enhance(None)),
         ("enhance", Some("on")) => Some(SlashCommand::Enhance(Some(true))),
         ("enhance", Some("off")) => Some(SlashCommand::Enhance(Some(false))),
@@ -1082,6 +1096,7 @@ pub(super) enum SlashCommand<'a> {
     SetEffort(&'a str),
     Compact,
     Yolo(Option<bool>),
+    Fast(Option<bool>),
     ShowCloseout(bool),
     Enhance(Option<bool>),
     TogglePane(RightPane),
@@ -1143,6 +1158,20 @@ pub(super) async fn cancel_turn(app: &mut App, client: &Client) -> Result<(), St
         }
         app.enhance_source = None;
     }
+    Ok(())
+}
+
+pub(super) async fn apply_fast_slash(
+    app: &mut App,
+    client: &Client,
+    flag: Option<bool>,
+) -> Result<(), String> {
+    let next = flag.unwrap_or(app.service_tier.as_deref() != Some(crate::chat::FAST_TIER));
+    app.ask.clear();
+    app.ask_cursor = None;
+    app.pastes.retain(|paste| paste.question);
+    post_fast(app, client, next).await?;
+    poll(app, client).await?;
     Ok(())
 }
 
@@ -1307,6 +1336,10 @@ pub(super) async fn submit(app: &mut App, client: &Client) -> Result<(), String>
                 }
                 Some(SlashCommand::Yolo(flag)) => {
                     apply_yolo_slash(app, client, flag).await?;
+                    return Ok(());
+                }
+                Some(SlashCommand::Fast(flag)) => {
+                    apply_fast_slash(app, client, flag).await?;
                     return Ok(());
                 }
                 Some(SlashCommand::ShowCloseout(show)) => {
@@ -1885,6 +1918,8 @@ pub(super) struct ListRow {
     #[serde(default)]
     effort: Option<String>,
     #[serde(default)]
+    service_tier: Option<String>,
+    #[serde(default)]
     title: Option<String>,
     #[serde(default)]
     project: Option<String>,
@@ -1920,6 +1955,7 @@ pub(super) fn into_row(row: ListRow) -> SessionRow {
         enhance: row.enhance,
         model: row.model,
         effort: row.effort,
+        service_tier: row.service_tier,
         project: row.project,
         project_name: None,
         parent_id: row.parent_id,

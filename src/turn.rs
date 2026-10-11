@@ -918,6 +918,7 @@ impl Runner {
                 config.model = meta.model;
                 config.effort = meta.effort;
             }
+            config.service_tier = meta.service_tier;
         }
         Ok(config)
     }
@@ -1144,6 +1145,12 @@ impl Runner {
                 return Err(TurnError::Goal("Side questions take text only.".into()));
             }
             return self.btw(session_id, question).map(AskOutcome::Btw);
+        }
+        if text.trim() == "/closeout enable" {
+            if !images.is_empty() {
+                return Err(TurnError::Goal("Closeout commands take text only.".into()));
+            }
+            return self.enable_closeout(&state);
         }
         if let Some(command) = text
             .trim()
@@ -1423,7 +1430,7 @@ impl Runner {
         let done = Arc::clone(state);
         let turn_ctx = Turn {
             session,
-            tools,
+            tools: tools.with_sandbox(config.sandbox),
             client,
             config,
             compact: Arc::clone(&compact),
@@ -2047,8 +2054,12 @@ fn session_context(
     if let Some(cached) = cache.as_ref().filter(|cached| cached.key == key) {
         return Some(cached.usage.clone());
     }
-    let messages =
-        crate::compact::meter_messages(&key.system, events, &workspace.to_string_lossy());
+    let messages = crate::compact::meter_messages_with_goal(
+        &key.system,
+        events,
+        &workspace.to_string_lossy(),
+        meta.goal.as_ref(),
+    );
     let usage = crate::compact::context_usage(
         &key.without_skills,
         &key.skills,

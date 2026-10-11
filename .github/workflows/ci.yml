@@ -26,3 +26,13 @@ jobs:
           bwrap --bind / / true
       - run: python3 -m unittest discover -s evals -p 'test_*.py'
       - run: python3 scripts/verify.py all --online
+
+  sandbox-portability:
+    runs-on: macos-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --test operator_config
+      - run: cargo test --locked --test turn_loop sandbox_configuration_is_applied_on_each_turn

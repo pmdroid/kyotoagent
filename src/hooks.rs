@@ -75,6 +75,7 @@ pub struct Hooks {
     pre: Vec<Group>,
     post: Vec<Group>,
     stop: Vec<Group>,
+    sandbox: bool,
 }
 
 enum RunEnd {
@@ -106,6 +107,11 @@ pub fn load_in(workspace: &Path, home: &Path) -> Hooks {
 }
 
 impl Hooks {
+    pub fn with_sandbox(mut self, enabled: bool) -> Self {
+        self.sandbox = enabled;
+        self
+    }
+
     pub async fn pre_tool_use(
         &self,
         workspace: &Path,
@@ -171,7 +177,7 @@ impl Hooks {
         }
         let body = payload.to_string();
         for command in &commands {
-            match invoke(command, &self.home, workspace, &body).await {
+            match invoke(command, &self.home, workspace, &body, self.sandbox).await {
                 RunEnd::Exit(2, stderr) => {
                     return Some(reason(stderr, "blocked by a hook"));
                 }
@@ -205,7 +211,9 @@ impl Hooks {
         let body = payload.to_string();
         let mut notes = Vec::new();
         for command in &commands {
-            if let RunEnd::Exit(2, stderr) = invoke(command, &self.home, workspace, &body).await {
+            if let RunEnd::Exit(2, stderr) =
+                invoke(command, &self.home, workspace, &body, self.sandbox).await
+            {
                 notes.push(reason(stderr, "blocked by a hook"));
             }
         }
@@ -474,9 +482,15 @@ fn reason(stderr: String, fallback: &str) -> String {
     }
 }
 
-async fn invoke(command: &str, home: &Path, workspace: &Path, payload: &str) -> RunEnd {
+async fn invoke(
+    command: &str,
+    home: &Path,
+    workspace: &Path,
+    payload: &str,
+    sandbox: bool,
+) -> RunEnd {
     let command = expand_home(command, home);
-    let command = match crate::operator_config::command("sh", &["-c".into(), command]) {
+    let command = match crate::operator_config::command("sh", &["-c".into(), command], sandbox) {
         Ok(command) => command,
         Err(error) => return RunEnd::Crash(error.to_string()),
     };

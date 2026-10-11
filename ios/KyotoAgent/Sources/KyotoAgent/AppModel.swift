@@ -425,6 +425,9 @@ public final class AppModel {
         case .yolo(let flag):
             clearDraft(id, text)
             await applyYolo(flag)
+        case .fast(let flag):
+            clearDraft(id, text)
+            await applyFast(flag)
         case .blocked:
             return
         }
@@ -433,6 +436,11 @@ public final class AppModel {
     public func btwAction(_ action: String) async {
         guard connected, !sending, let id = selection, let client, ["cancel", "retry"].contains(action) else { return }
         await postAsk(id, client, "/btw " + action, preserveDraft: true)
+    }
+
+    public func enableCloseout() async {
+        guard connected, !sending, displayedStatus == .idle, let id = selection, let client else { return }
+        await postAsk(id, client, "/closeout enable", preserveDraft: true)
     }
 
     public func goalCommand(_ command: String) async {
@@ -838,6 +846,10 @@ public final class AppModel {
             await applyYolo(.toggle)
             dismissOverlay()
             return .finished
+        case .fast:
+            await applyFast(.toggle)
+            dismissOverlay()
+            return .finished
         case .profile:
             await openProfileList()
             return .finished
@@ -865,6 +877,10 @@ public final class AppModel {
             if let id {
                 await setArchived(id, archived: false)
             }
+            return .finished
+        case .enableCloseout:
+            await enableCloseout()
+            dismissOverlay()
             return .finished
         case .goal:
             updateDraft("/goal ")
@@ -912,6 +928,43 @@ public final class AppModel {
         }
         do {
             try await client.setYolo(id, yolo: next)
+            notice = nil
+        } catch let error as HostError {
+            notice = error.serverMessage
+        } catch {
+            notice = error.localizedDescription
+        }
+        await refreshSessions()
+        await refreshOpenView()
+    }
+
+    public func applyFast(_ flag: YoloFlag) async {
+        let enabled = sessions.first { $0.id == selection }?.serviceTier == fastTier
+        let next: Bool
+        switch flag {
+        case .toggle:
+            next = !enabled
+        case .on:
+            next = true
+        case .off:
+            next = false
+        }
+        guard connected, let id = selection, let client else {
+            return
+        }
+        if next {
+            await reloadModels()
+            let session = sessions.first { $0.id == id }
+            if !modelExposesFast(session?.model ?? "", provider: session?.provider, in: models) {
+                notice = "This model does not expose fast mode."
+                return
+            }
+        }
+        do {
+            try await client.setServiceTier(id, serviceTier: next ? fastTier : nil)
+            if let index = sessions.firstIndex(where: { $0.id == id }) {
+                sessions[index].serviceTier = next ? fastTier : nil
+            }
             notice = nil
         } catch let error as HostError {
             notice = error.serverMessage

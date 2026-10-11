@@ -123,6 +123,9 @@ nonisolated public func sessionLine(_ session: Session, depth: Int) -> SessionLi
     if let effort = session.effort?.trimmingCharacters(in: .whitespacesAndNewlines), !effort.isEmpty {
         marks.append(effort)
     }
+    if session.serviceTier == fastTier {
+        marks.append(fastTier)
+    }
     let waiting = session.status == .waiting ? session.waiting : nil
     return SessionLine(
         name: sessionName(session),

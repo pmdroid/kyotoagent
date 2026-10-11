@@ -75,6 +75,8 @@ pub struct SessionMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<SessionModel>,
     pub created_at: String,
     pub updated_at: String,
@@ -177,11 +179,12 @@ impl SessionMeta {
     /// both ends.
     pub fn new(id: &str, workspace: &Path, model: &str, at: &str) -> SessionMeta {
         SessionMeta {
-            task_id: None,
+            task_id: Some(id.to_string()),
             id: id.to_string(),
             workspace: workspace.display().to_string(),
             model: model.to_string(),
             effort: None,
+            service_tier: None,
             model_override: None,
             created_at: at.to_string(),
             updated_at: at.to_string(),
@@ -551,6 +554,20 @@ impl Session {
             meta.model = selection.model.clone();
             meta.effort = selection.effort.clone();
             meta.model_override = Some(selection.clone());
+            true
+        })
+    }
+
+    pub fn set_service_tier(&self, tier: Option<&str>) -> Result<(), SessionError> {
+        let tier = tier
+            .map(str::trim)
+            .filter(|tier| !tier.is_empty())
+            .map(str::to_string);
+        self.update(|meta| {
+            if meta.service_tier == tier {
+                return false;
+            }
+            meta.service_tier = tier;
             true
         })
     }
@@ -939,6 +956,13 @@ mod tests {
         let meta = session.meta().expect("meta reads back");
         assert_eq!(meta.model, "grok-4.6");
         assert_eq!(meta.effort.as_deref(), Some("high"));
+        session.set_service_tier(Some("fast")).unwrap();
+        assert_eq!(
+            session.meta().unwrap().service_tier.as_deref(),
+            Some("fast")
+        );
+        session.set_service_tier(None).unwrap();
+        assert_eq!(session.meta().unwrap().service_tier, None);
         assert!(
             !fs::read_to_string(session.meta_path())
                 .expect("meta text")

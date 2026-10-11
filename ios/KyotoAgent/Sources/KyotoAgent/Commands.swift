@@ -6,6 +6,8 @@ public enum YoloFlag: Equatable, Sendable {
     case off
 }
 
+public let fastTier = "fast"
+
 public enum SlashCommand: Equatable, Sendable {
     case openModel
     case setModel(String)
@@ -14,6 +16,7 @@ public enum SlashCommand: Equatable, Sendable {
     case compact
     case btw
     case yolo(YoloFlag)
+    case fast(YoloFlag)
     case ask
     case blocked
 }
@@ -25,6 +28,7 @@ public enum CommandKind: Equatable, Sendable {
     case compact
     case btw
     case yolo
+    case fast
     case profile
     case cancel
     case closeSession
@@ -33,6 +37,7 @@ public enum CommandKind: Equatable, Sendable {
     case help
     case skill(String)
     case goal
+    case enableCloseout
 }
 
 public struct CommandEntry: Equatable, Sendable, Identifiable {
@@ -166,6 +171,12 @@ public func slashCommand(_ text: String, efforts: [String]) -> SlashCommand {
         return .yolo(.on)
     case ("yolo", "off"):
         return .yolo(.off)
+    case ("fast", nil):
+        return .fast(.toggle)
+    case ("fast", "on"):
+        return .fast(.on)
+    case ("fast", "off"):
+        return .fast(.off)
     default:
         return .ask
     }
@@ -177,7 +188,9 @@ public func commandCatalog(skills: [Skill]) -> [CommandEntry] {
         CommandEntry(id: "open-model", title: "Open model", hint: "open the model list", kind: .openModel),
         CommandEntry(id: "effort", title: "Effort", hint: "open the effort list", kind: .openEffort),
         CommandEntry(id: "compact", title: "Compact", hint: "summarize the older transcript", kind: .compact),
+        CommandEntry(id: "enable-closeout", title: "Enable closeout", hint: "restore checks with a fresh retry budget", kind: .enableCloseout),
         CommandEntry(id: "yolo", title: "Yolo", hint: "allow writes and commands", kind: .yolo),
+        CommandEntry(id: "fast", title: "Service tier", hint: "switch the OpenAI service tier", kind: .fast),
         CommandEntry(id: "profile", title: "Profile", hint: "limit this session's tools and skills", kind: .profile),
         CommandEntry(id: "cancel", title: "Cancel", hint: "stop the turn", kind: .cancel),
         CommandEntry(id: "archive-session", title: "Archive session", hint: "hide the selected session until it is restored", kind: .archiveSession),
@@ -189,6 +202,8 @@ public func commandCatalog(skills: [Skill]) -> [CommandEntry] {
         CommandEntry(id: "slash-btw", title: "/btw", hint: "ask a side question, cancel, or retry", kind: .btw),
         CommandEntry(id: "slash-compact", title: "/compact", hint: "summarize the older transcript", kind: .compact),
         CommandEntry(id: "slash-yolo", title: "/yolo", hint: "turn yolo on or off", kind: .yolo),
+        CommandEntry(id: "slash-fast", title: "/fast", hint: "switch the OpenAI service tier", kind: .fast),
+        CommandEntry(id: "slash-closeout", title: "/closeout", hint: "enable checks again with /closeout enable", kind: .enableCloseout),
         CommandEntry(id: "slash-goal", title: "/goal", hint: "set a goal, or status, pause, resume, clear", kind: .goal),
     ]
     for skill in skills where skill.user_invocable {
@@ -259,6 +274,12 @@ public func filledSkill(_ name: String) -> String {
 
 public func effortChoices(for modelID: String, in models: [Model]) -> [String] {
     models.first { $0.id == modelID }?.reasoning_efforts ?? []
+}
+
+public func modelExposesFast(_ modelID: String, provider: String?, in models: [Model]) -> Bool {
+    let row = models.first { $0.id == modelID && $0.provider == provider }
+        ?? models.first { $0.id == modelID }
+    return row?.service_tiers.contains(fastTier) == true
 }
 
 public func postedModel(models: [Model], modelID: String, effort: String?) -> ModelPayload {

@@ -69,6 +69,7 @@ pub(super) async fn execute(
                         Some(error)
                     } else if hooks::fires(&call.name) {
                         hooks::load(workspace)
+                            .with_sandbox(turn.config.sandbox)
                             .pre_tool_use(workspace, &call.name, &args)
                             .await
                     } else {
@@ -177,6 +178,7 @@ pub(super) async fn execute(
                     execute_tool(turn, &tools, call, &args, &mut cancel, &mut closeout).await?;
                 if hooks::fires(&call.name) {
                     if let Some(feedback) = hooks::load(workspace)
+                        .with_sandbox(turn.config.sandbox)
                         .post_tool_use(workspace, &call.name, &args, &outcome.summary)
                         .await
                     {

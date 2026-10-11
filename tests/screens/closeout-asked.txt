@@ -6,15 +6,15 @@
 │                            ││                         names the binary. ▎│
 │  acpbot                    ││                                            │
 │  working                   ││▎ QUESTION                                  │
-│                            │││ Check test used all 3 failed attempts.    │
-│  ✓ notes                   │││ ○ 1  continue                             │
-│  idle                      │││ ○ 2  stop                                 │
-│                            ││                                            │
-│                            ││                                            │
-│                            ││                                            │
-│                            ││                                            │
-│                            ││                                            │
-│                            ││                                            │
+│                            │││ Check test failed 3 times. Retry limit    │
+│  ✓ notes                   │││ reached. Stop to investigate, or accept   │
+│  idle                      │││ failed closeout for this session.         │
+│                            │││ Acceptance skips further closeout checks  │
+│                            │││ and lets this session finish. Failures    │
+│                            │││ stay recorded.                            │
+│                            │││ ○ 1  Stop                                 │
+│                            │││ ○ 2  Accept failed closeout for this      │
+│                            │││ session                                   │
 │                            ││                                            │
 │                            ││                                            │
 │                            ││                                            │

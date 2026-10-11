@@ -288,6 +288,7 @@ pub(super) async fn verify_goal(
             }
             if hooks::fires(&call.name) {
                 if let Some(reason) = hooks::load(turn.tools.workspace())
+                    .with_sandbox(turn.config.sandbox)
                     .pre_tool_use(turn.tools.workspace(), &call.name, &args)
                     .await
                 {
@@ -317,6 +318,7 @@ pub(super) async fn verify_goal(
             }
             if hooks::fires(&call.name) {
                 if let Some(feedback) = hooks::load(turn.tools.workspace())
+                    .with_sandbox(turn.config.sandbox)
                     .post_tool_use(turn.tools.workspace(), &call.name, &args, &outcome.summary)
                     .await
                 {

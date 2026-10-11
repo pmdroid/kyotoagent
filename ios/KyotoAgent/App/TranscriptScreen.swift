@@ -232,12 +232,14 @@ struct TranscriptScreen: SwiftUI.View {
             HStack(spacing: 12) {
                 workingButton
                 yoloLabel
+                fastLabel
                 Spacer(minLength: 8)
                 contextButton
             }
             VStack(alignment: .leading, spacing: 0) {
                 workingButton
                 yoloLabel
+                fastLabel
                 contextButton
             }
         }
@@ -247,6 +249,21 @@ struct TranscriptScreen: SwiftUI.View {
 
     private var yoloWord: String? {
         model.sessions.first(where: { $0.id == sessionId }).flatMap(headerYoloWord)
+    }
+
+    private var fastWord: String? {
+        model.sessions.first(where: { $0.id == sessionId })?.serviceTier == fastTier ? fastTier : nil
+    }
+
+    @ViewBuilder
+    private var fastLabel: some SwiftUI.View {
+        if let word = fastWord {
+            Text(word.uppercased())
+                .font(.caption.weight(.bold))
+                .foregroundStyle(Ink.faint)
+                .accessibilityLabel("Fast mode enabled")
+                .accessibilityIdentifier("activity-fast")
+        }
     }
 
     @ViewBuilder
@@ -308,7 +325,7 @@ struct TranscriptScreen: SwiftUI.View {
 
     private var composer: some SwiftUI.View {
         VStack(alignment: .leading, spacing: 8) {
-            if model.displayedStatus == .working || model.contextSheet != nil || yoloWord != nil {
+            if model.displayedStatus == .working || model.contextSheet != nil || yoloWord != nil || fastWord != nil {
                 activityRow
             }
             slashSuggestions
@@ -428,8 +445,8 @@ struct TranscriptScreen: SwiftUI.View {
     }
 
     private var coverDetents: Set<PresentationDetent> {
-        if case .answer = shownCover {
-            return [.medium, .large]
+        if case .answer(let sheet) = shownCover {
+            return sheet.isCloseoutAcceptance ? [.large] : [.medium, .large]
         }
         return [.large]
     }
