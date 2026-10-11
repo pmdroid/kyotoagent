@@ -1689,10 +1689,11 @@ async fn set_session_model(
         })
         .ok_or_else(|| ApiError::bad_request("model is not available from this provider"))?;
     let provider = row.provider.clone().or(config.provider);
+    let effort = body.effort.or_else(|| row.effort_for(None));
     session
         .set_session_model(crate::session::SessionModel {
             model: body.model,
-            effort: body.effort,
+            effort,
             provider,
         })
         .map_err(|source| ApiError::server(source.to_string()))?;
@@ -1723,15 +1724,18 @@ async fn set_model(
             "model is not available from this provider",
         ));
     }
+    let effort = body
+        .effort
+        .or_else(|| row.and_then(|row| row.effort_for(None)));
     Config::set_model_options(
         &path,
         row.and_then(|row| row.provider.as_deref()),
         &body.model,
-        Some(body.effort.as_deref()),
+        Some(effort.as_deref()),
     )
     .map_err(|source| ApiError::server(source.to_string()))?;
     session
-        .set_model_effort(&body.model, body.effort.as_deref())
+        .set_model_effort(&body.model, effort.as_deref())
         .map_err(|source| ApiError::server(source.to_string()))?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2151,6 +2155,7 @@ mod ios_fixtures {
                 id: "grok-4.7".into(),
                 aliases: vec!["grok".into()],
                 reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()],
+                default_reasoning_effort: None,
                 context_length: Some(2_000_000),
                 provider: Some("grok".into()),
             },
@@ -2158,6 +2163,7 @@ mod ios_fixtures {
                 id: "cursor/composer".into(),
                 aliases: Vec::new(),
                 reasoning_efforts: Vec::new(),
+                default_reasoning_effort: None,
                 context_length: None,
                 provider: None,
             },

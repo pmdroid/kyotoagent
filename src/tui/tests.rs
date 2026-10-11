@@ -1394,6 +1394,7 @@ fn esc_on_the_model_picker_keeps_the_stored_pair() {
             id: "grok-4.5".into(),
             aliases: Vec::new(),
             reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
             context_length: None,
             provider: None,
         }],
@@ -1419,6 +1420,7 @@ fn picker_row(id: &str, aliases: &[&str]) -> ModelRow {
         id: id.into(),
         aliases: aliases.iter().map(|alias| (*alias).to_string()).collect(),
         reasoning_efforts: Vec::new(),
+        default_reasoning_effort: None,
         context_length: None,
         provider: None,
     }

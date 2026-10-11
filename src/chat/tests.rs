@@ -318,6 +318,27 @@ fn a_catalog_row_keeps_advertised_context_length() {
     assert_eq!(canonical_model(&rows, "grok-4.6"), Some("grok-4.6".into()));
     assert_eq!(canonical_model(&rows, "other"), None);
     assert_eq!(rows[0].reasoning_efforts, vec!["low", "high"]);
+    assert_eq!(rows[0].effort_for(Some("max")).as_deref(), Some("low"));
+}
+
+#[test]
+fn a_model_switch_keeps_a_shared_effort_and_otherwise_uses_the_advertised_default() {
+    let row = parse_model(
+        r#"{"id":"grok-4.7","reasoning_efforts":["low","medium","high"],"default_reasoning_effort":"high"}"#,
+    )
+    .unwrap();
+    assert_eq!(row.effort_for(Some("medium")).as_deref(), Some("medium"));
+    assert_eq!(row.effort_for(Some("max")).as_deref(), Some("high"));
+    assert_eq!(row.default_reasoning_effort.as_deref(), Some("high"));
+    let capabilities = parse_model(
+        r#"{"id":"grok-4.6","capabilities":{"reasoning_effort":["low","high"],"default_reasoning_effort":"high"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        capabilities.default_reasoning_effort.as_deref(),
+        Some("high")
+    );
+    assert_eq!(capabilities.effort_for(None).as_deref(), Some("high"));
 }
 
 #[test]
@@ -1277,7 +1298,8 @@ async fn a_codex_catalog_requests_a_supported_version_and_keeps_visible_models()
         "models": [
             {"slug": "gpt-6.1-sol", "visibility": "list", "supported_in_api": true,
              "context_window": 272000, "max_context_window": 1050000,
-             "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}, {"effort": "ultra"}]},
+             "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}, {"effort": "ultra"}],
+             "default_reasoning_level": {"effort": "high"}},
             {"slug": "codex-only", "visibility": "list", "supported_in_api": false,
              "context_window": 128000},
             {"slug": "zero-maximum", "visibility": "list",
@@ -1306,6 +1328,7 @@ async fn a_codex_catalog_requests_a_supported_version_and_keeps_visible_models()
         ]
     );
     assert_eq!(rows[0].reasoning_efforts, ["low", "high", "ultra"]);
+    assert_eq!(rows[0].default_reasoning_effort.as_deref(), Some("high"));
     assert_eq!(rows[0].context_length, Some(1050000));
     assert_eq!(rows[1].context_length, Some(128000));
     assert_eq!(rows[2].context_length, Some(64000));

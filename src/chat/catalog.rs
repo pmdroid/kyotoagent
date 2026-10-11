@@ -8,6 +8,8 @@ pub struct ModelRow {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -23,6 +25,20 @@ impl ModelRow {
 
     pub fn takes_effort(&self) -> bool {
         !self.reasoning_efforts.is_empty()
+    }
+
+    pub fn effort_for(&self, current: Option<&str>) -> Option<String> {
+        let known = |effort: &str| self.reasoning_efforts.iter().any(|row| row == effort);
+        current
+            .filter(|effort| known(effort))
+            .map(str::to_string)
+            .or_else(|| {
+                self.default_reasoning_effort
+                    .as_deref()
+                    .filter(|effort| known(effort))
+                    .map(str::to_string)
+            })
+            .or_else(|| self.reasoning_efforts.first().cloned())
     }
 
     pub fn matches(&self, model: &str) -> bool {
@@ -51,6 +67,7 @@ pub fn fallback_models(config: &Config) -> Vec<ModelRow> {
                 id,
                 aliases: Vec::new(),
                 reasoning_efforts: Vec::new(),
+                default_reasoning_effort: None,
                 context_length: None,
                 provider,
             });
@@ -89,18 +106,20 @@ pub(super) fn parse_codex_catalog(text: &str) -> Option<Vec<ModelRow>> {
             Some(ModelRow {
                 id: id.to_string(),
                 aliases: string_list(model, "aliases"),
-                reasoning_efforts: model
-                    .get("supported_reasoning_levels")
-                    .and_then(Value::as_array)
-                    .map(|levels| {
-                        levels
-                            .iter()
-                            .filter_map(|level| level.get("effort").and_then(Value::as_str))
+                reasoning_efforts: codex_efforts(model),
+                default_reasoning_effort: model
+                    .get("default_reasoning_level")
+                    .and_then(|level| level.get("effort"))
+                    .and_then(Value::as_str)
+                    .filter(|effort| !effort.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        model
+                            .get("default_reasoning_effort")
+                            .and_then(Value::as_str)
                             .filter(|effort| !effort.is_empty())
                             .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                    }),
                 context_length: model
                     .get("max_context_window")
                     .and_then(Value::as_u64)
@@ -126,9 +145,39 @@ pub(super) fn row_from_value(value: &Value) -> Option<ModelRow> {
         id,
         aliases: string_list(value, "aliases"),
         reasoning_efforts,
+        default_reasoning_effort: advertised_default_effort(value),
         context_length: advertised_length(value),
         provider: None,
     })
+}
+
+fn codex_efforts(model: &Value) -> Vec<String> {
+    model
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .map(|levels| {
+            levels
+                .iter()
+                .filter_map(|level| level.get("effort").and_then(Value::as_str))
+                .filter(|effort| !effort.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn advertised_default_effort(value: &Value) -> Option<String> {
+    value
+        .get("default_reasoning_effort")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            value
+                .get("capabilities")
+                .and_then(|capabilities| capabilities.get("default_reasoning_effort"))
+                .and_then(Value::as_str)
+        })
+        .filter(|effort| !effort.is_empty())
+        .map(str::to_string)
 }
 
 const EFFORT_ORDER: [&str; 8] = [

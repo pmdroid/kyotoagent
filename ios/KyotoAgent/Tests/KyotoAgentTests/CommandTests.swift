@@ -134,7 +134,7 @@ final class CommandTests: XCTestCase {
         let kept = postedModel(models: models, modelID: "grok-4.7", effort: "medium")
         XCTAssertEqual(kept, ModelPayload(model: "grok-4.7", effort: "medium"))
         let dropped = postedModel(models: models, modelID: "grok-4.7", effort: "xhigh")
-        XCTAssertEqual(dropped, ModelPayload(model: "grok-4.7", effort: nil))
+        XCTAssertEqual(dropped, ModelPayload(model: "grok-4.7", effort: "low"))
         let empty = postedModel(models: models, modelID: "cursor/composer", effort: "low")
         XCTAssertNil(empty.effort)
         XCTAssertEqual(effortChoices(for: "grok-4.7", in: models), ["low", "medium", "high"])

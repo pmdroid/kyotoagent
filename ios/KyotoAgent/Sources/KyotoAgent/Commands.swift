@@ -262,8 +262,15 @@ public func effortChoices(for modelID: String, in models: [Model]) -> [String] {
 }
 
 public func postedModel(models: [Model], modelID: String, effort: String?) -> ModelPayload {
-    let allowed = effortChoices(for: modelID, in: models).contains(effort ?? "") ? effort : nil
-    return ModelPayload(model: modelID, effort: allowed)
+    let row = models.first { $0.id == modelID }
+    let choices = row?.reasoning_efforts ?? []
+    if let effort, choices.contains(effort) {
+        return ModelPayload(model: modelID, effort: effort)
+    }
+    if let fallback = row?.default_reasoning_effort, choices.contains(fallback) {
+        return ModelPayload(model: modelID, effort: fallback)
+    }
+    return ModelPayload(model: modelID, effort: choices.first)
 }
 
 public func modelPostBody(model: String, effort: String?) throws -> Data {

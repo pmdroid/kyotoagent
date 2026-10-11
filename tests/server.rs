@@ -2370,6 +2370,53 @@ async fn models_come_from_serve_and_a_pick_writes_the_server_root() {
 }
 
 #[tokio::test]
+async fn switching_to_a_model_without_the_current_effort_selects_its_default() {
+    let fixture = Fixture::new("effort-default", finish_turn("Done.")).await;
+    fixture._fake.set_models(
+        &serde_json::json!({
+            "data": [
+                {
+                    "id": "gpt-5",
+                    "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+                    "default_reasoning_effort": "medium"
+                },
+                {
+                    "id": "grok-4.7",
+                    "reasoning_efforts": ["low", "medium", "high"],
+                    "default_reasoning_effort": "high"
+                }
+            ]
+        })
+        .to_string(),
+    );
+    let id = fixture.add_session("91bc").await;
+    let body = serde_json::json!({ "model": "gpt-5", "effort": "max" }).to_string();
+    let (status, response) = fixture
+        .client
+        .request("POST", &format!("/v1/sessions/{id}/model"), Some(&body))
+        .await;
+    assert_eq!(status, 204, "{response}");
+    let body = serde_json::json!({ "model": "grok-4.7", "effort": null }).to_string();
+    let (status, response) = fixture
+        .client
+        .request("POST", &format!("/v1/sessions/{id}/model"), Some(&body))
+        .await;
+    assert_eq!(status, 204, "{response}");
+    let config = Config::load(&fixture.root.join("config.toml")).expect("config loads");
+    assert_eq!(config.model, "grok-4.7");
+    assert_eq!(config.effort.as_deref(), Some("high"));
+    let meta = kyotoagent::session::Session::at(
+        &fixture
+            .root
+            .join(kyotoagent::server::SESSIONS_DIR)
+            .join(&id),
+    )
+    .meta()
+    .expect("meta loads");
+    assert_eq!(meta.effort.as_deref(), Some("high"));
+}
+
+#[tokio::test]
 async fn a_session_model_pick_leaves_defaults_and_siblings_unchanged() {
     let fixture = Fixture::new("session-model", finish_turn("Done.")).await;
     fixture

@@ -49,6 +49,10 @@ struct FakeServer {
 
 impl FakeServer {
     fn start(parent: Vec<Canned>, child: Vec<Canned>) -> FakeServer {
+        Self::start_catalog(parent, child, "test/model")
+    }
+
+    fn start_catalog(parent: Vec<Canned>, child: Vec<Canned>, model: &str) -> FakeServer {
         let listener = TcpListener::bind("127.0.0.1:0").expect("the fake server binds");
         listener.set_nonblocking(true).expect("nonblocking");
         let addr = listener.local_addr().expect("addr");
@@ -56,9 +60,22 @@ impl FakeServer {
         let child = Arc::new(Mutex::new(child));
         let stop = Arc::new(AtomicBool::new(false));
         let bodies = Arc::new(Mutex::new(Vec::new()));
+        let catalog = Arc::new(
+            serde_json::json!({
+                "data": [{
+                    "id": model,
+                    "context_length": 128000,
+                    "aliases": aliases_for(model),
+                    "reasoning_efforts": ["low", "high"],
+                    "default_reasoning_effort": default_effort_for(model)
+                }]
+            })
+            .to_string(),
+        );
         let handle = {
             let stop = Arc::clone(&stop);
             let bodies = Arc::clone(&bodies);
+            let catalog = Arc::clone(&catalog);
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     match listener.accept() {
@@ -67,9 +84,10 @@ impl FakeServer {
                             let child = Arc::clone(&child);
                             let bodies = Arc::clone(&bodies);
                             let stop = Arc::clone(&stop);
+                            let catalog = Arc::clone(&catalog);
                             std::thread::spawn(move || {
                                 let _ = stream.set_nonblocking(false);
-                                serve_one(stream, &parent, &child, &bodies, &stop);
+                                serve_one(stream, &parent, &child, &bodies, &stop, &catalog);
                             });
                         }
                         Err(ref source) if source.kind() == std::io::ErrorKind::WouldBlock => {
@@ -106,23 +124,36 @@ impl Drop for FakeServer {
     }
 }
 
+fn default_effort_for(model: &str) -> &'static str {
+    if model == "grok-4" {
+        "high"
+    } else {
+        "low"
+    }
+}
+
+fn aliases_for(model: &str) -> Vec<&str> {
+    match model {
+        "grok-4" => vec!["grok-4.7"],
+        "gpt-5" => vec!["gpt-5-mini"],
+        _ => Vec::new(),
+    }
+}
+
 fn serve_one(
     mut stream: TcpStream,
     parent: &Mutex<Vec<Canned>>,
     child: &Mutex<Vec<Canned>>,
     bodies: &Mutex<Vec<String>>,
     stop: &AtomicBool,
+    catalog: &str,
 ) {
     let Some((path, body)) = read_request(&mut stream) else {
         return;
     };
     bodies.lock().expect("bodies").push(body.clone());
     if path.contains("/models") {
-        let catalog = serde_json::json!({
-            "data": [{ "id": "test/model", "context_length": 200000 }]
-        })
-        .to_string();
-        respond(&mut stream, &catalog);
+        respond(&mut stream, catalog);
         return;
     }
     let child_turn = body.contains("You are a Kyoto Agent subagent.");
@@ -354,6 +385,23 @@ impl Fixture {
         }
     }
 
+    fn with_config(name: &str, text: &str) -> Fixture {
+        let root = std::env::temp_dir().join(format!(
+            "kyotoagent-sub-{}-{}-{name}",
+            std::process::id(),
+            name.len()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("root");
+        let config = Config::from_toml(text).expect("config");
+        let runner = Runner::new(&config).expect("runner");
+        Fixture {
+            runner,
+            server: FakeServer::start(Vec::new(), Vec::new()),
+            root,
+        }
+    }
+
     fn configured(name: &str, parent: Vec<Canned>, child: Vec<Canned>, extra: &str) -> Fixture {
         let root = std::env::temp_dir().join(format!(
             "kyotoagent-sub-{}-{}-{name}",
@@ -471,6 +519,282 @@ async fn a_child_is_created_with_enhance_off() {
             .expect("shown meta")
             .hidden
     );
+}
+
+#[tokio::test]
+async fn an_explicit_child_model_is_sent_only_to_its_provider() {
+    let grok = FakeServer::start_catalog(
+        Vec::new(),
+        vec![Canned::Json(finish_reply(
+            "Reviewed.",
+            "The child finished on grok.",
+        ))],
+        "grok-4",
+    );
+    let codex = FakeServer::start_catalog(Vec::new(), Vec::new(), "gpt-5");
+    let fixture = Fixture::with_config(
+        "child-provider",
+        &format!(
+            "provider = \"codex\"\n\n[providers.codex]\nbase_url = \"{}\"\nmodel = \"gpt-5\"\napi_key_env = \"KYOTOAGENT_TEST_CODEX_CHILD_KEY\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\napi_key_env = \"KYOTOAGENT_TEST_GROK_CHILD_KEY\"\n",
+            codex.base_url(),
+            grok.base_url()
+        ),
+    );
+    std::env::set_var("KYOTOAGENT_TEST_CODEX_CHILD_KEY", "codex-secret");
+    std::env::set_var("KYOTOAGENT_TEST_GROK_CHILD_KEY", "grok-secret");
+    fixture.add_session("parent");
+    let parent = Session::at(&fixture.root.join("session-parent"));
+    parent
+        .set_session_model(kyotoagent::session::SessionModel {
+            model: "gpt-5".into(),
+            effort: Some("high".into()),
+            provider: Some("codex".into()),
+        })
+        .expect("parent selection");
+    let summary = fixture
+        .runner
+        .spawn_subagent(
+            "parent",
+            &spawn_args(serde_json::json!({
+                "model": "grok-4.7",
+                "run_in_background": false
+            })),
+        )
+        .await;
+    let id = child_id(&summary);
+    fixture.wait_status(&id, Status::Idle).await;
+    let child = Session::at(&fixture.root.join(&id))
+        .meta()
+        .expect("child meta");
+    let parent_after = parent.meta().expect("parent meta");
+    let grok_hits = grok.bodies();
+    let codex_hits = codex.bodies();
+    assert_eq!(child.model, "grok-4.7");
+    assert_eq!(
+        child
+            .model_override
+            .as_ref()
+            .and_then(|selection| selection.provider.as_deref()),
+        Some("grok")
+    );
+    assert!(
+        child.context_length.is_none() || child.context_length == Some(128_000),
+        "stale parent window survived: {:?}",
+        child.context_length
+    );
+    assert!(
+        grok_hits
+            .iter()
+            .any(|body| body.contains("\"model\":\"grok-4.7\"")),
+        "grok never received the child model: {grok_hits:?}"
+    );
+    assert!(
+        codex_hits
+            .iter()
+            .all(|body| !body.contains("grok-4.7") && !body.contains("grok-secret")),
+        "codex received the grok child: {codex_hits:?}"
+    );
+    assert_eq!(parent_after.model, "gpt-5");
+    assert_eq!(
+        parent_after
+            .model_override
+            .as_ref()
+            .and_then(|selection| selection.provider.as_deref()),
+        Some("codex")
+    );
+    std::env::remove_var("KYOTOAGENT_TEST_CODEX_CHILD_KEY");
+    std::env::remove_var("KYOTOAGENT_TEST_GROK_CHILD_KEY");
+}
+
+#[tokio::test]
+async fn a_same_provider_child_keeps_the_parent_provider_and_effort() {
+    let codex = FakeServer::start_catalog(
+        Vec::new(),
+        vec![Canned::Json(finish_reply("Done.", "same provider"))],
+        "gpt-5",
+    );
+    let fixture = Fixture::with_config(
+        "same-provider",
+        &format!(
+            "provider = \"codex\"\neffort = \"high\"\n\n[providers.codex]\nbase_url = \"{}\"\nmodel = \"gpt-5\"\n",
+            codex.base_url()
+        ),
+    );
+    fixture.add_session("parent");
+    Session::at(&fixture.root.join("session-parent"))
+        .set_session_model(kyotoagent::session::SessionModel {
+            model: "gpt-5".into(),
+            effort: Some("high".into()),
+            provider: Some("codex".into()),
+        })
+        .expect("parent selection");
+    let summary = fixture
+        .runner
+        .spawn_subagent(
+            "parent",
+            &spawn_args(serde_json::json!({
+                "model": "gpt-5-mini",
+                "run_in_background": false
+            })),
+        )
+        .await;
+    let id = child_id(&summary);
+    fixture.wait_status(&id, Status::Idle).await;
+    let child = Session::at(&fixture.root.join(&id))
+        .meta()
+        .expect("child meta");
+    assert_eq!(child.model, "gpt-5-mini");
+    assert_eq!(child.effort.as_deref(), Some("high"));
+    assert_eq!(
+        child
+            .model_override
+            .as_ref()
+            .and_then(|selection| selection.provider.as_deref()),
+        Some("codex")
+    );
+    assert!(codex
+        .bodies()
+        .iter()
+        .any(|body| body.contains("\"model\":\"gpt-5-mini\"")));
+}
+
+#[tokio::test]
+async fn a_child_model_without_the_parent_effort_uses_its_default() {
+    let grok = FakeServer::start_catalog(
+        Vec::new(),
+        vec![Canned::Json(finish_reply("Done.", "default effort"))],
+        "grok-4",
+    );
+    let fixture = Fixture::with_config(
+        "child-default-effort",
+        &format!(
+            "provider = \"codex\"\n\n[providers.codex]\nbase_url = \"http://127.0.0.1:9\"\nmodel = \"gpt-5\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\n",
+            grok.base_url()
+        ),
+    );
+    fixture.add_session("parent");
+    Session::at(&fixture.root.join("session-parent"))
+        .set_session_model(kyotoagent::session::SessionModel {
+            model: "gpt-5".into(),
+            effort: Some("max".into()),
+            provider: Some("codex".into()),
+        })
+        .expect("parent selection");
+    let summary = fixture
+        .runner
+        .spawn_subagent(
+            "parent",
+            &spawn_args(serde_json::json!({
+                "model": "grok-4.7",
+                "run_in_background": false
+            })),
+        )
+        .await;
+    let id = child_id(&summary);
+    fixture.wait_status(&id, Status::Idle).await;
+    let child = Session::at(&fixture.root.join(&id))
+        .meta()
+        .expect("child meta");
+    assert_eq!(child.effort.as_deref(), Some("high"));
+    assert!(grok.bodies().iter().any(|body| body.contains("grok-4.7")));
+}
+
+#[tokio::test]
+async fn an_ambiguous_child_model_fails_before_inference() {
+    let left = FakeServer::start_catalog(Vec::new(), Vec::new(), "shared");
+    let right = FakeServer::start_catalog(Vec::new(), Vec::new(), "shared");
+    let fixture = Fixture::with_config(
+        "ambiguous-model",
+        &format!(
+            "provider = \"left\"\n\n[providers.left]\nbase_url = \"{}\"\nmodel = \"left-model\"\n\n[providers.right]\nbase_url = \"{}\"\nmodel = \"right-model\"\n",
+            left.base_url(),
+            right.base_url()
+        ),
+    );
+    fixture.add_session("parent");
+    let summary = fixture
+        .runner
+        .spawn_subagent(
+            "parent",
+            &spawn_args(serde_json::json!({
+                "model": "shared",
+                "run_in_background": false
+            })),
+        )
+        .await;
+    assert!(summary.contains("more than one provider"), "{summary}");
+    assert_eq!(fixture.session_count(), 1);
+    assert!(left
+        .bodies()
+        .iter()
+        .chain(right.bodies().iter())
+        .all(|body| !body.contains("chat/completions") && !body.contains("\"model\":\"shared\"")));
+}
+
+#[tokio::test]
+async fn resume_persists_the_child_provider_and_drops_the_old_window() {
+    let grok = FakeServer::start_catalog(
+        Vec::new(),
+        vec![
+            Canned::Json(finish_reply("First.", "first proof")),
+            Canned::Json(finish_reply("Second.", "second proof")),
+        ],
+        "grok-4",
+    );
+    let codex = FakeServer::start_catalog(Vec::new(), Vec::new(), "gpt-5");
+    let fixture = Fixture::with_config(
+        "resume-provider",
+        &format!(
+            "provider = \"codex\"\n\n[providers.codex]\nbase_url = \"{}\"\nmodel = \"gpt-5\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\n",
+            codex.base_url(),
+            grok.base_url()
+        ),
+    );
+    fixture.add_session("parent");
+    let id = child_id(
+        &fixture
+            .runner
+            .spawn_subagent("parent", &spawn_args(serde_json::json!({})))
+            .await,
+    );
+    fixture.wait_status(&id, Status::Idle).await;
+    Session::at(&fixture.root.join(&id))
+        .update(|meta| {
+            meta.context_length = Some(1_000_000);
+            meta.model = "gpt-5".into();
+            true
+        })
+        .expect("stale window");
+    let again = fixture
+        .runner
+        .spawn_subagent(
+            "parent",
+            &spawn_args(serde_json::json!({
+                "resume_from": &id,
+                "model": "grok-4.7",
+                "prompt": "continue on grok"
+            })),
+        )
+        .await;
+    assert!(!again.contains("resume_from needs"), "{again}");
+    fixture.wait_status(&id, Status::Idle).await;
+    let child = Session::at(&fixture.root.join(&id))
+        .meta()
+        .expect("resumed meta");
+    assert_eq!(child.model, "grok-4.7");
+    assert_eq!(
+        child
+            .model_override
+            .as_ref()
+            .and_then(|selection| selection.provider.as_deref()),
+        Some("grok")
+    );
+    assert_ne!(child.context_length, Some(1_000_000));
+    assert!(grok
+        .bodies()
+        .iter()
+        .any(|body| body.contains("continue on grok") && body.contains("grok-4.7")));
+    assert!(codex.bodies().iter().all(|body| !body.contains("grok-4.7")));
 }
 
 fn child_id(summary: &str) -> String {
