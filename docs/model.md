@@ -156,12 +156,17 @@ retry:
 Both fields are required. The limit is between 1 and 100000. Use `task` to keep
 the limit across commits and sessions, or `candidate` to count failures for the
 same base and head. Public policies without `retry` have no failure limit.
-Imported policies cannot set it. Exhaustion blocks completion and PR creation
-and asks the operator for help.
+Imported policies cannot set it. When a check reaches its retry limit, Kyoto
+offers "Stop" or "Accept failed closeout for this session". Explicit acceptance
+allows completion and PR creation and skips further closeout checks in that
+session. Kyoto records the acceptance alongside the original failures.
+Use `/closeout enable` to restore checks with a fresh retry budget for that
+session. Earlier failures and transcripts stay recorded.
 
-Goal runs use their persisted goal ID. For ordinary sessions, supply the same
-ID with `kyoto new --task <id>` or `taskId` when creating a session through the
-API. A task ID must be nonblank and at most 256 bytes. Kyoto retains the retry
+Goal runs use their persisted goal ID. Ordinary sessions default to their session
+ID. To share a retry budget across sessions, supply the same ID with
+`kyoto new --task <id>` or `taskId` when creating a session through the API.
+A task ID must be nonblank and at most 256 bytes. Kyoto retains the retry
 records under its server root and serializes attempts sharing a repository.
 Failed review findings count; invalid, stale, and independence results do not.
 

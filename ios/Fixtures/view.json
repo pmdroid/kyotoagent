@@ -157,6 +157,7 @@
       "tail": "ok"
     }
   ],
+  "closeout_bypassed": false,
   "context": {
     "used": 12000,
     "window": 128000,

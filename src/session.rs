@@ -177,7 +177,7 @@ impl SessionMeta {
     /// both ends.
     pub fn new(id: &str, workspace: &Path, model: &str, at: &str) -> SessionMeta {
         SessionMeta {
-            task_id: None,
+            task_id: Some(id.to_string()),
             id: id.to_string(),
             workspace: workspace.display().to_string(),
             model: model.to_string(),
