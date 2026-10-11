@@ -194,19 +194,19 @@ pub const FAST_TIER: &str = "fast";
 const TIER_ORDER: [&str; 4] = ["flex", "default", "fast", "ultrafast"];
 
 pub(super) fn service_tiers(value: &Value) -> Vec<String> {
-    let mut tiers = string_list(value, "service_tiers");
+    let mut tiers = tier_list(value, "service_tiers");
     if tiers.is_empty() {
-        tiers = string_list(value, "supported_service_tiers");
+        tiers = tier_list(value, "supported_service_tiers");
     }
     if tiers.is_empty() {
         if let Some(capabilities) = value.get("capabilities") {
-            tiers = string_list(capabilities, "service_tiers");
+            tiers = tier_list(capabilities, "service_tiers");
             if tiers.is_empty() {
-                tiers = string_list(capabilities, "service_tier");
+                tiers = tier_list(capabilities, "service_tier");
             }
         }
     }
-    tiers.retain(|tier| !tier.is_empty());
+    tiers.extend(tier_list(value, "additional_speed_tiers"));
     tiers.sort_by_key(|tier| {
         TIER_ORDER
             .iter()
@@ -215,6 +215,24 @@ pub(super) fn service_tiers(value: &Value) -> Vec<String> {
     });
     tiers.dedup();
     tiers
+}
+
+fn tier_list(value: &Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tier| {
+            tier.as_str()
+                .or_else(|| tier.get("id").and_then(Value::as_str))
+        })
+        .filter(|tier| !tier.is_empty())
+        .map(|tier| match tier {
+            "priority" => FAST_TIER.to_string(),
+            _ => tier.to_string(),
+        })
+        .collect()
 }
 
 const EFFORT_ORDER: [&str; 8] = [

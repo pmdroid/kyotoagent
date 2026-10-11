@@ -2417,6 +2417,62 @@ async fn switching_to_a_model_without_the_current_effort_selects_its_default() {
 }
 
 #[tokio::test]
+async fn codex_fast_mode_accepts_the_live_catalog_shape_and_reaches_responses() {
+    let root = test_temp_dir().join(format!(
+        "kyotoagent-server-codex-fast-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let reply = serde_json::json!({"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Done."}]}]}).to_string();
+    let fake = FakeServer::start(vec![Canned::Json(reply.clone()), Canned::Json(reply)]);
+    fake.set_models(&serde_json::json!({"models":[{
+        "slug":"gpt-6.1-sol",
+        "visibility":"list",
+        "service_tiers":[{"id":"priority","name":"Fast","description":"2x speed, increased usage"}],
+        "additional_speed_tiers":["fast"]
+    }]}).to_string());
+    kyotoagent::auth::write_codex_tokens(
+        &root.join(kyotoagent::auth::CODEX_AUTH_FILE),
+        &kyotoagent::auth::CodexTokens {
+            access_token: "test-access".into(),
+            refresh_token: "test-refresh".into(),
+            id_token: "test-id".into(),
+            account_id: "test-account".into(),
+            expires_at: "2035-01-01T00:00:00.000Z".into(),
+        },
+    )
+    .unwrap();
+    let config = format!("provider = \"codex\"\ntitle_model = \"\"\n[providers.codex]\nkind = \"codex\"\nbase_url = {:?}\nmodel = \"gpt-6.1-sol\"\n", fake.base_url());
+    let fixture = Fixture::boot(root, fake, config).await;
+    let id = fixture.add_session("fast").await;
+    let (_, catalog) = fixture.client.request("GET", "/v1/models", None).await;
+    let catalog: Value = serde_json::from_str(&catalog).unwrap();
+    assert_eq!(catalog[0]["service_tiers"], serde_json::json!(["fast"]));
+    let path = format!("/v1/sessions/{id}/service-tier");
+    for (tier, expected) in [(Some("fast"), Some("fast")), (None, None)] {
+        let body = serde_json::json!({"service_tier":tier}).to_string();
+        let (status, response) = fixture.client.request("POST", &path, Some(&body)).await;
+        assert_eq!(status, 204, "{response}");
+        let rows = fixture.client.list().await;
+        assert_eq!(rows[0]["serviceTier"].as_str(), expected);
+        assert_eq!(fixture.client.message(&id, "Finish.").await.0, 202);
+        fixture.client.wait_for_status(&id, "idle").await;
+        let bodies = fixture._fake.bodies();
+        let request: Value = serde_json::from_str(bodies.last().unwrap()).unwrap();
+        assert_eq!(request["model"], "gpt-6.1-sol");
+        assert_eq!(request["service_tier"].as_str(), expected);
+    }
+    fixture
+        ._fake
+        .set_models(r#"{"models":[{"slug":"gpt-6.1-sol","visibility":"list"}]}"#);
+    let (status, _) = fixture
+        .client
+        .request("POST", &path, Some(r#"{"service_tier":"fast"}"#))
+        .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
 async fn a_session_model_pick_leaves_defaults_and_siblings_unchanged() {
     let fixture = Fixture::new("session-model", finish_turn("Done.")).await;
     fixture

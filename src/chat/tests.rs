@@ -388,7 +388,7 @@ fn catalog_service_tiers_keep_fast_when_a_provider_exposes_it() {
         r#"{"id":"gpt-6.1-sol","service_tiers":["priority","fast","default","", "fast"]}"#,
     )
     .unwrap();
-    assert_eq!(listed.service_tiers, ["default", "fast", "priority"]);
+    assert_eq!(listed.service_tiers, ["default", "fast"]);
     assert!(listed.takes_fast());
     let codex = catalog::parse_codex_catalog(
         r#"{"models":[{"slug":"gpt-6.1-sol","visibility":"list","supported_service_tiers":["ultrafast","fast"]}]}"#,
@@ -403,6 +403,36 @@ fn catalog_service_tiers_keep_fast_when_a_provider_exposes_it() {
     let plain = parse_model(r#"{"id":"local"}"#).unwrap();
     assert!(plain.service_tiers.is_empty());
     assert!(!plain.takes_fast());
+}
+
+#[test]
+fn codex_fast_mode_uses_real_service_tier_objects_and_speed_tiers() {
+    for fields in [
+        serde_json::json!({"service_tiers": [{"id":"priority","name":"Fast","description":"2x speed, increased usage"}], "additional_speed_tiers":["fast"]}),
+        serde_json::json!({"service_tiers": [{"id":"priority","name":"Fast"}]}),
+        serde_json::json!({"additional_speed_tiers":["fast"]}),
+        serde_json::json!({"supported_service_tiers":["priority"]}),
+    ] {
+        let mut model = fields;
+        model["slug"] = serde_json::json!("gpt-6.1-sol");
+        model["visibility"] = serde_json::json!("list");
+        let rows = catalog::parse_codex_catalog(&serde_json::json!({"models":[model]}).to_string())
+            .unwrap();
+        assert_eq!(rows[0].service_tiers, ["fast"]);
+        assert!(rows[0].takes_fast());
+    }
+    for fields in [
+        serde_json::json!({"service_tiers":[{}, {"id": false}, {"id":""}]}),
+        serde_json::json!({"additional_speed_tiers":["", false, null]}),
+        serde_json::json!({"service_tiers":[{"id":"default","name":"Fast"}]}),
+    ] {
+        let mut model = fields;
+        model["slug"] = serde_json::json!("gpt-6.1-sol");
+        model["visibility"] = serde_json::json!("list");
+        let rows = catalog::parse_codex_catalog(&serde_json::json!({"models":[model]}).to_string())
+            .unwrap();
+        assert!(!rows[0].takes_fast());
+    }
 }
 
 #[test]
