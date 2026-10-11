@@ -535,7 +535,7 @@ async fn an_explicit_child_model_is_sent_only_to_its_provider() {
     let fixture = Fixture::with_config(
         "child-provider",
         &format!(
-            "provider = \"codex\"\n\n[providers.codex]\nkind = \"codex\"\nbase_url = \"{}\"\nmodel = \"gpt-5\"\napi_key_env = \"KYOTOAGENT_TEST_CODEX_CHILD_KEY\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\napi_key_env = \"KYOTOAGENT_TEST_GROK_CHILD_KEY\"\n",
+            "provider = \"office\"\n\n[providers.office]\nbase_url = \"{}\"\nmodel = \"gpt-5\"\napi_key_env = \"KYOTOAGENT_TEST_CODEX_CHILD_KEY\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\napi_key_env = \"KYOTOAGENT_TEST_GROK_CHILD_KEY\"\n",
             codex.base_url(),
             grok.base_url()
         ),
@@ -548,7 +548,7 @@ async fn an_explicit_child_model_is_sent_only_to_its_provider() {
         .set_session_model(kyotoagent::session::SessionModel {
             model: "gpt-5".into(),
             effort: Some("high".into()),
-            provider: Some("codex".into()),
+            provider: Some("office".into()),
         })
         .expect("parent selection");
     let summary = fixture
@@ -600,7 +600,7 @@ async fn an_explicit_child_model_is_sent_only_to_its_provider() {
             .model_override
             .as_ref()
             .and_then(|selection| selection.provider.as_deref()),
-        Some("codex")
+        Some("office")
     );
     std::env::remove_var("KYOTOAGENT_TEST_CODEX_CHILD_KEY");
     std::env::remove_var("KYOTOAGENT_TEST_GROK_CHILD_KEY");
@@ -616,7 +616,7 @@ async fn a_same_provider_child_keeps_the_parent_provider_and_effort() {
     let fixture = Fixture::with_config(
         "same-provider",
         &format!(
-            "provider = \"codex\"\neffort = \"high\"\n\n[providers.codex]\nkind = \"codex\"\nbase_url = \"{}\"\nmodel = \"gpt-5\"\n",
+            "provider = \"office\"\neffort = \"high\"\n\n[providers.office]\nbase_url = \"{}\"\nmodel = \"gpt-5\"\n",
             codex.base_url()
         ),
     );
@@ -625,7 +625,7 @@ async fn a_same_provider_child_keeps_the_parent_provider_and_effort() {
         .set_session_model(kyotoagent::session::SessionModel {
             model: "gpt-5".into(),
             effort: Some("high".into()),
-            provider: Some("codex".into()),
+            provider: Some("office".into()),
         })
         .expect("parent selection");
     let summary = fixture
@@ -650,7 +650,7 @@ async fn a_same_provider_child_keeps_the_parent_provider_and_effort() {
             .model_override
             .as_ref()
             .and_then(|selection| selection.provider.as_deref()),
-        Some("codex")
+        Some("office")
     );
     assert!(codex
         .bodies()
@@ -668,7 +668,7 @@ async fn a_child_model_without_the_parent_effort_uses_its_default() {
     let fixture = Fixture::with_config(
         "child-default-effort",
         &format!(
-            "provider = \"codex\"\n\n[providers.codex]\nkind = \"codex\"\nbase_url = \"http://127.0.0.1:9\"\nmodel = \"gpt-5\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\n",
+            "provider = \"office\"\n\n[providers.office]\nbase_url = \"http://127.0.0.1:9\"\nmodel = \"gpt-5\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\n",
             grok.base_url()
         ),
     );
@@ -677,7 +677,7 @@ async fn a_child_model_without_the_parent_effort_uses_its_default() {
         .set_session_model(kyotoagent::session::SessionModel {
             model: "gpt-5".into(),
             effort: Some("max".into()),
-            provider: Some("codex".into()),
+            provider: Some("office".into()),
         })
         .expect("parent selection");
     let summary = fixture
@@ -745,7 +745,7 @@ async fn resume_persists_the_child_provider_and_drops_the_old_window() {
     let fixture = Fixture::with_config(
         "resume-provider",
         &format!(
-            "provider = \"codex\"\n\n[providers.codex]\nkind = \"codex\"\nbase_url = \"{}\"\nmodel = \"gpt-5\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\n",
+            "provider = \"office\"\n\n[providers.office]\nbase_url = \"{}\"\nmodel = \"gpt-5\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\n",
             codex.base_url(),
             grok.base_url()
         ),

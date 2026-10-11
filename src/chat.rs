@@ -660,9 +660,12 @@ impl ChatClient {
         if !(200..300).contains(&status) {
             return Err(ChatError::Status { status, body: text });
         }
-        let mut rows = catalog::parse_codex_catalog(&text)
-            .or_else(|| parse_catalog(&text))
-            .ok_or(ChatError::NoChoice)?;
+        let mut rows = if self.codex.is_some() {
+            catalog::parse_codex_catalog(&text)
+        } else {
+            parse_catalog(&text)
+        }
+        .ok_or(ChatError::NoChoice)?;
         if self.opencode.is_some() {
             rows.retain(|row| crate::config::opencode_picker_keeps(&row.id));
         }
