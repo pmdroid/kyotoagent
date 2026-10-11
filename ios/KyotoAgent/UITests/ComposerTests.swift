@@ -29,7 +29,7 @@ final class ComposerTests: XCTestCase {
         field.tap()
         typeAtKeyboardPace("hello world", into: field)
         field.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
-            .withOffset(CGVector(dx: 45, dy: 0)).tap()
+            .withOffset(CGVector(dx: 45, dy: 0)).press(forDuration: 1.2)
         typeAtKeyboardPace("ZZ", into: field)
         let edited = field.value as? String ?? ""
         XCTAssertEqual(edited.replacingOccurrences(of: "ZZ", with: ""), "hello world")
