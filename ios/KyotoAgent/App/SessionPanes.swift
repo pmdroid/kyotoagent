@@ -116,10 +116,13 @@ private struct CloseoutNotice: SwiftUI.View {
                 Text("Checks are skipped. Enabling closeout starts a fresh retry budget and keeps previous failures.")
                     .font(.subheadline)
                     .foregroundStyle(Ink.faint)
-                Button("Enable closeout") {
+                Button {
                     Swift.Task { await model.enableCloseout() }
+                } label: {
+                    Text("Enable closeout")
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }
-                .frame(minHeight: 44)
                 .disabled(!model.connected || model.sending || model.displayedStatus != .idle)
                 .accessibilityIdentifier("closeout-enable")
             }
