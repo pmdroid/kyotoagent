@@ -28,8 +28,10 @@ final class ComposerTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["composer-notice"].exists)
         field.tap()
         typeAtKeyboardPace("hello world", into: field)
-        field.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
-            .withOffset(CGVector(dx: 45, dy: 0)).press(forDuration: 1.2)
+        let caretStart = field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let caretTarget = field.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
+            .withOffset(CGVector(dx: 20, dy: 0))
+        caretStart.press(forDuration: 1.2, thenDragTo: caretTarget)
         typeAtKeyboardPace("ZZ", into: field)
         let edited = field.value as? String ?? ""
         XCTAssertEqual(edited.replacingOccurrences(of: "ZZ", with: ""), "hello world")
