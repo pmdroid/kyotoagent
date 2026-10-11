@@ -46,20 +46,11 @@ final class ComposerTests: XCTestCase {
         skill.tap()
         XCTAssertEqual(field.value as? String, "/preflight ")
         capture("Skill autocomplete")
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "/preflight ".count))
+        verifyCloseout(in: app, field: field)
     }
 
-    func testCloseoutAcceptanceAndReenablingKeepFailureEvidence() throws {
-        continueAfterFailure = false
-        let pairing = try XCTUnwrap(ProcessInfo.processInfo.environment["COMPOSER_PAIRING_URL"])
-        let url = try XCTUnwrap(URL(string: pairing))
-        let app = XCUIApplication()
-        app.launch()
-        app.open(url)
-        let session = app.buttons.containing(.staticText, identifier: "Composer UI test").firstMatch
-        XCTAssertTrue(session.waitForExistence(timeout: 30), app.debugDescription)
-        session.tap()
-        let field = app.descendants(matching: .any)["composer-draft"].firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+    private func verifyCloseout(in app: XCUIApplication, field: XCUIElement) {
         field.tap()
         typeAtKeyboardPace("/fixture closeout", into: field)
         app.buttons["composer-send"].tap()
