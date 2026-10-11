@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::chat::ModelRow;
 use crate::events::{EventKind, ProofBody, ResultBody};
 use crate::screen::Status;
-use crate::session::{AllowList, Session};
+use crate::session::{AllowList, Session, SessionModel};
 
 pub const FOREGROUND_BUDGET: Duration = Duration::from_secs(60);
 pub const DEPTH_ERROR: &str = "spawn_subagent is refused at depth 1";
@@ -97,15 +97,41 @@ pub fn parse_spawn(args: &Value) -> Result<SpawnInput, String> {
     })
 }
 
-pub fn model_allowed(
-    requested: &str,
-    parent_model: &str,
+pub fn resolve_model(
+    requested: Option<&str>,
+    parent: &SessionModel,
     catalog: &[ModelRow],
-) -> Result<(), String> {
-    if requested == parent_model || catalog.iter().any(|row| row.matches(requested)) {
-        return Ok(());
+    current_provider: Option<&str>,
+) -> Result<SessionModel, String> {
+    let Some(requested) = requested.map(str::trim).filter(|model| !model.is_empty()) else {
+        return Ok(parent.clone());
+    };
+    if requested == parent.model {
+        return Ok(parent.clone());
     }
-    Err(format!("model is not in the catalog: {requested}"))
+    let matches: Vec<&ModelRow> = catalog
+        .iter()
+        .filter(|row| row.matches(requested))
+        .collect();
+    let row = match matches.as_slice() {
+        [row] => *row,
+        [] => return Err(format!("model is not in the catalog: {requested}")),
+        _ => {
+            return Err(format!(
+                "model {requested} is available from more than one provider; set the provider explicitly"
+            ))
+        }
+    };
+    let provider = row
+        .provider
+        .clone()
+        .or_else(|| current_provider.map(str::to_string));
+    let effort = row.effort_for(parent.effort.as_deref());
+    Ok(SessionModel {
+        model: requested.to_string(),
+        effort,
+        provider,
+    })
 }
 
 pub fn resolve_cwd(parent: &Path, cwd: &str, allow: &AllowList) -> Result<PathBuf, String> {

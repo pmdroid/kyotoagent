@@ -12,7 +12,7 @@ final class ComposerTests: XCTestCase {
         let session = app.buttons.containing(.staticText, identifier: "Composer UI test").firstMatch
         XCTAssertTrue(session.waitForExistence(timeout: 30), app.debugDescription)
         session.tap()
-        let field = app.descendants(matching: .any)["composer-draft"].firstMatch
+        let field = app.textFields["composer-draft"].firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 10))
         field.tap()
         typeAtKeyboardPace("/mod", into: field)
@@ -28,8 +28,10 @@ final class ComposerTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["composer-notice"].exists)
         field.tap()
         typeAtKeyboardPace("hello world", into: field)
-        field.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
-            .withOffset(CGVector(dx: 45, dy: 0)).tap()
+        let caretStart = field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let caretTarget = field.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
+            .withOffset(CGVector(dx: 20, dy: 0))
+        caretStart.press(forDuration: 1.2, thenDragTo: caretTarget)
         typeAtKeyboardPace("ZZ", into: field)
         let edited = field.value as? String ?? ""
         XCTAssertEqual(edited.replacingOccurrences(of: "ZZ", with: ""), "hello world")

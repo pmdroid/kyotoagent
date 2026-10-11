@@ -144,7 +144,7 @@ final class CommandTests: XCTestCase {
         let kept = postedModel(models: models, modelID: "grok-4.7", effort: "medium")
         XCTAssertEqual(kept, ModelPayload(model: "grok-4.7", effort: "medium"))
         let dropped = postedModel(models: models, modelID: "grok-4.7", effort: "xhigh")
-        XCTAssertEqual(dropped, ModelPayload(model: "grok-4.7", effort: nil))
+        XCTAssertEqual(dropped, ModelPayload(model: "grok-4.7", effort: "low"))
         let empty = postedModel(models: models, modelID: "cursor/composer", effort: "low")
         XCTAssertNil(empty.effort)
         XCTAssertEqual(effortChoices(for: "grok-4.7", in: models), ["low", "medium", "high"])
@@ -296,7 +296,10 @@ final class CommandClientTests: XCTestCase {
         await model.openModelList()
         await model.saveModel("grok-4.7", effort: "xhigh")
         let dropped = try XCTUnwrap(gate.calls.last { $0.path.hasSuffix("/model/session") })
-        XCTAssertNil(try JSONDecoder().decode(ModelPayload.self, from: dropped.body ?? Data()).effort)
+        XCTAssertEqual(
+            try JSONDecoder().decode(ModelPayload.self, from: dropped.body ?? Data()).effort,
+            "low"
+        )
         await model.saveModel("grok-4.7", effort: "medium")
         let chosen = try XCTUnwrap(gate.calls.last { $0.path.hasSuffix("/model/session") })
         XCTAssertEqual(
