@@ -215,6 +215,52 @@ struct Fixture {
 }
 
 #[tokio::test]
+async fn task_scoped_closeout_uses_the_session_id_when_task_id_is_missing() {
+    let fixture = Fixture::new(
+        "task-default-session",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "write_file",
+                serde_json::json!({"path":"changed.txt","contents":"changed"}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "run_closeout",
+                serde_json::json!({"id":"test"}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "finish",
+                serde_json::json!({"text":"Done."}),
+            )])),
+        ],
+    );
+    let workspace = fixture.add_session("91bc");
+    Session::at(&fixture.root.join("session-91bc"))
+        .update(|meta| {
+            meta.task_id = None;
+            true
+        })
+        .unwrap();
+    fs::create_dir_all(workspace.join(".agents")).unwrap();
+    fs::write(workspace.join(".agents/closeout.yaml"), "specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 3\n  scope: task\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: ['true']\n    timeoutSeconds: 5\n").unwrap();
+    fixture.ask("91bc", "Write and check");
+    fixture.respond("91bc", Answer::allow_once()).await;
+    fixture.allow_closeout("91bc").await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert_eq!(fixture.closeout_runs("91bc"), 1);
+    assert!(!fixture.log("91bc").contains("requires a stable task ID"));
+    let evidence = fs::read_dir(fixture.root.join("closeout"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join("retry.json");
+    let entries: serde_json::Value =
+        serde_json::from_slice(&fs::read(evidence).unwrap()).unwrap();
+    assert_eq!(entries[0]["identity"]["task"], "91bc");
+}
+
+#[tokio::test]
 async fn task_retry_exhaustion_survives_another_session_and_cannot_be_cleared_by_continue() {
     let write = |path: &str| {
         Canned::Json(tool_call_reply(vec![(

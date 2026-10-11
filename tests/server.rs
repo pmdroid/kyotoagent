@@ -2754,6 +2754,7 @@ async fn a_session_without_a_worktree_uses_the_directory() {
     assert_eq!(status, 201, "{response}");
     let json: Value = serde_json::from_str(&response).expect("the reply is JSON");
     assert_eq!(json["workspace"].as_str(), Some(path));
+    assert_eq!(json["taskId"], json["id"]);
     let rows = fixture.client.list().await;
     assert_eq!(rows[0]["workspace"].as_str(), Some(path));
 }
