@@ -88,6 +88,7 @@ impl Runner {
         meta.show_closeout = parent.show_closeout;
         meta.profile = parent.profile.clone();
         meta.effort = parent.effort.clone();
+        meta.service_tier = parent.service_tier.clone();
         meta.model_override = parent.model_override.clone().map(|mut selection| {
             selection.model = model.clone();
             selection

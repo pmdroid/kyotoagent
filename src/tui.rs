@@ -251,6 +251,7 @@ pub enum Effect {
     NewSession,
     Cancel,
     ToggleYolo,
+    ToggleFast,
     OpenOverlay,
     OpenText(String),
     OpenPull,
@@ -378,6 +379,7 @@ pub struct App {
     skill_picker_closed: bool,
     pub model: String,
     pub effort: Option<String>,
+    pub service_tier: Option<String>,
     picker: Option<Picker>,
     pub todos: Vec<TodoItem>,
     pub closeout: Vec<screen::CloseoutCheck>,
@@ -479,6 +481,7 @@ enum CommandAction {
     Goal,
     Btw,
     ToggleYolo,
+    ToggleFast,
     ToggleEnhance,
     ToggleLeft,
     CycleListFilter,
@@ -561,6 +564,12 @@ fn command_catalog(_skills: &[SkillEntry]) -> Vec<CatalogRow> {
             "Ctrl-Y",
             "allow writes and commands",
             CommandAction::ToggleYolo,
+        ),
+        catalog_row(
+            "Service tier",
+            "",
+            "switch the OpenAI service tier",
+            CommandAction::ToggleFast,
         ),
         catalog_row(
             "Enhance",
@@ -721,6 +730,12 @@ fn command_catalog(_skills: &[SkillEntry]) -> Vec<CatalogRow> {
             CommandAction::ToggleYolo,
         ),
         catalog_row(
+            "/fast",
+            "/fast",
+            "switch the OpenAI service tier",
+            CommandAction::ToggleFast,
+        ),
+        catalog_row(
             "/enhance",
             "/enhance",
             "turn enhance on or off",
@@ -768,8 +783,16 @@ fn command_matches(row: &CatalogRow, query: &str) -> bool {
     let needle = query.to_ascii_lowercase();
     let name = row.line.name.to_ascii_lowercase();
     let keys = row.line.keys.to_ascii_lowercase();
-    let hint = row.line.hint.to_ascii_lowercase();
-    name.contains(&needle) || keys.contains(&needle) || hint.contains(&needle)
+    name.starts_with(&needle)
+        || keys.starts_with(&needle)
+        || command_words(&name).any(|word| word.starts_with(&needle))
+        || command_words(&keys).any(|word| word.starts_with(&needle))
+        || command_words(&row.line.hint.to_ascii_lowercase()).any(|word| word.starts_with(&needle))
+}
+
+fn command_words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
 }
 
 fn filtered_commands(skills: &[SkillEntry], query: &str) -> Vec<CatalogRow> {
@@ -857,6 +880,7 @@ impl App {
             skill_picker_closed: false,
             model: String::new(),
             effort: None,
+            service_tier: None,
             picker: None,
             todos: Vec::new(),
             closeout: Vec::new(),

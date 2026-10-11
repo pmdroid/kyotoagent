@@ -179,3 +179,16 @@ using the Responses API follow their configured protocol.
 
 A transport failure or an unsuccessful reply reaches the turn loop as an error.
 The session log records the result of the turn.
+
+## Fast mode
+
+OpenAI names this `service_tier`. A model exposes it by listing `fast` in
+`service_tiers`, `supported_service_tiers`, or
+`capabilities.service_tier`. Codex uses `supported_service_tiers` on a visible
+model. `priority` is the old name and is not a separate mode.
+
+`/fast`, `/fast on`, and `/fast off` switch the current session. The command
+palette lists it as **Service tier**. A model that does not list `fast` refuses
+the switch. An enabled session sends `service_tier: "fast"` on its chat completion
+or Responses request. Title and rewrite requests stay on the default tier.
+A new session starts off. A subagent keeps the parent's tier.

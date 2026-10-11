@@ -217,6 +217,7 @@ pub struct Config {
     pub providers: BTreeMap<String, Provider>,
     pub grok_client_id: Option<String>,
     pub effort: Option<String>,
+    pub service_tier: Option<String>,
     pub compact_percent: u32,
     pub listen: Option<String>,
     pub listen_cert: Option<String>,
@@ -312,6 +313,7 @@ impl Default for Config {
             providers: BTreeMap::new(),
             grok_client_id: None,
             effort: None,
+            service_tier: None,
             compact_percent: crate::compact::DEFAULT_COMPACT_PERCENT,
             listen: None,
             listen_cert: None,
@@ -431,6 +433,7 @@ impl Config {
             providers: file.providers,
             grok_client_id: file.grok_client_id,
             effort: file.effort,
+            service_tier: None,
             compact_percent: file.compact_percent,
             listen: file.listen,
             listen_cert: file.listen_cert,
@@ -960,6 +963,12 @@ impl Config {
 
     pub fn request_effort(&self) -> Option<&str> {
         self.effort.as_deref()
+    }
+
+    pub fn request_service_tier(&self) -> Option<&str> {
+        self.service_tier
+            .as_deref()
+            .filter(|tier| *tier == crate::chat::FAST_TIER)
     }
 
     pub fn provider_context_window(&self) -> Option<u64> {

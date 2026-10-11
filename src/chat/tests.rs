@@ -16,7 +16,7 @@ fn image_messages_use_chat_and_responses_image_parts() {
     assert_eq!(chat["content"][1]["type"], "image_url");
     assert_eq!(chat["content"][1]["image_url"]["url"], image.data_url());
     assert_eq!(serde_json::from_value::<Message>(chat).unwrap(), message);
-    let responses = responses_body("vision", None, &[message], &[], false);
+    let responses = responses_body("vision", None, None, &[message], &[], false);
     assert_eq!(responses["input"][0]["content"][0]["type"], "input_text");
     assert_eq!(responses["input"][0]["content"][1]["type"], "input_image");
     assert_eq!(
@@ -362,6 +362,29 @@ fn catalog_explicit_efforts_take_precedence_over_capabilities() {
 }
 
 #[test]
+fn catalog_service_tiers_keep_fast_when_a_provider_exposes_it() {
+    let listed = parse_model(
+        r#"{"id":"gpt-6.1-sol","service_tiers":["priority","fast","default","", "fast"]}"#,
+    )
+    .unwrap();
+    assert_eq!(listed.service_tiers, ["default", "fast", "priority"]);
+    assert!(listed.takes_fast());
+    let codex = catalog::parse_codex_catalog(
+        r#"{"models":[{"slug":"gpt-6.1-sol","visibility":"list","supported_service_tiers":["ultrafast","fast"]}]}"#,
+    )
+    .unwrap();
+    assert_eq!(codex[0].service_tiers, ["fast", "ultrafast"]);
+    assert!(codex[0].takes_fast());
+    let capabilities =
+        parse_model(r#"{"id":"gpt-6-astra","capabilities":{"service_tier":["flex","fast"]}}"#)
+            .unwrap();
+    assert_eq!(capabilities.service_tiers, ["flex", "fast"]);
+    let plain = parse_model(r#"{"id":"local"}"#).unwrap();
+    assert!(plain.service_tiers.is_empty());
+    assert!(!plain.takes_fast());
+}
+
+#[test]
 fn catalog_malformed_effort_capabilities_leave_efforts_empty() {
     for capabilities in [
         "null",
@@ -664,6 +687,30 @@ async fn a_provider_that_takes_effort_posts_reasoning_effort() {
     let body = server.one().body_json();
     assert_eq!(body["model"], Value::from("office-model"));
     assert_eq!(body["reasoning_effort"], Value::from("high"));
+    assert!(body.get("service_tier").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn fast_mode_posts_the_openai_service_tier_and_omits_it_when_off() {
+    let server = FakeServer::start(vec![
+        Canned::Json(a_text_reply()),
+        Canned::Json(a_text_reply()),
+    ]);
+    let mut config = Config::from_toml(&format!(
+        "base_url = \"{base}\"\nmodel = \"gpt-6.1-sol\"\n",
+        base = server.base_url()
+    ))
+    .unwrap();
+    config.service_tier = Some(crate::chat::FAST_TIER.into());
+    let client = ChatClient::new(&config).unwrap();
+    client.complete(&a_conversation(), &[]).await.unwrap();
+    let body = server.received()[0].body_json();
+    assert_eq!(body["service_tier"], Value::from("fast"));
+    config.service_tier = Some("priority".into());
+    let client = ChatClient::new(&config).unwrap();
+    client.complete(&a_conversation(), &[]).await.unwrap();
+    let body = server.received()[1].body_json();
+    assert!(body.get("service_tier").is_none(), "{body}");
 }
 
 #[tokio::test]

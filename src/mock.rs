@@ -95,6 +95,7 @@ fn row(id: &str, dir: &str, status: Status, waiting: Option<Wait>) -> SessionRow
         enhance: false,
         model: String::new(),
         effort: None,
+        service_tier: None,
         project: None,
         project_name: None,
         parent_id: None,
@@ -139,6 +140,7 @@ pub fn waiting() -> ScreenModel {
         skill_picker: None,
         model: String::new(),
         effort: None,
+        service_tier: None,
         compacting: false,
         ..ScreenModel::default()
     }
@@ -244,6 +246,7 @@ pub fn idle() -> ScreenModel {
         skill_picker: None,
         model: String::new(),
         effort: None,
+        service_tier: None,
         compacting: false,
         ..ScreenModel::default()
     }
@@ -280,6 +283,7 @@ pub fn working() -> ScreenModel {
         skill_picker: None,
         model: String::new(),
         effort: None,
+        service_tier: None,
         compacting: false,
         phase: Some(Phase::Tool),
         action: Some("Reading".into()),
@@ -319,6 +323,7 @@ pub fn closeout_run() -> ScreenModel {
         skill_picker: None,
         model: String::new(),
         effort: None,
+        service_tier: None,
         compacting: false,
         ..ScreenModel::default()
     }
@@ -351,6 +356,7 @@ pub fn closeout_asked() -> ScreenModel {
         skill_picker: None,
         model: String::new(),
         effort: None,
+        service_tier: None,
         compacting: false,
         ..ScreenModel::default()
     }
@@ -397,6 +403,7 @@ pub fn empty() -> ScreenModel {
         skill_picker: None,
         model: String::new(),
         effort: None,
+        service_tier: None,
         compacting: false,
         ..ScreenModel::default()
     }

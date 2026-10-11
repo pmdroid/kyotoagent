@@ -203,6 +203,7 @@ pub(super) fn apply_poll(app: &mut App, data: PollData) {
         let enhance = row.enhance;
         let model = row.model.clone();
         let effort = row.effort.clone();
+        let service_tier = row.service_tier.clone();
         app.yolo = yolo;
         app.show_closeout = show_closeout;
         app.enhance = enhance;
@@ -210,6 +211,7 @@ pub(super) fn apply_poll(app: &mut App, data: PollData) {
             app.model = model;
         }
         app.effort = effort;
+        app.service_tier = service_tier;
     }
     if app.selected.is_empty() {
         if let Some(info) = &app.remote_defaults {
@@ -664,6 +666,33 @@ pub(super) async fn post_enhance(
         app.enhance = enhance;
         if let Some(row) = app.sessions.iter_mut().find(|row| row.id == app.selected) {
             row.enhance = enhance;
+        }
+    } else {
+        app.notice = Some(error_text(&response, status));
+    }
+    Ok(())
+}
+
+pub(super) async fn post_fast(app: &mut App, client: &Client, fast: bool) -> Result<(), String> {
+    if app.selected.is_empty() {
+        return Ok(());
+    }
+    let body = serde_json::json!({
+        "service_tier": fast.then_some(crate::chat::FAST_TIER)
+    })
+    .to_string();
+    let (status, response) = client
+        .request(
+            "POST",
+            &format!("/v1/sessions/{}/service-tier", app.selected),
+            Some(&body),
+        )
+        .await?;
+    if status == 204 || status == 200 {
+        app.poll_revision = app.poll_revision.wrapping_add(1);
+        app.service_tier = fast.then(|| crate::chat::FAST_TIER.to_string());
+        if let Some(row) = app.sessions.iter_mut().find(|row| row.id == app.selected) {
+            row.service_tier = app.service_tier.clone();
         }
     } else {
         app.notice = Some(error_text(&response, status));
