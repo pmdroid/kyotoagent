@@ -159,6 +159,15 @@ pub fn latest_compact(events: &[Event]) -> Option<&Event> {
 }
 
 pub fn projected_messages(system: &str, events: &[Event], workspace: &str) -> Vec<Message> {
+    projected_messages_with_goal(system, events, workspace, None)
+}
+
+pub fn projected_messages_with_goal(
+    system: &str,
+    events: &[Event],
+    workspace: &str,
+    goal: Option<&crate::goal::Goal>,
+) -> Vec<Message> {
     let mut out = vec![Message::System {
         content: system.to_string(),
     }];
@@ -181,26 +190,13 @@ pub fn projected_messages(system: &str, events: &[Event], workspace: &str) -> Ve
                         &recent_images(prior),
                     ),
                 });
-                if let Some(ask) = prior
-                    .iter()
-                    .rev()
-                    .find(|event| event.kind == EventKind::UserAsk)
-                {
-                    if !events_after(events, &body.through_event_id)
+                let anchor_in_tail = goal.is_none()
+                    && events_after(events, &body.through_event_id)
                         .iter()
-                        .any(|event| event.kind == EventKind::UserAsk)
-                        && !events.iter().any(|event| {
-                            event.turn_id == ask.turn_id && event.kind == EventKind::Result
-                        })
-                    {
-                        if let Ok(ask) = ask.body_as::<AskBody>() {
-                            out.push(Message::User {
-                                content: crate::chat::UserContent::with_images(
-                                    ask_content(&ask, false, workspace),
-                                    &ask.images,
-                                ),
-                            });
-                        }
+                        .any(|event| event.kind == EventKind::UserAsk);
+                if !anchor_in_tail {
+                    if let Some(anchor) = continuation_anchor(prior, workspace, goal) {
+                        out.push(Message::User { content: anchor });
                     }
                 }
                 let state = handoff_state(events);
@@ -388,7 +384,16 @@ fn flush_pending(out: &mut Vec<Message>, pending: &mut Option<Pending>) {
 }
 
 pub fn meter_messages(system: &str, events: &[Event], workspace: &str) -> Vec<Message> {
-    projected_messages(system, events, workspace)
+    meter_messages_with_goal(system, events, workspace, None)
+}
+
+pub fn meter_messages_with_goal(
+    system: &str,
+    events: &[Event],
+    workspace: &str,
+    goal: Option<&crate::goal::Goal>,
+) -> Vec<Message> {
+    projected_messages_with_goal(system, events, workspace, goal)
 }
 
 fn events_after<'a>(events: &'a [Event], through_id: &str) -> &'a [Event] {
@@ -399,6 +404,14 @@ fn events_after<'a>(events: &'a [Event], through_id: &str) -> &'a [Event] {
 }
 
 pub fn compact_request_messages(events: &[Event]) -> Vec<Message> {
+    compact_request_messages_with_goal(events, "", None)
+}
+
+pub fn compact_request_messages_with_goal(
+    events: &[Event],
+    workspace: &str,
+    goal: Option<&crate::goal::Goal>,
+) -> Vec<Message> {
     let images = recent_images(events);
     let transcript = latest_compact(events)
         .and_then(|event| event.body_as::<CompactBody>().ok())
@@ -410,15 +423,55 @@ pub fn compact_request_messages(events: &[Event]) -> Vec<Message> {
                 transcript_dump(events_after(events, &body.through_event_id))
             )
         })
-        .unwrap_or_else(|| transcript_dump(events));
-    vec![
+        .unwrap_or_else(|| transcript_dump_without_anchor(events));
+    let mut messages = vec![
         Message::System {
             content: compact_instruction().to_string(),
         },
         Message::User {
             content: crate::chat::UserContent::with_images(transcript, &images),
         },
-    ]
+    ];
+    if let Some(anchor) = continuation_anchor(events, workspace, goal) {
+        messages.push(Message::User { content: anchor });
+    }
+    messages
+}
+
+fn continuation_anchor(
+    events: &[Event],
+    workspace: &str,
+    goal: Option<&crate::goal::Goal>,
+) -> Option<crate::chat::UserContent> {
+    if let Some(goal) = goal.filter(|goal| {
+        matches!(
+            goal.status,
+            crate::goal::GoalStatus::Active | crate::goal::GoalStatus::Paused
+        ) && !goal.objective.trim().is_empty()
+    }) {
+        return Some(
+            format!(
+                "<user_query>\n{}\n</user_query>",
+                neutralize(goal.objective.trim(), "</user_query>")
+            )
+            .into(),
+        );
+    }
+    let ask = events.iter().rev().find_map(|event| {
+        if event.kind != EventKind::UserAsk {
+            return None;
+        }
+        let body = event.body_as::<AskBody>().ok()?;
+        (!body.silent && !body.text.trim().is_empty()).then_some(body)
+    })?;
+    let mut ask = ask;
+    if ask.text.len() > 64 * 1024 {
+        ask.text = truncate_dump(&ask.text, 64 * 1024);
+    }
+    Some(crate::chat::UserContent::with_images(
+        ask_content(&ask, false, workspace),
+        &ask.images,
+    ))
 }
 
 fn recent_images(events: &[Event]) -> Vec<crate::attachment::ImageAttachment> {
@@ -456,9 +509,14 @@ pub(crate) fn truncate_dump(text: &str, limit: usize) -> String {
 }
 
 pub(crate) fn fit_compact_messages(messages: &mut [Message], window: u64) {
+    let anchor = messages.len().saturating_sub(1).max(1);
     let overhead = messages
         .iter()
-        .map(|message| match message {
+        .enumerate()
+        .map(|(index, message)| match message {
+            Message::User { content } if index == anchor && anchor > 1 => {
+                content.estimated_bytes() / 4
+            }
             Message::User { content } => {
                 content
                     .estimated_bytes()
@@ -470,15 +528,13 @@ pub(crate) fn fit_compact_messages(messages: &mut [Message], window: u64) {
         .sum::<u64>();
     let budget =
         usize::try_from(window.saturating_sub(overhead).saturating_mul(2)).unwrap_or(usize::MAX);
-    for message in messages {
-        if let Message::User { content } = message {
-            match content {
-                crate::chat::UserContent::Text(text) => *text = truncate_dump(text, budget),
-                crate::chat::UserContent::Parts(parts) => {
-                    for part in parts {
-                        if let crate::chat::UserPart::Text { text } = part {
-                            *text = truncate_dump(text, budget);
-                        }
+    if let Some(Message::User { content }) = messages.get_mut(1) {
+        match content {
+            crate::chat::UserContent::Text(text) => *text = truncate_dump(text, budget),
+            crate::chat::UserContent::Parts(parts) => {
+                for part in parts {
+                    if let crate::chat::UserPart::Text { text } = part {
+                        *text = truncate_dump(text, budget);
                     }
                 }
             }
@@ -564,13 +620,28 @@ fn seal_skill(skill: &str) -> String {
     out
 }
 
+fn transcript_dump_without_anchor(events: &[Event]) -> String {
+    let anchor = events.iter().rposition(|event| {
+        event.kind == EventKind::UserAsk
+            && event
+                .body_as::<AskBody>()
+                .is_ok_and(|body| !body.silent && !body.text.trim().is_empty())
+    });
+    match anchor {
+        Some(index) => transcript_dump(&events[..index]),
+        None => transcript_dump(events),
+    }
+}
+
 fn transcript_dump(events: &[Event]) -> String {
     let mut lines = Vec::new();
     for event in events {
         match event.kind {
             EventKind::UserAsk => {
                 if let Ok(body) = event.body_as::<AskBody>() {
-                    lines.push(format!("user: {}", ask_content(&body, false, "")));
+                    if !body.silent {
+                        lines.push(format!("user: {}", ask_content(&body, false, "")));
+                    }
                 }
             }
             EventKind::ModelMessage => {
@@ -1333,6 +1404,128 @@ mod tests {
 #[cfg(test)]
 mod handoff_tests {
     use super::*;
+
+    fn event(id: &str, kind: EventKind, body: serde_json::Value) -> Event {
+        Event::new(id, "2026-09-29T00:00:00.000Z", "t1", kind)
+            .with_body(&body)
+            .expect("a body serializes")
+    }
+
+    #[test]
+    fn a_ten_thousand_token_window_still_sends_a_fitted_compact() {
+        let events = vec![
+            event(
+                "e1",
+                EventKind::UserAsk,
+                serde_json::json!({"text": "h".repeat(80_000)}),
+            ),
+            event(
+                "e2",
+                EventKind::ModelMessage,
+                serde_json::json!({"text": "done"}),
+            ),
+        ];
+        let mut messages = compact_request_messages(&events);
+        fit_compact_messages(&mut messages, 8_500);
+        let estimated = estimate_tokens(&messages[..2]);
+        assert!(estimated <= 8_500, "{estimated}");
+        assert!(estimated > 0);
+    }
+
+    #[test]
+    fn fitting_keeps_the_last_real_ask_outside_the_cut() {
+        let middle = "implement the issues, verify in isolation, and open the PRs";
+        let filler = "tool output ".repeat(200_000);
+        let events = vec![
+            event(
+                "e1",
+                EventKind::UserAsk,
+                serde_json::json!({"text": "audit the sessions and do not change code"}),
+            ),
+            event(
+                "e2",
+                EventKind::ToolResult,
+                serde_json::json!({"tool": "read_file", "output": filler}),
+            ),
+            event(
+                "e3",
+                EventKind::UserAsk,
+                serde_json::json!({"text": middle, "silent": false}),
+            ),
+            event(
+                "e4",
+                EventKind::UserAsk,
+                serde_json::json!({"text": "background title rewrite", "silent": true}),
+            ),
+            event(
+                "e5",
+                EventKind::ModelMessage,
+                serde_json::json!({"text": "progress continues"}),
+            ),
+        ];
+        for window in [272_000_u64, 500_000, 872_000] {
+            let mut messages = compact_request_messages(&events);
+            fit_compact_messages(&mut messages, window);
+            let rendered = serde_json::to_string(&messages).unwrap();
+            assert!(
+                rendered.contains(middle),
+                "window {window} dropped the last real ask: {rendered}"
+            );
+            assert_eq!(
+                rendered.matches(middle).count(),
+                1,
+                "window {window} repeated the anchor"
+            );
+            assert!(
+                !rendered.contains("background title rewrite"),
+                "a silent ask is not the anchor"
+            );
+        }
+    }
+
+    #[test]
+    fn a_live_goal_replaces_the_last_ask_after_compaction() {
+        let events = vec![
+            event(
+                "e1",
+                EventKind::UserAsk,
+                serde_json::json!({"text": "audit only and do not implement"}),
+            ),
+            event(
+                "e2",
+                EventKind::ModelMessage,
+                serde_json::json!({"text": "the audit is underway"}),
+            ),
+            event(
+                "e3",
+                EventKind::Compact,
+                serde_json::json!({"summary": "Only a read-only audit was authorized.", "throughEventId": "e2"}),
+            ),
+        ];
+        let mut goal = crate::goal::Goal::new(
+            "implement the issues, verify in isolation, and open the PRs",
+            None,
+        );
+        goal.pause("Paused by the user.");
+        let messages = projected_messages_with_goal("sys", &events, "/w", Some(&goal));
+        let rendered = serde_json::to_string(&messages).unwrap();
+        assert!(rendered.contains("implement the issues, verify in isolation, and open the PRs"));
+        assert!(!rendered.contains("audit only and do not implement"));
+        let complete = {
+            let mut goal = goal;
+            goal.status = crate::goal::GoalStatus::Complete;
+            goal
+        };
+        let completed = serde_json::to_string(&projected_messages_with_goal(
+            "sys",
+            &events,
+            "/w",
+            Some(&complete),
+        ))
+        .unwrap();
+        assert!(completed.contains("audit only and do not implement"));
+        assert!(!completed.contains("implement the issues, verify in isolation, and open the PRs"));
+    }
 
     #[test]
     fn compacted_history_reinjects_todos_and_running_commands() {
