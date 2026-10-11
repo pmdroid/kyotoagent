@@ -84,12 +84,25 @@ pub(super) async fn run_compact(
     let Some(through) = crate::compact::last_event_id(&history) else {
         return Ok(());
     };
-    let mut messages = crate::compact::compact_request_messages(&history);
+    let goal = session.meta().ok().and_then(|meta| meta.goal);
+    let workspace = session
+        .meta()
+        .map(|meta| meta.workspace)
+        .unwrap_or_default();
+    let mut messages =
+        crate::compact::compact_request_messages_with_goal(&history, &workspace, goal.as_ref());
     let meta = session.meta()?;
     let window = crate::compact::resolve_window(client, config, session).await?;
     if let Some(window) = window {
-        crate::compact::fit_compact_messages(&mut messages, window.saturating_mul(85) / 100);
-        if crate::compact::estimate_tokens(&messages) > window.saturating_mul(85) / 100 {
+        let budget = window.saturating_mul(85) / 100;
+        crate::compact::fit_compact_messages(&mut messages, budget);
+        if messages.len() > 2 {
+            let limit = usize::try_from(budget.saturating_mul(2)).unwrap_or(4096);
+            shrink_to(messages.last_mut().expect("the anchor"), limit);
+        }
+        if crate::compact::estimate_tokens(&messages[..messages.len().min(2)])
+            > window.saturating_mul(85) / 100
+        {
             return Ok(());
         }
     }
@@ -110,8 +123,10 @@ pub(super) async fn run_compact(
                 failure = String::from("the summary was empty or too short to preserve the task");
             }
             Ok(Err(error)) if error.is_context_overflow() => {
-                let budget = crate::compact::estimate_tokens(&messages) / 2;
-                crate::compact::fit_compact_messages(&mut messages, budget);
+                shrink_transcript(messages.get_mut(1));
+                if messages.len() > 2 {
+                    shrink_transcript(messages.last_mut());
+                }
                 failure = error.to_string();
                 continue;
             }
@@ -172,11 +187,8 @@ pub(super) async fn run_compact(
     }
     append_with_body(session, &turn_id, EventKind::Compact, &body)?;
     let events = session.events()?;
-    let workspace = session
-        .meta()
-        .map(|meta| meta.workspace)
-        .unwrap_or_default();
-    let projected = crate::compact::projected_messages("", &events, &workspace);
+    let projected =
+        crate::compact::projected_messages_with_goal("", &events, &workspace, goal.as_ref());
     crate::compact::store_prompt_tokens(session, crate::compact::estimate_tokens(&projected))?;
     Ok(())
 }
@@ -259,10 +271,12 @@ pub(super) fn refresh_compacted_history(
         )
         .is_some_and(|(through, start)| through >= start);
     if covers_active {
-        *transcript = crate::compact::projected_messages(
+        let goal = turn.session.meta().ok().and_then(|meta| meta.goal);
+        *transcript = crate::compact::projected_messages_with_goal(
             &turn.system_prompt(),
             &events,
             &turn.tools.workspace().to_string_lossy(),
+            goal.as_ref(),
         );
         cursor.active_start = transcript
             .iter()
@@ -283,11 +297,56 @@ pub(super) fn refresh_compacted_history(
     }
     let active = transcript.split_off(cursor.active_start);
     let workspace = turn.tools.workspace().to_string_lossy();
-    *transcript = crate::compact::projected_messages(&turn.system_prompt(), &history, &workspace);
+    let goal = turn.session.meta().ok().and_then(|meta| meta.goal);
+    *transcript = crate::compact::projected_messages_with_goal(
+        &turn.system_prompt(),
+        &history,
+        &workspace,
+        goal.as_ref(),
+    );
     cursor.active_start = transcript.len();
     transcript.extend(active);
     cursor.compact_id = latest_id;
     Ok(true)
+}
+
+fn shrink_to(message: &mut Message, limit: usize) {
+    let Message::User { content } = message else {
+        return;
+    };
+    match content {
+        crate::chat::UserContent::Text(text) if text.len() > limit => {
+            *text = crate::compact::truncate_dump(text, limit);
+        }
+        crate::chat::UserContent::Parts(parts) => {
+            for part in parts {
+                if let crate::chat::UserPart::Text { text } = part {
+                    if text.len() > limit {
+                        *text = crate::compact::truncate_dump(text, limit);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn shrink_transcript(message: Option<&mut Message>) {
+    let Some(Message::User { content }) = message else {
+        return;
+    };
+    match content {
+        crate::chat::UserContent::Text(text) => {
+            *text = crate::compact::truncate_dump(text, text.len() / 2);
+        }
+        crate::chat::UserContent::Parts(parts) => {
+            for part in parts {
+                if let crate::chat::UserPart::Text { text } = part {
+                    *text = crate::compact::truncate_dump(text, text.len() / 2);
+                }
+            }
+        }
+    }
 }
 
 fn request_tokens(estimated: u64, usage: Option<(u64, u64)>) -> u64 {
@@ -300,6 +359,168 @@ fn request_tokens(estimated: u64, usage: Option<(u64, u64)>) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::AskBody;
+    use crate::screen::Status;
+
+    fn summary_reply() -> String {
+        let summary = "1. Primary Request and Intent: Continue the preserved request.\n2. Key Technical Concepts: None.\n3. Files and Code Sections: None.\n4. Errors and Fixes: None.\n5. Problem Solving: The earlier transcript was reduced.\n6. User Messages: The latest request remains authoritative.\n7. Pending Tasks: Continue that request.\n8. Current Work: Compaction just completed.\n9. Next Step: Continue without asking for new authorization.\n".repeat(8);
+        serde_json::json!({
+            "id": "compact-1",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": { "role": "assistant", "content": summary }
+            }]
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn compaction_sends_the_last_ask_and_keeps_it_for_the_successor() {
+        let server = crate::chat::tests::FakeServer::start(vec![crate::chat::tests::Canned::Json(
+            summary_reply(),
+        )]);
+        let root =
+            std::env::temp_dir().join(format!("kyoto-compact-anchor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let session = Session::at(&root.join("session"));
+        let workspace = root.join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut meta = crate::session::SessionMeta::new("s1", &workspace, "test/model", &now());
+        meta.status = Status::Idle;
+        meta.context_length = Some(8_000);
+        session.create(&meta).unwrap();
+        let anchor = "implement the issues, verify in isolation, and open the PRs";
+        session
+            .append(
+                &Event::new("e1", &now(), "t1", EventKind::UserAsk)
+                    .with_body(&AskBody {
+                        images: Vec::new(),
+                        text: "audit only".into(),
+                        context: String::new(),
+                        skill: String::new(),
+                        silent: false,
+                    })
+                    .unwrap(),
+            )
+            .unwrap();
+        session
+            .append(
+                &Event::new("e2", &now(), "t1", EventKind::ToolResult)
+                    .with_body(&ToolResultBody {
+                        is_error: false,
+                        images: Vec::new(),
+                        tool: "read_file".into(),
+                        output: "bulk ".repeat(20_000),
+                    })
+                    .unwrap(),
+            )
+            .unwrap();
+        session
+            .append(
+                &Event::new("e3", &now(), "t2", EventKind::UserAsk)
+                    .with_body(&AskBody {
+                        images: Vec::new(),
+                        text: anchor.into(),
+                        context: String::new(),
+                        skill: String::new(),
+                        silent: false,
+                    })
+                    .unwrap(),
+            )
+            .unwrap();
+        session
+            .append(
+                &Event::new("e4", &now(), "t2", EventKind::ModelMessage)
+                    .with_body(&ModelMessageBody {
+                        text: "work is in progress".into(),
+                    })
+                    .unwrap(),
+            )
+            .unwrap();
+        let before = std::fs::read_to_string(session.events_path()).unwrap();
+        let client = ChatClient::new(&crate::chat::tests::config_for(&server, None)).unwrap();
+        let config = crate::chat::tests::config_for(&server, None);
+        let (_cancel_tx, mut cancel) = tokio::sync::watch::channel(false);
+        run_compact(&session, &client, &config, &mut cancel)
+            .await
+            .unwrap();
+        let body = server.received()[0].body.clone();
+        assert!(body.contains(anchor), "{body}");
+        assert_eq!(server.received().len(), 1);
+        let events = session.events().unwrap();
+        assert!(events.iter().any(|event| event.kind == EventKind::Compact));
+        assert!(before.lines().all(|line| {
+            events
+                .iter()
+                .any(|event| serde_json::to_string(event).unwrap() == line)
+        }));
+        let successor = crate::compact::projected_messages_with_goal(
+            "system",
+            &events,
+            workspace.to_str().unwrap(),
+            None,
+        );
+        let rendered = serde_json::to_string(&successor).unwrap();
+        assert!(rendered.contains(anchor), "{rendered}");
+        assert!(!rendered.contains("audit only"), "{rendered}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_failed_compact_does_not_replace_the_last_ask() {
+        let server =
+            crate::chat::tests::FakeServer::start(vec![crate::chat::tests::Canned::Status(
+                400,
+                "bad compact".into(),
+            )]);
+        let root = std::env::temp_dir().join(format!("kyoto-compact-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let session = Session::at(&root.join("session"));
+        let workspace = root.join("work");
+        std::fs::create_dir_all(&workspace).unwrap();
+        session
+            .create(&crate::session::SessionMeta::new(
+                "s1",
+                &workspace,
+                "test/model",
+                &now(),
+            ))
+            .unwrap();
+        session
+            .append(
+                &Event::new("e1", &now(), "t1", EventKind::UserAsk)
+                    .with_body(&serde_json::json!({"text": "keep this ask"}))
+                    .unwrap(),
+            )
+            .unwrap();
+        session
+            .append(
+                &Event::new("e2", &now(), "t1", EventKind::ModelMessage)
+                    .with_body(&ModelMessageBody {
+                        text: "started".into(),
+                    })
+                    .unwrap(),
+            )
+            .unwrap();
+        let client = ChatClient::new(&crate::chat::tests::config_for(&server, None)).unwrap();
+        let (_cancel_tx, mut cancel) = tokio::sync::watch::channel(false);
+        let error = run_compact(
+            &session,
+            &client,
+            &crate::chat::tests::config_for(&server, None),
+            &mut cancel,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("bad compact"), "{error}");
+        assert!(session
+            .events()
+            .unwrap()
+            .iter()
+            .all(|event| event.kind != EventKind::Compact));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn provider_usage_tracks_growth_and_resets_after_replacement() {
