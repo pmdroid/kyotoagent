@@ -525,6 +525,7 @@ pub(super) async fn run_turn(
 
             if hooks::fires(&call.name) {
                 if let Some(reason) = hooks::load(&workspace)
+                    .with_sandbox(turn.config.sandbox)
                     .pre_tool_use(&workspace, &call.name, &args)
                     .await
                 {
@@ -538,6 +539,7 @@ pub(super) async fn run_turn(
                 execute_tool(turn, tools, call, &args, &mut cancel, &mut closeout).await?;
             if hooks::fires(&call.name) {
                 if let Some(feedback) = hooks::load(&workspace)
+                    .with_sandbox(turn.config.sandbox)
                     .post_tool_use(&workspace, &call.name, &args, &outcome.summary)
                     .await
                 {
@@ -693,7 +695,7 @@ async fn completion_blocker(
             "Task {id} from this turn is still running. Use check_task."
         )));
     }
-    let hooks = hooks::load(workspace);
+    let hooks = hooks::load(workspace).with_sandbox(turn.config.sandbox);
     let reason = tokio::select! {
         biased;
         _ = cancel.changed() => Some("Stopped.".to_string()),

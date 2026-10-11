@@ -39,36 +39,47 @@ pub(crate) fn check_write(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn command(program: &str, args: &[String]) -> io::Result<Command> {
-    let Some(directory) = protected_directory()? else {
+pub(crate) fn command(program: &str, args: &[String], sandbox: bool) -> io::Result<Command> {
+    if !sandbox {
         let mut command = Command::new(program);
         command.args(args);
         return Ok(command);
-    };
-    let mut command = Command::new("/usr/bin/bwrap");
-    command
-        .args([
-            "--bind",
-            "/",
-            "/",
-            "--dev-bind",
-            "/dev",
-            "/dev",
-            "--proc",
-            "/proc",
-            "--ro-bind",
-        ])
-        .arg(&directory)
-        .arg(&directory);
-    let worktrees = writable_worktrees(&directory);
-    if let Some(worktrees) = &worktrees {
-        command.arg("--bind").arg(worktrees).arg(worktrees);
     }
-    if let Ok(target) = std::fs::canonicalize(directory.join("config.toml")) {
-        if !target.starts_with(&directory)
-            || worktrees.is_some_and(|worktrees| target.starts_with(worktrees))
-        {
-            command.arg("--ro-bind").arg(&target).arg(&target);
+    if !cfg!(target_os = "linux") {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "sandbox = true requires Linux and Bubblewrap; set sandbox = false to run commands directly",
+        ));
+    }
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "sandbox = true requires Bubblewrap at /usr/bin/bwrap; install Bubblewrap or set sandbox = false",
+        ));
+    }
+    let mut command = Command::new("/usr/bin/bwrap");
+    command.args([
+        "--bind",
+        "/",
+        "/",
+        "--dev-bind",
+        "/dev",
+        "/dev",
+        "--proc",
+        "/proc",
+    ]);
+    if let Some(directory) = protected_directory()? {
+        command.arg("--ro-bind").arg(&directory).arg(&directory);
+        let worktrees = writable_worktrees(&directory);
+        if let Some(worktrees) = &worktrees {
+            command.arg("--bind").arg(worktrees).arg(worktrees);
+        }
+        if let Ok(target) = std::fs::canonicalize(directory.join("config.toml")) {
+            if !target.starts_with(&directory)
+                || worktrees.is_some_and(|worktrees| target.starts_with(worktrees))
+            {
+                command.arg("--ro-bind").arg(&target).arg(&target);
+            }
         }
     }
     command.arg("--").arg(program).args(args);

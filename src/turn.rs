@@ -1423,7 +1423,7 @@ impl Runner {
         let done = Arc::clone(state);
         let turn_ctx = Turn {
             session,
-            tools,
+            tools: tools.with_sandbox(config.sandbox),
             client,
             config,
             compact: Arc::clone(&compact),
