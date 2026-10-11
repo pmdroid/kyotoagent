@@ -36,11 +36,11 @@ use std::thread::JoinHandle;
 
 /// One request the fake server read, kept so a test can say what was sent.
 #[derive(Clone, Debug)]
-struct Received {
+pub(crate) struct Received {
     method: String,
     path: String,
     headers: Vec<(String, String)>,
-    body: String,
+    pub(crate) body: String,
 }
 
 impl Received {
@@ -60,7 +60,7 @@ impl Received {
 /// without a reply, which is what a transport failure looks like from the
 /// other side.
 #[derive(Clone)]
-enum Canned {
+pub(crate) enum Canned {
     Json(String),
     Raw(String),
     Status(u16, String),
@@ -72,7 +72,7 @@ enum Canned {
 /// A local HTTP server that records what it was sent and answers from a
 /// queue of canned replies. One request per connection, so the recorded
 /// request is always the one under test.
-struct FakeServer {
+pub(crate) struct FakeServer {
     addr: SocketAddr,
     received: Arc<Mutex<Vec<Received>>>,
     stop: Arc<AtomicBool>,
@@ -80,7 +80,7 @@ struct FakeServer {
 }
 
 impl FakeServer {
-    fn start(replies: Vec<Canned>) -> FakeServer {
+    pub(crate) fn start(replies: Vec<Canned>) -> FakeServer {
         let listener = TcpListener::bind("127.0.0.1:0").expect("the fake server binds");
         listener
             .set_nonblocking(true)
@@ -125,7 +125,7 @@ impl FakeServer {
     }
 
     /// The requests read so far. One per test, so the first is the one.
-    fn received(&self) -> Vec<Received> {
+    pub(crate) fn received(&self) -> Vec<Received> {
         self.received
             .lock()
             .expect("the log is not poisoned")
@@ -428,7 +428,7 @@ fn a_conversation() -> Vec<Message> {
 }
 
 /// A config pointed at the fake server, with the API key named or not.
-fn config_for(server: &FakeServer, api_key_env: Option<&str>) -> Config {
+pub(crate) fn config_for(server: &FakeServer, api_key_env: Option<&str>) -> Config {
     let text = match api_key_env {
         Some(name) => format!(
             "base_url = \"{base}\"\nmodel = \"test/model\"\napi_key_env = \"{name}\"\n",

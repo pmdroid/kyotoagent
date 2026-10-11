@@ -2047,8 +2047,12 @@ fn session_context(
     if let Some(cached) = cache.as_ref().filter(|cached| cached.key == key) {
         return Some(cached.usage.clone());
     }
-    let messages =
-        crate::compact::meter_messages(&key.system, events, &workspace.to_string_lossy());
+    let messages = crate::compact::meter_messages_with_goal(
+        &key.system,
+        events,
+        &workspace.to_string_lossy(),
+        meta.goal.as_ref(),
+    );
     let usage = crate::compact::context_usage(
         &key.without_skills,
         &key.skills,

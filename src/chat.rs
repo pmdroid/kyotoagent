@@ -42,7 +42,7 @@ pub use retry::RetryStatus;
 pub use catalog::*;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// How long one completion gets before the request is abandoned.
 pub const REQUEST_TIMEOUT_SECS: u64 = 120;

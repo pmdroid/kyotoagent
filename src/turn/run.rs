@@ -119,8 +119,12 @@ pub(super) async fn run_turn(
     }
 
     let initial_events = session.event_snapshot()?.1;
-    let mut transcript =
-        crate::compact::projected_messages(&system_prompt, &initial_events, &workspace_text);
+    let mut transcript = crate::compact::projected_messages_with_goal(
+        &system_prompt,
+        &initial_events,
+        &workspace_text,
+        turn.session.meta().ok().and_then(|meta| meta.goal).as_ref(),
+    );
     let mut history_cursor = HistoryCursor {
         active_start: transcript.len() - 1,
         compact_id: crate::compact::latest_compact(&initial_events).map(|event| event.id.clone()),
