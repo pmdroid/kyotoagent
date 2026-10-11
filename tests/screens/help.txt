@@ -8,7 +8,8 @@
 │  idle                      │││  Providers  sign in on the selected serve││
 │                            │││  Compact  summarize the older transcript ││
 │  ✓ notes                   │││  Ctrl-Y  Yolo  allow writes and commands ││
-│  idle                      │││  Enhance  rewrite a short prompt before t││
+│  idle                      │││  Service tier  switch the OpenAI service ││
+│                            │││  Enhance  rewrite a short prompt before t││
 │                            │││  Queued messages  remove a pending messag││
 │                            │││  Ctrl-X  Cancel  stop the turn           ││
 │                            │││  Esc  Close popup  close the open popup  ││
@@ -16,7 +17,6 @@
 │                            │││  Unarchive session  restore an archived s││
 │                            │││  Ctrl-W  Delete session  delete the selec││
 │                            │││  Ctrl-B  Sessions  show or hide the sessi││
-│                            │││  Ctrl-F  Filter sessions  cycle running, ││
 │ctrl-n/p  ctrl-k  commands  ││╰──────────────────────────────────────────╯│
 ╰────────────────────────────╯╰────────────────────────────────────────────╯
 ╭ Message ─────────────────────────────────────────────────────────────────╮

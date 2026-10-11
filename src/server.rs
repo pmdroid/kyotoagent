@@ -419,6 +419,7 @@ impl Server {
             .route("/v1/sessions/{id}/archive", post(set_archive))
             .route("/v1/sessions/{id}", delete(delete_session))
             .route("/v1/sessions/{id}/yolo", post(set_yolo))
+            .route("/v1/sessions/{id}/service-tier", post(set_service_tier))
             .route("/v1/sessions/{id}/enhance", post(set_enhance))
             .route("/v1/sessions/{id}/closeout", post(set_closeout_show))
             .route("/v1/sessions/{id}/profile", post(set_profile))
@@ -665,6 +666,8 @@ struct SessionRow {
     provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -917,6 +920,7 @@ async fn list_sessions(State(state): State<AppState>) -> Result<impl IntoRespons
                     .or_else(|| config.provider.clone()),
                 model: meta.model,
                 effort: meta.effort,
+                service_tier: meta.service_tier,
                 title,
                 project,
                 parent_id: meta.parent_id,
@@ -1603,6 +1607,52 @@ async fn set_profile(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+struct ServiceTierRequest {
+    #[serde(default)]
+    service_tier: Option<String>,
+}
+
+async fn set_service_tier(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<ServiceTierRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = Session::at(&session_dir(&state.root, &id));
+    let meta = session.meta().map_err(|_| ApiError::not_found())?;
+    let requested = body
+        .service_tier
+        .as_deref()
+        .map(str::trim)
+        .filter(|tier| !tier.is_empty());
+    if let Some(tier) = requested {
+        if tier != crate::chat::FAST_TIER {
+            return Err(ApiError::bad_request("service_tier must be fast or empty"));
+        }
+        let config = state.runner.current_config();
+        let provider = meta
+            .model_override
+            .as_ref()
+            .and_then(|selection| selection.provider.as_ref())
+            .or(config.provider.as_ref());
+        let rows = state.runner.list_models().await;
+        let offered = rows.iter().any(|row| {
+            row.matches(&meta.model)
+                && row.provider.as_ref().or(config.provider.as_ref()) == provider
+                && row.takes_fast()
+        });
+        if !offered {
+            return Err(ApiError::bad_request(
+                "this model does not expose fast mode",
+            ));
+        }
+    }
+    session
+        .set_service_tier(requested)
+        .map_err(|source| ApiError::server(source.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn set_yolo(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
@@ -1896,6 +1946,7 @@ mod ios_fixtures {
                 model: "grok-4.7".into(),
                 provider: None,
                 effort: Some("medium".into()),
+                service_tier: None,
                 title: Some("Permission cards".into()),
                 project: Some("kyotoagent".into()),
                 parent_id: Some("a11a0001".into()),
@@ -1922,6 +1973,7 @@ mod ios_fixtures {
                 model: "grok-4.7".into(),
                 provider: None,
                 effort: Some("high".into()),
+                service_tier: None,
                 title: Some("Kyoto Agent".into()),
                 project: Some("kyotoagent".into()),
                 parent_id: None,
@@ -2154,6 +2206,7 @@ mod ios_fixtures {
                 id: "grok-4.7".into(),
                 aliases: vec!["grok".into()],
                 reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()],
+                service_tiers: Vec::new(),
                 context_length: Some(2_000_000),
                 provider: Some("grok".into()),
             },
@@ -2161,6 +2214,7 @@ mod ios_fixtures {
                 id: "cursor/composer".into(),
                 aliases: Vec::new(),
                 reasoning_efforts: Vec::new(),
+                service_tiers: Vec::new(),
                 context_length: None,
                 provider: None,
             },

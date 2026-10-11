@@ -546,6 +546,19 @@ fn slash_compact_is_its_own_command() {
     ));
     assert!(slash_command("/yolo now").is_none());
     assert!(matches!(
+        slash_command("/fast"),
+        Some(SlashCommand::Fast(None))
+    ));
+    assert!(matches!(
+        slash_command("/fast on"),
+        Some(SlashCommand::Fast(Some(true)))
+    ));
+    assert!(matches!(
+        slash_command("/fast off"),
+        Some(SlashCommand::Fast(Some(false)))
+    ));
+    assert!(slash_command("/fast now").is_none());
+    assert!(matches!(
         slash_command("/closeout"),
         Some(SlashCommand::TogglePane(RightPane::Closeout))
     ));
@@ -814,6 +827,9 @@ fn a_slash_query_matches_pane_rows_the_way_yolo_matches() {
     };
     assert_eq!(names("/yolo"), vec!["/yolo"]);
     assert_eq!(names("yolo"), vec!["Yolo", "/yolo"]);
+    assert_eq!(names("fast"), vec!["/fast"]);
+    assert_eq!(names("tier"), vec!["Service tier", "/fast"]);
+    assert_eq!(names("mod"), vec!["Open model", "/model"]);
     assert_eq!(names("/todos"), vec!["/todos"]);
     assert_eq!(names("todos"), vec!["Todos", "/todos"]);
     assert_eq!(names("tasks"), vec!["Tasks", "/tasks"]);
@@ -877,6 +893,7 @@ fn esc_on_a_question_overlay_closes_it_and_a_bare_esc_does_not_cancel() {
         enhance: false,
         model: String::new(),
         effort: None,
+        service_tier: None,
         project: None,
         project_name: None,
         parent_id: None,
@@ -976,6 +993,7 @@ fn blank_row() -> SessionRow {
         enhance: false,
         model: String::new(),
         effort: None,
+        service_tier: None,
         project: None,
         project_name: None,
         parent_id: None,
@@ -1067,6 +1085,7 @@ fn waiting_question(text: &str) -> App {
         enhance: false,
         model: String::new(),
         effort: None,
+        service_tier: None,
         project: None,
         project_name: None,
         parent_id: None,
@@ -1308,6 +1327,7 @@ fn a_waiting_permission_does_not_auto_open() {
         enhance: false,
         model: String::new(),
         effort: None,
+        service_tier: None,
         project: None,
         project_name: None,
         parent_id: None,
@@ -1346,6 +1366,7 @@ fn a_waiting_row_is_permission_mode() {
         enhance: false,
         model: String::new(),
         effort: None,
+        service_tier: None,
         project: None,
         project_name: None,
         parent_id: None,
@@ -1394,6 +1415,7 @@ fn esc_on_the_model_picker_keeps_the_stored_pair() {
             id: "grok-4.5".into(),
             aliases: Vec::new(),
             reasoning_efforts: Vec::new(),
+            service_tiers: Vec::new(),
             context_length: None,
             provider: None,
         }],
@@ -1419,6 +1441,7 @@ fn picker_row(id: &str, aliases: &[&str]) -> ModelRow {
         id: id.into(),
         aliases: aliases.iter().map(|alias| (*alias).to_string()).collect(),
         reasoning_efforts: Vec::new(),
+        service_tiers: Vec::new(),
         context_length: None,
         provider: None,
     }
@@ -1716,6 +1739,7 @@ fn idle_proof_app(card: Card) -> App {
         enhance: false,
         model: String::new(),
         effort: None,
+        service_tier: None,
         project: None,
         project_name: None,
         parent_id: None,
@@ -1884,6 +1908,7 @@ fn idle_with_skills() -> App {
         enhance: false,
         model: String::new(),
         effort: None,
+        service_tier: None,
         project: None,
         project_name: None,
         parent_id: None,

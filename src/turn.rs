@@ -918,6 +918,7 @@ impl Runner {
                 config.model = meta.model;
                 config.effort = meta.effort;
             }
+            config.service_tier = meta.service_tier;
         }
         Ok(config)
     }

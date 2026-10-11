@@ -194,6 +194,7 @@ pub(super) fn select_session(app: &mut App, id: String) {
             app.model = row.model;
         }
         app.effort = row.effort;
+        app.service_tier = row.service_tier;
     }
     app.scroll = 0;
     app.follow = true;
@@ -352,6 +353,7 @@ pub fn screen_model(app: &App) -> ScreenModel {
         skill_picker: skill_picker_model(app),
         model: app.model.clone(),
         effort: app.effort.clone(),
+        service_tier: app.service_tier.clone(),
         compacting: app
             .selected_session()
             .map(|row| row.compacting)

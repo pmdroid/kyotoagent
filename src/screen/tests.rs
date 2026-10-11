@@ -281,6 +281,7 @@ fn a_waiting_row_names_its_card() {
         enhance: false,
         model: String::new(),
         effort: None,
+        service_tier: None,
         project: None,
         project_name: None,
         parent_id: None,
@@ -1785,6 +1786,9 @@ fn the_header_shows_the_selected_model_and_effort() {
     model.effort = Some("high".into());
     let text = draw(&model);
     assert!(text.contains("grok-4.6 high \u{00b7} 3 sessions"), "{text}");
+    model.service_tier = Some("fast".into());
+    let text = draw(&model);
+    assert!(text.contains(" fast "), "{text}");
     model.compacting = true;
     let text = draw(&model);
     assert!(text.contains("compact"), "{text}");

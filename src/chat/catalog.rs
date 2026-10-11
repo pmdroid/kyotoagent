@@ -7,6 +7,8 @@ pub struct ModelRow {
     pub aliases: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_tiers: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -23,6 +25,10 @@ impl ModelRow {
 
     pub fn takes_effort(&self) -> bool {
         !self.reasoning_efforts.is_empty()
+    }
+
+    pub fn takes_fast(&self) -> bool {
+        self.service_tiers.iter().any(|tier| tier == "fast")
     }
 
     pub fn matches(&self, model: &str) -> bool {
@@ -51,6 +57,7 @@ pub fn fallback_models(config: &Config) -> Vec<ModelRow> {
                 id,
                 aliases: Vec::new(),
                 reasoning_efforts: Vec::new(),
+                service_tiers: Vec::new(),
                 context_length: None,
                 provider,
             });
@@ -101,6 +108,7 @@ pub(super) fn parse_codex_catalog(text: &str) -> Option<Vec<ModelRow>> {
                             .collect()
                     })
                     .unwrap_or_default(),
+                service_tiers: service_tiers(model),
                 context_length: model
                     .get("max_context_window")
                     .and_then(Value::as_u64)
@@ -126,9 +134,38 @@ pub(super) fn row_from_value(value: &Value) -> Option<ModelRow> {
         id,
         aliases: string_list(value, "aliases"),
         reasoning_efforts,
+        service_tiers: service_tiers(value),
         context_length: advertised_length(value),
         provider: None,
     })
+}
+
+pub const FAST_TIER: &str = "fast";
+
+const TIER_ORDER: [&str; 4] = ["flex", "default", "fast", "ultrafast"];
+
+pub(super) fn service_tiers(value: &Value) -> Vec<String> {
+    let mut tiers = string_list(value, "service_tiers");
+    if tiers.is_empty() {
+        tiers = string_list(value, "supported_service_tiers");
+    }
+    if tiers.is_empty() {
+        if let Some(capabilities) = value.get("capabilities") {
+            tiers = string_list(capabilities, "service_tiers");
+            if tiers.is_empty() {
+                tiers = string_list(capabilities, "service_tier");
+            }
+        }
+    }
+    tiers.retain(|tier| !tier.is_empty());
+    tiers.sort_by_key(|tier| {
+        TIER_ORDER
+            .iter()
+            .position(|known| known == tier)
+            .unwrap_or(usize::MAX)
+    });
+    tiers.dedup();
+    tiers
 }
 
 const EFFORT_ORDER: [&str; 8] = [

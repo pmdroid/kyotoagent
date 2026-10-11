@@ -18,6 +18,10 @@ final class CommandTests: XCTestCase {
         XCTAssertEqual(slashCommand("/yolo on", efforts: efforts), .yolo(.on))
         XCTAssertEqual(slashCommand("/yolo off", efforts: efforts), .yolo(.off))
         XCTAssertEqual(slashCommand("/yolo now", efforts: efforts), .ask)
+        XCTAssertEqual(slashCommand("/fast", efforts: efforts), .fast(.toggle))
+        XCTAssertEqual(slashCommand("/fast on", efforts: efforts), .fast(.on))
+        XCTAssertEqual(slashCommand("/fast off", efforts: efforts), .fast(.off))
+        XCTAssertEqual(slashCommand("/fast now", efforts: efforts), .ask)
         XCTAssertEqual(slashCommand("/yolo on extra", efforts: efforts), .ask)
         XCTAssertEqual(slashCommand("/model", efforts: efforts), .openModel)
         XCTAssertEqual(slashCommand("/model grok-4.7", efforts: efforts), .setModel("grok-4.7"))
@@ -43,6 +47,7 @@ final class CommandTests: XCTestCase {
             "Compact",
             "Enable closeout",
             "Yolo",
+            "Service tier",
             "Profile",
             "Cancel",
             "Archive session",
@@ -54,6 +59,7 @@ final class CommandTests: XCTestCase {
             "/btw",
             "/compact",
             "/yolo",
+            "/fast",
             "/closeout",
             "/goal",
             "/preflight",
@@ -65,6 +71,7 @@ final class CommandTests: XCTestCase {
             "Compact",
             "Enable closeout",
             "Yolo",
+            "Service tier",
             "Profile",
             "Cancel",
             "Archive session",
@@ -85,7 +92,7 @@ final class CommandTests: XCTestCase {
         XCTAssertEqual(liveProfileField("Everything"), "")
         XCTAssertEqual(liveProfileField("review"), "review")
         XCTAssertTrue(filteredCatalog(skills: skills, query: "/").isEmpty)
-        XCTAssertEqual(slashSuggestions(skills, draft: "/").map(\.title), ["/btw", "/closeout", "/compact", "/effort", "/goal", "/model", "/preflight", "/yolo"])
+        XCTAssertEqual(slashSuggestions(skills, draft: "/").map(\.title), ["/btw", "/closeout", "/compact", "/effort", "/fast", "/goal", "/model", "/preflight", "/yolo"])
         XCTAssertEqual(slashSuggestions(skills, draft: "/pr").map(\.title), ["/preflight"])
         XCTAssertTrue(slashSuggestions(skills, draft: filledSkill("preflight")).isEmpty)
         XCTAssertTrue(slashSuggestions(skills, draft: "/preflight check this").isEmpty)
@@ -110,7 +117,7 @@ final class CommandTests: XCTestCase {
             Skill(name: "hidden", description: "Hidden", disable_model_invocation: false, user_invocable: false, path: "hidden")
         ]
         let all = slashSuggestions(skills, draft: "/")
-        XCTAssertEqual(all.count, 19)
+        XCTAssertEqual(all.count, 20)
         XCTAssertEqual(all.filter { $0.title == "/model" }.count, 1)
         XCTAssertEqual(all.first { $0.title == "/model" }?.kind, .openModel)
         XCTAssertFalse(all.contains { $0.title == "/hidden" })

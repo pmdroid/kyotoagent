@@ -383,6 +383,8 @@ struct Request<'a> {
     tools: Option<&'a [Tool]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_tier: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -392,6 +394,8 @@ struct CompactRequest<'a> {
     messages: &'a [Message],
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_tier: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -401,6 +405,8 @@ struct QuietRequest<'a> {
     messages: &'a [Message],
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_tier: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -502,6 +508,7 @@ pub struct ChatClient {
     model: String,
     reasoning_effort: Option<String>,
     title_reasoning_effort: Option<String>,
+    service_tier: Option<String>,
     api_key: Option<String>,
     base_url: String,
     grok: Option<GrokSession>,
@@ -619,6 +626,7 @@ impl ChatClient {
             model: config.model.clone(),
             reasoning_effort: config.request_effort().map(str::to_string),
             title_reasoning_effort: config.title_effort().map(str::to_string),
+            service_tier: config.request_service_tier().map(str::to_string),
             api_key: if oauth { None } else { api_key },
             base_url: config.base_url.clone(),
             grok,
@@ -753,6 +761,7 @@ impl ChatClient {
             let body = responses_body(
                 &self.model,
                 self.reasoning_effort.as_deref(),
+                self.service_tier.as_deref(),
                 messages,
                 tools,
                 self.codex.is_some(),
@@ -789,6 +798,7 @@ impl ChatClient {
             messages,
             tools,
             reasoning_effort: self.reasoning_effort.as_deref(),
+            service_tier: self.service_tier.as_deref(),
         };
         let token = self.bearer().await?;
         let response = self
@@ -825,6 +835,7 @@ impl ChatClient {
             let body = responses_body(
                 model,
                 self.title_reasoning_effort.as_deref(),
+                None,
                 &messages,
                 &[],
                 self.codex.is_some(),
@@ -836,6 +847,7 @@ impl ChatClient {
             stream: false,
             messages: &messages,
             reasoning_effort: self.title_reasoning_effort.as_deref(),
+            service_tier: None,
         };
         let token = self.bearer().await?;
         let (status, text) = self
@@ -860,7 +872,7 @@ impl ChatClient {
     pub async fn rewrite(&self, model: &str, messages: &[Message]) -> Result<Reply, ChatError> {
         let url = self.request_url(model);
         if self.posts_responses(model) {
-            let body = responses_body(model, None, messages, &[], self.codex.is_some());
+            let body = responses_body(model, None, None, messages, &[], self.codex.is_some());
             return self
                 .finish_responses(&url, &body, REQUEST_TIMEOUT_SECS)
                 .await;
@@ -870,6 +882,7 @@ impl ChatClient {
             stream: false,
             messages,
             reasoning_effort: None,
+            service_tier: None,
         };
         let token = self.bearer().await?;
         let (status, text) = self
@@ -897,6 +910,7 @@ impl ChatClient {
             let body = responses_body(
                 &self.model,
                 self.reasoning_effort.as_deref(),
+                self.service_tier.as_deref(),
                 messages,
                 &[],
                 self.codex.is_some(),
@@ -910,6 +924,7 @@ impl ChatClient {
             stream: false,
             messages,
             reasoning_effort: self.reasoning_effort.as_deref(),
+            service_tier: self.service_tier.as_deref(),
         };
         let token = self.bearer().await?;
         let (status, text) = self
@@ -1295,6 +1310,7 @@ async fn read_completion(
 fn responses_body(
     model: &str,
     effort: Option<&str>,
+    service_tier: Option<&str>,
     messages: &[Message],
     tools: &[Tool],
     stream: bool,
@@ -1376,6 +1392,9 @@ fn responses_body(
     }
     if let Some(effort) = effort {
         body["reasoning"] = serde_json::json!({ "effort": effort });
+    }
+    if let Some(tier) = service_tier {
+        body["service_tier"] = Value::String(tier.to_string());
     }
     body
 }

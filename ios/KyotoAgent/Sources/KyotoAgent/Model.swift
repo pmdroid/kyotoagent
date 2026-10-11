@@ -4,6 +4,7 @@ nonisolated public struct Model: Codable, Hashable, Sendable {
     public var id: String
     public var aliases: [String]
     public var reasoning_efforts: [String]
+    public var service_tiers: [String]
     public var context_length: Int?
     public var provider: String?
 
@@ -12,6 +13,7 @@ nonisolated public struct Model: Codable, Hashable, Sendable {
         id = try container.decode(String.self, forKey: .id)
         aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
         reasoning_efforts = try container.decodeIfPresent([String].self, forKey: .reasoning_efforts) ?? []
+        service_tiers = try container.decodeIfPresent([String].self, forKey: .service_tiers) ?? []
         context_length = try container.decodeIfPresent(Int.self, forKey: .context_length)
         provider = try container.decodeIfPresent(String.self, forKey: .provider)
     }
@@ -25,6 +27,9 @@ nonisolated public struct Model: Codable, Hashable, Sendable {
         if !reasoning_efforts.isEmpty {
             try container.encode(reasoning_efforts, forKey: .reasoning_efforts)
         }
+        if !service_tiers.isEmpty {
+            try container.encode(service_tiers, forKey: .service_tiers)
+        }
         try container.encodeIfPresent(context_length, forKey: .context_length)
         try container.encodeIfPresent(provider, forKey: .provider)
     }
@@ -33,6 +38,7 @@ nonisolated public struct Model: Codable, Hashable, Sendable {
         case id
         case aliases
         case reasoning_efforts
+        case service_tiers
         case context_length
         case provider
     }

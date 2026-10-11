@@ -43,6 +43,7 @@ nonisolated public struct Session: Codable, Equatable, Sendable {
     public var showCloseout: Bool
     public var model: String
     public var effort: String?
+    public var serviceTier: String?
     public var provider: String?
     public var title: String?
     public var project: String?
@@ -71,6 +72,7 @@ nonisolated public struct Session: Codable, Equatable, Sendable {
         model = try container.decode(String.self, forKey: .model)
         provider = try container.decodeIfPresent(String.self, forKey: .provider)
         effort = try container.decodeIfPresent(String.self, forKey: .effort)
+        serviceTier = try container.decodeIfPresent(String.self, forKey: .serviceTier)
         title = try container.decodeIfPresent(String.self, forKey: .title)
         project = try container.decodeIfPresent(String.self, forKey: .project)
         parentId = try container.decodeIfPresent(String.self, forKey: .parentId)
@@ -98,6 +100,7 @@ nonisolated public struct Session: Codable, Equatable, Sendable {
         try container.encode(showCloseout, forKey: .showCloseout)
         try container.encode(model, forKey: .model)
         try container.encodeIfPresent(effort, forKey: .effort)
+        try container.encodeIfPresent(serviceTier, forKey: .serviceTier)
         try container.encodeIfPresent(provider, forKey: .provider)
         try container.encodeIfPresent(title, forKey: .title)
         try container.encodeIfPresent(project, forKey: .project)
@@ -127,6 +130,7 @@ nonisolated public struct Session: Codable, Equatable, Sendable {
         case showCloseout
         case model
         case effort
+        case serviceTier
         case provider
         case title
         case project
