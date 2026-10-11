@@ -535,7 +535,7 @@ async fn an_explicit_child_model_is_sent_only_to_its_provider() {
     let fixture = Fixture::with_config(
         "child-provider",
         &format!(
-            "provider = \"office\"\n\n[providers.office]\nbase_url = \"{}\"\nmodel = \"gpt-5\"\napi_key_env = \"KYOTOAGENT_TEST_CODEX_CHILD_KEY\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\napi_key_env = \"KYOTOAGENT_TEST_GROK_CHILD_KEY\"\n",
+            "provider = \"office\"\n\n[providers.office]\nbase_url = \"{}\"\nmodel = \"gpt-5\"\napi_key_env = \"KYOTOAGENT_TEST_CODEX_CHILD_KEY\"\n\n[providers.remote]\nbase_url = \"{}\"\nmodel = \"grok-4\"\napi_key_env = \"KYOTOAGENT_TEST_GROK_CHILD_KEY\"\n",
             codex.base_url(),
             grok.base_url()
         ),
@@ -561,17 +561,6 @@ async fn an_explicit_child_model_is_sent_only_to_its_provider() {
             })),
         )
         .await;
-    let catalog = fixture.runner.model_catalog().await;
-    assert!(
-        summary.contains("\"id\""),
-        "spawn={summary}; catalog_errors={:?}; models={:?}",
-        catalog.errors,
-        catalog
-            .models
-            .iter()
-            .map(|row| format!("{}@{:?}", row.id, row.provider))
-            .collect::<Vec<_>>()
-    );
     let id = child_id(&summary);
     fixture.wait_status(&id, Status::Idle).await;
     let child = Session::at(&fixture.root.join(&id))
@@ -586,7 +575,7 @@ async fn an_explicit_child_model_is_sent_only_to_its_provider() {
             .model_override
             .as_ref()
             .and_then(|selection| selection.provider.as_deref()),
-        Some("grok")
+        Some("remote")
     );
     assert!(
         child.context_length.is_none() || child.context_length == Some(128_000),
@@ -679,7 +668,7 @@ async fn a_child_model_without_the_parent_effort_uses_its_default() {
     let fixture = Fixture::with_config(
         "child-default-effort",
         &format!(
-            "provider = \"office\"\n\n[providers.office]\nbase_url = \"http://127.0.0.1:9\"\nmodel = \"gpt-5\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\n",
+            "provider = \"office\"\n\n[providers.office]\nbase_url = \"http://127.0.0.1:9\"\nmodel = \"gpt-5\"\n\n[providers.remote]\nbase_url = \"{}\"\nmodel = \"grok-4\"\n",
             grok.base_url()
         ),
     );
@@ -756,7 +745,7 @@ async fn resume_persists_the_child_provider_and_drops_the_old_window() {
     let fixture = Fixture::with_config(
         "resume-provider",
         &format!(
-            "provider = \"office\"\n\n[providers.office]\nbase_url = \"{}\"\nmodel = \"gpt-5\"\n\n[providers.grok]\nbase_url = \"{}\"\nmodel = \"grok-4\"\n",
+            "provider = \"office\"\n\n[providers.office]\nbase_url = \"{}\"\nmodel = \"gpt-5\"\n\n[providers.remote]\nbase_url = \"{}\"\nmodel = \"grok-4\"\n",
             codex.base_url(),
             grok.base_url()
         ),
@@ -798,7 +787,7 @@ async fn resume_persists_the_child_provider_and_drops_the_old_window() {
             .model_override
             .as_ref()
             .and_then(|selection| selection.provider.as_deref()),
-        Some("grok")
+        Some("remote")
     );
     assert_ne!(child.context_length, Some(1_000_000));
     assert!(grok
