@@ -142,6 +142,8 @@ Imported policies cannot set it. When a check reaches its retry limit, Kyoto
 offers "Stop" or "Accept failed closeout for this session". Explicit acceptance
 allows completion and PR creation and skips further closeout checks in that
 session. Kyoto records the acceptance alongside the original failures.
+Use `/closeout enable` to restore checks with a fresh retry budget for that
+session. Earlier failures and transcripts stay recorded.
 
 Goal runs use their persisted goal ID. Ordinary sessions default to their session
 ID. To share a retry budget across sessions, supply the same ID with

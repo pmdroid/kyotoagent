@@ -2101,6 +2101,7 @@ mod ios_fixtures {
                 write_paths: vec!["/home/pascal/work/kyotoagent/src/view.rs".into()],
                 ..AllowList::default()
             },
+            closeout_bypassed: false,
             closeout: vec![CloseoutRow {
                 runs: Vec::new(),
                 id: "cargo-test".into(),

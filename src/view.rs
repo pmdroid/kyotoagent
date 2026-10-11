@@ -111,6 +111,8 @@ pub struct View {
     pub allow: AllowList,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub closeout: Vec<CloseoutRow>,
+    #[serde(default)]
+    pub closeout_bypassed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<ContextUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -213,6 +215,15 @@ pub(crate) fn project_events(meta: SessionMeta, events: &[Event], now_millis: i6
         queue_items: Vec::new(),
         allow: meta.allow,
         closeout: closeout_rows(Path::new(&meta.workspace), events, meta.show_closeout),
+        closeout_bypassed: events
+            .iter()
+            .rev()
+            .find_map(|event| match event.kind {
+                EventKind::CloseoutBypassed => Some(true),
+                EventKind::CloseoutEnabled => Some(false),
+                _ => None,
+            })
+            .unwrap_or(false),
         context: None,
         goal: meta.goal,
     }

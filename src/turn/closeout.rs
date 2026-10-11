@@ -1,5 +1,39 @@
 use super::*;
 
+impl Runner {
+    pub(super) fn enable_closeout(
+        &self,
+        state: &Arc<SessionState>,
+    ) -> Result<AskOutcome, TurnError> {
+        let turn = state.turn.lock().expect("the turn slot is not poisoned");
+        if turn.is_some()
+            || !*state.turn_idle.borrow()
+            || state.compact.is_running()
+            || self.waiting(state)
+            || self.enhance_open(state)
+            || self.enhance_running(state)
+        {
+            return Err(TurnError::Busy);
+        }
+        let mut closeout = CloseoutState::default();
+        closeout.replay(&state.session.events()?);
+        let turn_id = next_turn_id(&state.session);
+        let text = if closeout.bypassed {
+            append_with_body(
+                &state.session,
+                &turn_id,
+                EventKind::CloseoutEnabled,
+                &serde_json::json!({}),
+            )?;
+            "Closeout enabled for this session with a fresh retry budget. Previous failures remain recorded."
+        } else {
+            "Closeout is already enabled."
+        };
+        append_result(&state.session, &turn_id, text, "")?;
+        Ok(AskOutcome::Ignored)
+    }
+}
+
 pub(super) async fn run_closeout(
     turn: &Turn,
     id: &str,
@@ -596,6 +630,11 @@ fn retry_identity(
             base: if base.is_empty() { head.clone() } else { base },
             head,
             task,
+            retry_epoch: if closeout.retry_epoch.is_empty() {
+                String::new()
+            } else {
+                format!("{}:{}", meta.id, closeout.retry_epoch)
+            },
         },
     ))
 }

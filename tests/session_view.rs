@@ -619,6 +619,7 @@ fn every_kind_round_trips_through_the_log() {
                 | EventKind::CloseoutStarted
                 | EventKind::CloseoutOutput
                 | EventKind::CloseoutBypassed
+                | EventKind::CloseoutEnabled
                 | EventKind::AskQueued
                 | EventKind::AskDequeued => Ok(serde_json::json!({})),
             }

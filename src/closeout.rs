@@ -137,6 +137,7 @@ pub struct CloseoutState {
     pub stop: Option<String>,
     pub proof_items: Vec<ProofItem>,
     pub bypassed: bool,
+    pub(crate) retry_epoch: String,
     snapshot: HashMap<String, u64>,
     pub(crate) workspace: Option<PathBuf>,
     pub(crate) base_ref_name: Option<String>,
@@ -188,6 +189,14 @@ impl CloseoutState {
         for event in events {
             match event.kind {
                 EventKind::CloseoutBypassed => self.bypassed = true,
+                EventKind::CloseoutEnabled => {
+                    self.bypassed = false;
+                    self.retry_epoch = event.id.clone();
+                    for state in self.items.values_mut() {
+                        state.passed = false;
+                        state.failures = 0;
+                    }
+                }
                 EventKind::CloseoutChanged => {
                     if let Ok(body) = event.body_as::<CloseoutChangedBody>() {
                         for path in body.paths {

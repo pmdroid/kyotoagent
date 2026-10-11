@@ -726,7 +726,7 @@ fn the_pane_commands_are_titled_rows_and_slash_rows() {
         (
             "/closeout",
             "/closeout",
-            "show or hide the closeout pane",
+            "show or hide checks; /closeout enable restores checks",
             RightPane::Closeout,
         ),
     ];

@@ -136,6 +136,8 @@ pub(crate) struct AttemptIdentity {
     pub base: String,
     pub head: String,
     pub task: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub retry_epoch: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -227,6 +229,7 @@ impl RetryLedger {
                 entry.state == "failed"
                     && entry.identity.item_id == identity.item_id
                     && entry.identity.policy_digest == identity.policy_digest
+                    && entry.identity.retry_epoch == identity.retry_epoch
                     && match scope {
                         RetryScope::Task => entry.identity.task == identity.task,
                         RetryScope::Candidate => {
@@ -293,6 +296,7 @@ mod tests {
             base: "base".into(),
             head: "head".into(),
             task: "task".into(),
+            retry_epoch: String::new(),
         }
     }
 
@@ -323,6 +327,35 @@ mod tests {
         next.policy_digest = "changed-policy".into();
         assert_eq!(ledger.failures(&next, RetryScope::Task), 0);
         assert_eq!(ledger.start(first).unwrap(), 6);
+        drop(ledger);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn fresh_session_budgets_preserve_shared_failure_evidence() {
+        let dir = std::env::temp_dir().join(crate::session::new_task_id());
+        let (_, mut cancel) = tokio::sync::watch::channel(false);
+        let mut ledger = RetryLedger::lock(&dir, &mut cancel).await.unwrap();
+        let original = identity();
+        ledger.start(original.clone()).unwrap();
+        ledger.finish("failed").unwrap();
+        let mut enabled = original.clone();
+        enabled.retry_epoch = "session:e10".into();
+        for scope in [RetryScope::Task, RetryScope::Candidate] {
+            assert_eq!(ledger.failures(&enabled, scope), 0);
+            assert_eq!(ledger.failures(&original, scope), 1);
+        }
+        assert_eq!(ledger.start(enabled.clone()).unwrap(), 2);
+        ledger.finish("failed").unwrap();
+        drop(ledger);
+        let ledger = RetryLedger::lock(&dir, &mut cancel).await.unwrap();
+        for scope in [RetryScope::Task, RetryScope::Candidate] {
+            assert_eq!(ledger.failures(&enabled, scope), 1);
+            assert_eq!(ledger.failures(&original, scope), 1);
+            let mut another = enabled.clone();
+            another.retry_epoch = "other-session:e10".into();
+            assert_eq!(ledger.failures(&another, scope), 0);
+        }
         drop(ledger);
         std::fs::remove_dir_all(dir).unwrap();
     }

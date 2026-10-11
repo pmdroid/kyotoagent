@@ -1145,6 +1145,12 @@ impl Runner {
             }
             return self.btw(session_id, question).map(AskOutcome::Btw);
         }
+        if text.trim() == "/closeout enable" {
+            if !images.is_empty() {
+                return Err(TurnError::Goal("Closeout commands take text only.".into()));
+            }
+            return self.enable_closeout(&state);
+        }
         if let Some(command) = text
             .trim()
             .strip_prefix("/goal")
