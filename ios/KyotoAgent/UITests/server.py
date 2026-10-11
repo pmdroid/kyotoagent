@@ -46,7 +46,7 @@ class Handler(BaseHTTPRequestHandler):
             session.update(status="waiting", waiting="question")
             view.update(status="waiting", closeout_bypassed=False, closeout=[{"id": "tests", "kind": "command", "hint": "Run tests", "status": "failed", "required": True, "attempt": 3, "exit": 1, "tail": "Test suite failed"}])
             view["revision"] += 1
-            view["cards"] = [{"id": str(view["revision"]), "kind": "question", "at": "now", "body": {"eventId": "closeout-question", "text": "Check tests failed 3 times. Retry limit reached. Stop to investigate, or accept failed closeout for this session. Failures stay recorded.", "choices": ["Stop", "Accept failed closeout for this session"], "answer": None}}]
+            view["cards"] = [{"id": str(view["revision"]), "kind": "question", "at": "now", "body": {"eventId": "closeout-question", "text": "Check tests failed 3 times. Retry limit reached.\nStop to investigate, or accept failed closeout for this session. Acceptance skips further closeout checks and lets this session finish. Failures stay recorded.", "choices": ["Stop", "Accept failed closeout for this session"], "answer": None}}]
             self.reply(202, {"turnId": "fixture"})
             return
         if self.path.endswith("/answers"):
