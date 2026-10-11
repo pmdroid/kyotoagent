@@ -50,14 +50,27 @@ impl Runner {
         if parent.archived {
             return "the session is archived".to_string();
         }
-        if let Some(model) = input.model.as_deref() {
-            let catalog = self.list_models().await;
-            if let Err(error) = subagent::model_allowed(model, &parent.model, &catalog) {
-                return error;
-            }
-        }
+        let catalog = self.list_models().await;
+        let current = self.current_config();
+        let selection = match subagent::resolve_model(
+            input.model.as_deref(),
+            &crate::session::SessionModel {
+                model: parent.model.clone(),
+                effort: parent.effort.clone(),
+                provider: parent
+                    .model_override
+                    .as_ref()
+                    .and_then(|selection| selection.provider.clone())
+                    .or_else(|| current.provider.clone()),
+            },
+            &catalog,
+            current.provider.as_deref(),
+        ) {
+            Ok(selection) => selection,
+            Err(error) => return error,
+        };
         if let Some(from) = input.resume_from.clone() {
-            return self.resume_child(&parent, &input, &from).await;
+            return self.resume_child(&parent, &input, &from, selection).await;
         }
         let id = subagent::new_id(
             parent_state
@@ -70,8 +83,7 @@ impl Runner {
             Ok(workspace) => workspace,
             Err(error) => return error,
         };
-        let model = input.model.clone().unwrap_or_else(|| parent.model.clone());
-        let mut meta = SessionMeta::new(&id, &workspace, &model, &now());
+        let mut meta = SessionMeta::new(&id, &workspace, &selection.model, &now());
         meta.parent_id = Some(parent.id.clone());
         meta.closeout_reviewer = skill_directory.is_some();
         if let Some(directory) = skill_directory {
@@ -87,11 +99,8 @@ impl Runner {
         meta.enhance = false;
         meta.show_closeout = parent.show_closeout;
         meta.profile = parent.profile.clone();
-        meta.effort = parent.effort.clone();
-        meta.model_override = parent.model_override.clone().map(|mut selection| {
-            selection.model = model.clone();
-            selection
-        });
+        meta.effort = selection.effort.clone();
+        meta.model_override = Some(selection);
         meta.requested_workspace = parent
             .requested_workspace
             .clone()
@@ -301,7 +310,13 @@ impl Runner {
         );
     }
 
-    async fn resume_child(&self, parent: &SessionMeta, input: &SpawnInput, from: &str) -> String {
+    async fn resume_child(
+        &self,
+        parent: &SessionMeta,
+        input: &SpawnInput,
+        from: &str,
+        selection: crate::session::SessionModel,
+    ) -> String {
         let Some(child_state) = self.child_session(&parent.id, from) else {
             return "resume_from needs a finished child of this session".to_string();
         };
@@ -312,14 +327,8 @@ impl Runner {
         if child_meta.status != Status::Idle {
             return "resume_from needs a finished child of this session".to_string();
         }
-        if let Some(model) = input.model.clone() {
-            if let Err(error) = child_state.session.update(|meta| {
-                if let Some(selection) = &mut meta.model_override {
-                    selection.model = model.clone();
-                }
-                meta.model = model;
-                true
-            }) {
+        if input.model.is_some() {
+            if let Err(error) = child_state.session.set_session_model(selection) {
                 return error.to_string();
             }
         }
