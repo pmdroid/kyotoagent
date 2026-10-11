@@ -141,9 +141,10 @@ same base and head. Public policies without `retry` have no failure limit.
 Imported policies cannot set it. Exhaustion blocks completion and PR creation
 and asks the operator for help.
 
-Goal runs use their persisted goal ID. For ordinary sessions, supply the same
-ID with `kyoto new --task <id>` or `taskId` when creating a session through the
-API. A task ID must be nonblank and at most 256 bytes. Kyoto retains the retry
+Goal runs use their persisted goal ID. Ordinary sessions default to their session
+ID. To share a retry budget across sessions, supply the same ID with
+`kyoto new --task <id>` or `taskId` when creating a session through the API.
+A task ID must be nonblank and at most 256 bytes. Kyoto retains the retry
 records under its server root and serializes attempts sharing a repository.
 Failed review findings count; invalid, stale, and independence results do not.
 

@@ -533,12 +533,12 @@ fn retry_identity(
             goal.id.clone()
         }
     } else {
-        meta.task_id.unwrap_or_default()
+        meta.task_id.unwrap_or_else(|| meta.id.clone())
     };
     if policy.scope == crate::closeout::RetryScope::Task
         && (task.trim().is_empty() || task.len() > 256)
     {
-        return Err("Closeout is blocked: task retry scope requires a stable task ID. Create a session with taskId or use kyoto new --task <id>. Keep the same ID across sessions and commits.".into());
+        return Err("Closeout is blocked: taskId must be nonblank and at most 256 bytes.".into());
     }
     let workspace = turn.tools.workspace();
     let head = git_output(workspace, &["rev-parse", "HEAD"])

@@ -788,7 +788,9 @@ async fn create_session(
     let session = Session::at(&session_dir(&state.root, &id));
     let model = state.runner.model();
     let mut meta = SessionMeta::new(&id, &workspace, &model, &now());
-    meta.task_id = body.task_id;
+    if let Some(task_id) = body.task_id {
+        meta.task_id = Some(task_id);
+    }
     let requested_text = requested.display().to_string();
     let workspace_text = workspace.display().to_string();
     meta.requested_workspace = Some(requested_text.clone());
