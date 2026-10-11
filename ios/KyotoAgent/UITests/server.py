@@ -42,11 +42,31 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/pair":
             self.reply(200, {"server": {"name": "Composer fixture", "version": "1", "workspace": "/test", "model": "fixture-model", "yolo": False, "enhance": False, "show_closeout": False}, "client": body, "models": [], "repositories": []})
             return
+        if self.path.endswith("/messages") and body.get("text") == "/fixture closeout":
+            session.update(status="waiting", waiting="question")
+            view.update(status="waiting", closeout_bypassed=False, closeout=[{"id": "tests", "kind": "command", "hint": "Run tests", "status": "failed", "required": True, "attempt": 3, "exit": 1, "tail": "Test suite failed"}])
+            view["revision"] += 1
+            view["cards"] = [{"id": str(view["revision"]), "kind": "question", "at": "now", "body": {"eventId": "closeout-question", "text": "Check tests failed 3 times. Retry limit reached. Stop to investigate, or accept failed closeout for this session. Failures stay recorded.", "choices": ["Stop", "Accept failed closeout for this session"], "answer": None}}]
+            self.reply(202, {"turnId": "fixture"})
+            return
+        if self.path.endswith("/answers"):
+            if body.get("id") != "closeout-question" or body.get("choice") != "Accept failed closeout for this session":
+                self.reply(400, {})
+                return
+            session.update(status="idle", waiting=None)
+            view.update(status="idle", closeout_bypassed=True)
+            view["revision"] += 1
+            view["cards"][0]["body"]["answer"] = body["choice"]
+            self.reply(204, {})
+            return
         if self.path.endswith("/model/session"):
             session["model"] = body["model"]
             text = "Model saved"
         elif self.path.endswith("/messages"):
             text = body["text"]
+            if text == "/closeout enable":
+                view["closeout_bypassed"] = False
+                text = "Closeout enabled for this session with a fresh retry budget."
         else:
             self.reply(204, {})
             return
