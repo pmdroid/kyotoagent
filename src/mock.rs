@@ -335,11 +335,11 @@ pub fn closeout_asked() -> ScreenModel {
         cards: vec![
             Card::ask(THE_ASK),
             Card::question(
-                &format!(
-                    "Check {} used all {CHECK_MAX_FAILURES} failed attempts.",
-                    CHECK.id
-                ),
-                &[("continue", false), ("stop", false)],
+                &crate::closeout::exhausted_question(CHECK.id, CHECK_MAX_FAILURES),
+                &[
+                    ("Stop", false),
+                    (crate::closeout::ACCEPT_FAILED_CLOSEOUT, false),
+                ],
             ),
         ],
         bottom: String::new(),

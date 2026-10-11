@@ -747,7 +747,7 @@ fn command_catalog(_skills: &[SkillEntry]) -> Vec<CatalogRow> {
         catalog_row(
             "/closeout",
             "/closeout",
-            "show or hide the closeout pane",
+            "show or hide checks; /closeout enable restores checks",
             CommandAction::TogglePane(RightPane::Closeout),
         ),
     ];

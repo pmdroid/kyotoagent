@@ -290,10 +290,11 @@ impl Card {
                         } else {
                             theme::faint()
                         };
-                        body.push(Line::from(Span::styled(
-                            format!("{marker} {}  {}", index + 1, choice.label),
+                        body.extend(wrapped(
+                            &format!("{marker} {}  {}", index + 1, choice.label),
+                            text_width,
                             style,
-                        )));
+                        ));
                     }
                 }
             }

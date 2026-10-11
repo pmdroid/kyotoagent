@@ -114,6 +114,13 @@ impl std::fmt::Display for CloseoutError {
 
 impl std::error::Error for CloseoutError {}
 
+pub const ACCEPT_FAILED_CLOSEOUT: &str = "Accept failed closeout for this session";
+
+pub fn exhausted_question(id: &str, failures: u32) -> String {
+    let times = if failures == 1 { "time" } else { "times" };
+    format!("Check {id} failed {failures} {times}. Retry limit reached.\nStop to investigate, or accept failed closeout for this session. Acceptance skips further closeout checks and lets this session finish. Failures stay recorded.")
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ItemState {
     pub attempts: u32,
@@ -129,6 +136,8 @@ pub struct CloseoutState {
     pub written_paths: Vec<String>,
     pub stop: Option<String>,
     pub proof_items: Vec<ProofItem>,
+    pub bypassed: bool,
+    pub(crate) retry_epoch: String,
     snapshot: HashMap<String, u64>,
     pub(crate) workspace: Option<PathBuf>,
     pub(crate) base_ref_name: Option<String>,
@@ -179,6 +188,15 @@ impl CloseoutState {
     pub fn replay(&mut self, events: &[Event]) {
         for event in events {
             match event.kind {
+                EventKind::CloseoutBypassed => self.bypassed = true,
+                EventKind::CloseoutEnabled => {
+                    self.bypassed = false;
+                    self.retry_epoch = event.id.clone();
+                    for state in self.items.values_mut() {
+                        state.passed = false;
+                        state.failures = 0;
+                    }
+                }
                 EventKind::CloseoutChanged => {
                     if let Ok(body) = event.body_as::<CloseoutChangedBody>() {
                         for path in body.paths {
@@ -247,6 +265,9 @@ impl CloseoutState {
     }
 
     pub fn required_blocker(&self) -> Option<String> {
+        if self.bypassed {
+            return None;
+        }
         let file = self.file.as_ref()?;
         let mut open = Vec::new();
         for item in file.setup.iter().chain(&file.items) {
@@ -263,7 +284,7 @@ impl CloseoutState {
         }
         let mut result = String::from("Cannot finish yet.");
         for (item, state) in open {
-            let status = if file.retry.is_some() && state.failures >= file.max_failures {
+            let status = if state.failures >= file.max_failures {
                 "exhausted"
             } else if state.failures > 0 {
                 "failed"
@@ -309,7 +330,7 @@ impl CloseoutState {
                 .filter(|item| self.is_required(item))
             {
                 let state = self.items.get(&item.id).cloned().unwrap_or_default();
-                let exhausted = file.retry.is_some() && state.failures >= file.max_failures;
+                let exhausted = state.failures >= file.max_failures;
                 let status = if exhausted {
                     blocked = self.required_blocker();
                     "exhausted"
@@ -326,7 +347,7 @@ impl CloseoutState {
                 } else {
                     "missing"
                 };
-                if !state.passed && !exhausted {
+                if !self.bypassed && !state.passed && !exhausted {
                     pending.push(&item.id);
                 }
                 let matched_paths: std::collections::BTreeSet<_> = self
@@ -347,7 +368,7 @@ impl CloseoutState {
                 }));
             }
         }
-        serde_json::json!({"required": required, "pending": pending, "blocked": blocked})
+        serde_json::json!({"required": required, "pending": pending, "blocked": blocked, "bypassed": self.bypassed})
     }
 
     pub fn pinned_run(&self, argv: &[String]) -> Option<String> {
