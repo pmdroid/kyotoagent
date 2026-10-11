@@ -261,6 +261,96 @@ async fn task_scoped_closeout_uses_the_session_id_when_task_id_is_missing() {
 }
 
 #[tokio::test]
+async fn accepting_exhausted_closeout_persists_only_for_the_approved_session() {
+    let write = |path: &str| {
+        Canned::Json(tool_call_reply(vec![(
+            "write_file",
+            serde_json::json!({"path":path,"contents":"changed"}),
+        )]))
+    };
+    let check = |id: &str| {
+        Canned::Json(tool_call_reply(vec![(
+            "run_closeout",
+            serde_json::json!({"id":id}),
+        )]))
+    };
+    let report = || Canned::Json(tool_call_reply(vec![("get_closeout", serde_json::json!({}))]));
+    let finish = || {
+        Canned::Json(tool_call_reply(vec![(
+            "finish",
+            serde_json::json!({"text":"Done."}),
+        )]))
+    };
+    let fixture = Fixture::new(
+        "accept-session-closeout",
+        vec![
+            write("first.txt"),
+            check("test"),
+            report(),
+            check("other"),
+            finish(),
+            write("second.txt"),
+            report(),
+            finish(),
+            write("third.txt"),
+            report(),
+            check("test"),
+        ],
+    );
+    let workspace = fixture.add_session("91bc");
+    let first = Session::at(&fixture.root.join("session-91bc"));
+    first.update(|meta| {
+        meta.task_id = Some("shared-task".into());
+        true
+    }).unwrap();
+    fs::create_dir_all(workspace.join(".agents")).unwrap();
+    fs::write(workspace.join(".agents/closeout.yaml"), "specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 1\n  scope: task\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: ['false']\n    timeoutSeconds: 5\n  - id: other\n    kind: command\n    gate: beforePR\n    exec: ['false']\n    timeoutSeconds: 5\n").unwrap();
+    fixture.ask("91bc", "Write and check");
+    fixture.respond("91bc", Answer::allow_once()).await;
+    fixture.allow_closeout("91bc").await;
+    let question = fixture.wait_for_waiting_question("91bc").await;
+    assert!(question.body["text"].as_str().unwrap().contains("failed 1 time"));
+    assert_eq!(question.body["choices"], serde_json::json!(["Stop", "Accept failed closeout for this session"]));
+    fixture.answer_question("91bc", "Accept failed closeout for this session");
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert_eq!(fixture.closeout_runs("91bc"), 1);
+    let events = first.events().unwrap();
+    assert!(events.iter().any(|event| event.kind.label() == "closeout_bypassed"));
+    let proof = events.iter().rev().find(|event| event.kind == EventKind::Proof).unwrap();
+    assert_eq!(proof.body["items"][0]["outcome"], "failed");
+    assert!(proof.body["text"].as_str().unwrap().contains("accepted by the user"));
+    fixture.ask("91bc", "Continue this session");
+    fixture.respond("91bc", Answer::allow_once()).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    let reports: Vec<serde_json::Value> = tool_outputs(&fixture.log("91bc"), "get_closeout")
+        .iter().map(|output| serde_json::from_str(output).unwrap()).collect();
+    assert_eq!(reports.len(), 2);
+    for report in reports {
+        assert_eq!(report["bypassed"], true);
+        assert_eq!(report["pending"], serde_json::json!([]));
+        assert!(report["blocked"].is_null());
+        assert_eq!(report["required"][0]["status"], "exhausted");
+        assert_eq!(report["required"][0]["failed_attempts"], 1);
+    }
+    let second = Session::at(&fixture.root.join("session-92bc"));
+    let mut meta = SessionMeta::new("92bc", &workspace, "test/model", AT);
+    meta.task_id = Some("shared-task".into());
+    second.create(&meta).unwrap();
+    fixture.runner.add_session(&second).unwrap();
+    fixture.ask("92bc", "Continue the shared task in a new session");
+    fixture.respond("92bc", Answer::allow_once()).await;
+    fixture.wait_for_waiting_question("92bc").await;
+    let reports = tool_outputs(&fixture.log("92bc"), "get_closeout");
+    let report: serde_json::Value = serde_json::from_str(&reports[0]).unwrap();
+    assert_eq!(report["bypassed"], false);
+    assert_eq!(report["required"][0]["status"], "exhausted");
+    assert!(report["blocked"].is_string());
+    fixture.answer_question("92bc", "Stop");
+    fixture.wait_for_status("92bc", Status::Idle).await;
+    assert_eq!(fixture.closeout_runs("92bc"), 0);
+}
+
+#[tokio::test]
 async fn task_retry_exhaustion_survives_another_session_and_cannot_be_cleared_by_continue() {
     let write = |path: &str| {
         Canned::Json(tool_call_reply(vec![(
