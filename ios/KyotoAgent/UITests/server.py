@@ -40,6 +40,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         if self.path == "/v1/pair":
+            session.update(status="idle", waiting=None)
+            view.update(status="idle", cards=[], closeout=[], closeout_bypassed=False)
+            view["revision"] += 1
             self.reply(200, {"server": {"name": "Composer fixture", "version": "1", "workspace": "/test", "model": "fixture-model", "yolo": False, "enhance": False, "show_closeout": False}, "client": body, "models": [], "repositories": []})
             return
         if self.path.endswith("/messages") and body.get("text") == "/fixture closeout":
