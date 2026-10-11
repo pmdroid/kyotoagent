@@ -428,8 +428,8 @@ struct TranscriptScreen: SwiftUI.View {
     }
 
     private var coverDetents: Set<PresentationDetent> {
-        if case .answer = shownCover {
-            return [.medium, .large]
+        if case .answer(let sheet) = shownCover {
+            return sheet.isCloseoutAcceptance ? [.large] : [.medium, .large]
         }
         return [.large]
     }
