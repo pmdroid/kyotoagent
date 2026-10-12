@@ -969,6 +969,7 @@ impl Config {
         self.service_tier
             .as_deref()
             .filter(|tier| *tier == crate::chat::FAST_TIER)
+            .map(|_| "priority")
     }
 
     pub fn provider_context_window(&self) -> Option<u64> {
