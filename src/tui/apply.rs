@@ -84,7 +84,9 @@ pub fn apply_pane(app: &mut App, effect: Effect) -> bool {
             true
         }
         Effect::ToggleHeader(id) => {
-            app.list_header = Some(id.clone());
+            if !id.starts_with("children:") {
+                app.list_header = Some(id.clone());
+            }
             if !app.collapsed.remove(&id) {
                 app.collapsed.insert(id);
             }
@@ -93,12 +95,24 @@ pub fn apply_pane(app: &mut App, effect: Effect) -> bool {
         Effect::CollapseHeader => {
             if let Some(id) = app.list_header.clone() {
                 app.collapsed.insert(id);
+            } else {
+                let model = screen_model(app);
+                if screen::has_visible_children(&model, &model.selected) {
+                    app.collapsed.insert(screen::child_group(&model.selected));
+                } else if let Some(parent) =
+                    app.selected_session().and_then(|row| row.parent_id.clone())
+                {
+                    select_session(app, parent);
+                }
             }
             true
         }
         Effect::ExpandHeader => {
             if let Some(id) = app.list_header.clone() {
                 app.collapsed.remove(&id);
+            } else {
+                let model = screen_model(app);
+                app.collapsed.remove(&screen::child_group(&model.selected));
             }
             true
         }
@@ -168,18 +182,11 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
             app.queue_highlight = app.queue_items.get(index).map(|item| item.id.clone());
         }
         Effect::Exit => return Ok(false),
-        Effect::SelectNext => {
-            if let Some(index) = app.sessions.iter().position(|row| row.id == app.selected) {
-                if let Some(next) = app.sessions.get(index + 1) {
-                    select_session(app, next.id.clone());
-                }
-            }
-        }
-        Effect::SelectPrev => {
-            if let Some(index) = app.sessions.iter().position(|row| row.id == app.selected) {
-                if index > 0 {
-                    select_session(app, app.sessions[index - 1].id.clone());
-                }
+        Effect::SelectNext | Effect::SelectPrev => {
+            if let Some(id) =
+                screen::adjacent_session(&screen_model(app), matches!(effect, Effect::SelectNext))
+            {
+                select_session(app, id);
             }
         }
         Effect::SelectSession(id) => {
@@ -2481,6 +2488,14 @@ pub fn take_notices() -> String {
 }
 
 pub(super) fn open_link(app: &mut App, url: &str) {
+    if let Some(id) = url.strip_prefix("kyoto:session/") {
+        if app.sessions.iter().any(|row| row.id == id) {
+            select_session(app, id.to_string());
+        } else {
+            app.notice = Some("Session is not available on this server.".into());
+        }
+        return;
+    }
     if let Err(source) = open_url(url) {
         app.notice = Some(format!("could not open {url}: {source}"));
     }

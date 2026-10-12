@@ -182,6 +182,13 @@ pub(super) fn select_session(app: &mut App, id: String) {
     if let Some(key) = screen::session_group(&rows, &selected) {
         app.collapsed.remove(&key);
     }
+    if let Some(parent) = rows
+        .iter()
+        .find(|row| row.id == selected)
+        .and_then(|row| row.parent_id.as_ref())
+    {
+        app.collapsed.remove(&screen::child_group(parent));
+    }
     app.list_header = None;
     app.open_text = None;
     app.open_image = None;

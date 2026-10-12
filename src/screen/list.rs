@@ -65,7 +65,18 @@ pub(super) fn render_list(model: &ScreenModel, area: Rect, frame: &mut Frame) {
                 } else {
                     Style::default().fg(theme::text())
                 };
-                lines.push(session_name_line(row, is_selected, name_style, width));
+                let mut name = session_name_line(row, is_selected, name_style, width);
+                if has_visible_children(model, &row.id) && width > 0 {
+                    name.spans[0] = Span::styled(
+                        if model.collapsed.contains(&child_group(&row.id)) {
+                            "▸ "
+                        } else {
+                            "▾ "
+                        },
+                        name_style,
+                    );
+                }
+                lines.push(name);
                 let status = Span::styled(
                     row.status_text(),
                     Style::default()
@@ -82,6 +93,18 @@ pub(super) fn render_list(model: &ScreenModel, area: Rect, frame: &mut Frame) {
                 }
                 detail_spans.push(Span::styled("  ", theme::faint()));
                 detail_spans.push(status);
+                let (working, waiting) = child_activity(model, &row.id);
+                if waiting > 0 {
+                    detail_spans.push(Span::styled(
+                        format!(" · {waiting} waiting"),
+                        Style::default().fg(theme::attention()),
+                    ));
+                } else if working > 0 {
+                    detail_spans.push(Span::styled(
+                        format!(" · {working} working"),
+                        theme::faint(),
+                    ));
+                }
                 if let Some(mark) = row.pull_mark() {
                     detail_spans.push(Span::styled(format!("  {mark}"), theme::faint()));
                 }
@@ -160,6 +183,48 @@ fn filter_line(model: &ScreenModel, width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
+pub fn adjacent_session(model: &ScreenModel, forward: bool) -> Option<String> {
+    let ids: Vec<_> = list_pieces(model)
+        .into_iter()
+        .filter_map(|piece| match piece.hit {
+            ListHit::Session(id) => Some(id),
+            _ => None,
+        })
+        .collect();
+    let current = ids.iter().position(|id| id == &model.selected)?;
+    let next = if forward {
+        current.checked_add(1)?
+    } else {
+        current.checked_sub(1)?
+    };
+    ids.get(next).cloned()
+}
+
+pub fn child_group(id: &str) -> String {
+    format!("children:{id}")
+}
+
+pub fn has_visible_children(model: &ScreenModel, id: &str) -> bool {
+    model.sessions.iter().any(|row| {
+        row.parent_id.as_deref() == Some(id)
+            && !row.archived
+            && (!row.hidden || row.status == Status::Waiting)
+    })
+}
+
+pub fn child_activity(model: &ScreenModel, id: &str) -> (usize, usize) {
+    let children = model
+        .sessions
+        .iter()
+        .filter(|row| row.parent_id.as_deref() == Some(id) && !row.archived);
+    children.fold((0, 0), |(working, waiting), row| {
+        (
+            working + usize::from(row.status == Status::Working),
+            waiting + usize::from(row.status == Status::Waiting),
+        )
+    })
+}
+
 pub fn filter_at(column: usize) -> Option<ListFilter> {
     let mut cursor = 0usize;
     for (index, filter) in ListFilter::ORDER.iter().enumerate() {
@@ -187,7 +252,18 @@ pub(super) fn list_pieces(model: &ScreenModel) -> Vec<ListPiece> {
     let shown: Vec<SessionRow> = model
         .sessions
         .iter()
-        .filter(|row| !row.hidden && row_matches_filter(row, model.list_filter))
+        .filter(|row| {
+            (!row.hidden || row.status == Status::Waiting)
+                && row_matches_filter(row, model.list_filter)
+        })
+        .filter(|row| {
+            model.list_filter != ListFilter::All
+                || row.status == Status::Waiting
+                || row
+                    .parent_id
+                    .as_ref()
+                    .is_none_or(|parent| !model.collapsed.contains(&child_group(parent)))
+        })
         .cloned()
         .collect();
     if !sessions_grouped(model) || model.list_filter != ListFilter::All {
@@ -392,6 +468,15 @@ pub(super) fn push_cols(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_navigation_follows_visible_nested_order() {
+        let mut model = crate::mock::children();
+        model.sessions.reverse();
+        assert_eq!(adjacent_session(&model, true).as_deref(), Some("c0ffee00"));
+        model.collapsed.insert(child_group(&model.selected));
+        assert_ne!(adjacent_session(&model, true).as_deref(), Some("c0ffee00"));
+    }
 
     #[test]
     fn a_hidden_child_is_left_out_of_the_list_and_a_visible_child_stays() {

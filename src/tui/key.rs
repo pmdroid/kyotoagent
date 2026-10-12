@@ -81,6 +81,12 @@ pub fn keystroke(app: &App, event: KeyEvent) -> Option<Effect> {
             return Some(Effect::MoveCursor(movement));
         }
     }
+    if !app.overlay && event.modifiers.contains(KeyModifiers::ALT) && event.code == KeyCode::Up {
+        return app
+            .selected_session()
+            .and_then(|row| row.parent_id.clone())
+            .map(Effect::SelectSession);
+    }
     if !app.overlay {
         let files: Vec<_> = app
             .cards

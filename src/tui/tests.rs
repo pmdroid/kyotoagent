@@ -4637,3 +4637,32 @@ async fn composer_question_and_popup_drafts_keep_independent_carets() {
     composer_key(&mut app, KeyCode::Char('?')).await;
     assert_eq!(app.question_text, "answer her!?e");
 }
+
+#[test]
+fn coordinated_children_collapse_and_return_to_parent_without_losing_drafts() {
+    let mut app = App::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), String::new());
+    let model = crate::mock::children();
+    app.sessions = model.sessions;
+    app.selected = "91bc7a1d".into();
+    assert!(apply_pane(&mut app, Effect::CollapseHeader));
+    assert!(app.collapsed.contains(&screen::child_group("91bc7a1d")));
+    let drawn = draw_app(&app);
+    assert!(!drawn.contains("Read the tests"), "{drawn}");
+    assert!(drawn.contains("1 working"), "{drawn}");
+    assert!(apply_pane(&mut app, Effect::ExpandHeader));
+    select_session(&mut app, "c0ffee00".into());
+    let event = KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
+    assert_eq!(
+        keystroke(&app, event),
+        Some(Effect::SelectSession("91bc7a1d".into()))
+    );
+    open_link(&mut app, "kyoto:session/91bc7a1d");
+    assert_eq!(app.selected, "91bc7a1d");
+    app.sessions.last_mut().unwrap().hidden = true;
+    app.sessions.last_mut().unwrap().status = Status::Waiting;
+    app.sessions.last_mut().unwrap().waiting = Some(screen::Wait::Permission);
+    assert!(apply_pane(&mut app, Effect::CollapseHeader));
+    let drawn = draw_app(&app);
+    assert!(drawn.contains("Read the tests"), "{drawn}");
+    assert!(drawn.contains("1 waiting"), "{drawn}");
+}

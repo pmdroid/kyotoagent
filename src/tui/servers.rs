@@ -346,20 +346,11 @@ impl Connections {
     ) -> Result<bool, String> {
         let effect = match effect {
             Effect::SelectNext | Effect::SelectPrev if app.servers.is_some() => {
-                let rows = sessions(app);
-                let selected = selected(app);
-                let index = rows.iter().position(|row| row.id == selected);
-                let next = index
-                    .and_then(|index| {
-                        if matches!(effect, Effect::SelectNext) {
-                            index.checked_add(1)
-                        } else {
-                            index.checked_sub(1)
-                        }
-                    })
-                    .and_then(|index| rows.get(index));
-                match next {
-                    Some(row) => Effect::SelectSession(row.id.clone()),
+                match screen::adjacent_session(
+                    &screen_model(app),
+                    matches!(effect, Effect::SelectNext),
+                ) {
+                    Some(id) => Effect::SelectSession(id),
                     None => return Ok(true),
                 }
             }

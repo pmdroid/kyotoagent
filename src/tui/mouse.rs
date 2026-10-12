@@ -196,7 +196,14 @@ pub(super) fn press_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -
         Some(Effect::DragRight(column))
     } else {
         match screen::list_at(model, area, column, row) {
-            Some(screen::ListHit::Session(id)) => Some(Effect::SelectSession(id)),
+            Some(screen::ListHit::Session(id)) => {
+                let list = screen::split_of(model, area).list;
+                if column == list.x + 1 && screen::has_visible_children(model, &id) {
+                    Some(Effect::ToggleHeader(screen::child_group(&id)))
+                } else {
+                    Some(Effect::SelectSession(id))
+                }
+            }
             Some(screen::ListHit::Header(id)) => Some(Effect::ToggleHeader(id)),
             Some(screen::ListHit::Filter) => {
                 let list = screen::split_of(model, area).list;

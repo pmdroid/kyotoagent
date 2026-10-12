@@ -390,6 +390,12 @@ pub(super) fn link_in_card(
 
 pub(super) fn http_url(value: &str) -> Option<String> {
     let value = value.trim();
+    if value
+        .strip_prefix("kyoto:session/")
+        .is_some_and(|id| !id.is_empty() && id.chars().all(|ch| ch.is_ascii_hexdigit()))
+    {
+        return Some(value.to_string());
+    }
     let rest = value
         .strip_prefix("https:")
         .or_else(|| value.strip_prefix("http:"))?;

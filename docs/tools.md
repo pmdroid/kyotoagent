@@ -70,6 +70,33 @@ same permission and atomic-write checks as other file writes. The destination's
 parent directory must already exist. Use `read_file` to inspect the saved image
 and `attach_artifact` to share it.
 
+## Coordinated child sessions
+
+`create_session` starts a background child with `prompt`, `description`, and
+`lifetime` (`temporary` or `lasting`). Optional `model`, `cwd`, `isolation`
+(`none` or `worktree`), and `visible` select its execution environment. Lasting
+children are visible by default; temporary workers are hidden by default.
+
+`list_children` discovers this parent's children, their status, and latest
+reports. `message_session` sends a follow-up to a direct child, preserving its
+history, and returns whether the task started or queued. `stop_session` stops
+execution without deleting history or workspace changes. `archive_session`
+retains coordinated children and their workspaces; archiving their parent
+stops and archives them too.
+
+The parent can finish a reply while children continue. Child reports wake the
+parent independently, and persisted reports are recovered after a restart.
+Permissions still require the user's answer in the child session. The parent
+owns integration and required verification before claiming completion.
+
+In the TUI, visible children sit below their parent. Left/right collapse or
+expand a parent's children with an empty composer; Alt-Up returns from a child
+to its parent. Waiting children remain discoverable even when hidden or
+collapsed. Markdown links using `kyoto:session/<child-id>` open a session on the
+current server.
+
+Use `/chief-of-staff` with a goal to coordinate this workflow through the skill.
+
 ## The turn loop
 
 `turn::Runner` runs one ask as a tool loop against the chat client. The core tools include `read_file`, `grep`, `list_dir`, `search_replace`, `write_file`,
