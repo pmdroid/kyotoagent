@@ -748,11 +748,8 @@ async fn a_provider_that_takes_effort_posts_reasoning_effort() {
 }
 
 #[tokio::test]
-async fn fast_mode_posts_the_openai_service_tier_and_omits_it_when_off() {
-    let server = FakeServer::start(vec![
-        Canned::Json(a_text_reply()),
-        Canned::Json(a_text_reply()),
-    ]);
+async fn fast_mode_posts_priority_and_omits_it_when_off() {
+    let server = FakeServer::start(vec![Canned::Json(a_text_reply()); 6]);
     let mut config = Config::from_toml(&format!(
         "base_url = \"{base}\"\nmodel = \"gpt-6.1-sol\"\n",
         base = server.base_url()
@@ -762,12 +759,51 @@ async fn fast_mode_posts_the_openai_service_tier_and_omits_it_when_off() {
     let client = ChatClient::new(&config).unwrap();
     client.complete(&a_conversation(), &[]).await.unwrap();
     let body = server.received()[0].body_json();
-    assert_eq!(body["service_tier"], Value::from("fast"));
-    config.service_tier = Some("priority".into());
-    let client = ChatClient::new(&config).unwrap();
+    assert_eq!(body["service_tier"], Value::from("priority"));
+    client.compact(&a_conversation()).await.unwrap();
+    assert_eq!(server.received()[1].body_json()["service_tier"], "priority");
+    client.title("title", "Name this").await.unwrap();
+    client.rewrite("rewrite", &a_conversation()).await.unwrap();
+    for request in &server.received()[2..] {
+        assert!(request.body_json().get("service_tier").is_none());
+    }
+    for tier in [None, Some("priority")] {
+        config.service_tier = tier.map(str::to_string);
+        let client = ChatClient::new(&config).unwrap();
+        client.complete(&a_conversation(), &[]).await.unwrap();
+        assert!(server
+            .received()
+            .last()
+            .unwrap()
+            .body_json()
+            .get("service_tier")
+            .is_none());
+    }
+}
+
+#[tokio::test]
+async fn codex_fast_mode_posts_priority_for_turns_and_compaction() {
+    let server = FakeServer::start(vec![Canned::Json(a_responses_reply()); 5]);
+    let root = grok_root("codex-fast-wire-tier");
+    write_codex(&root, "access", "refresh", "2035-01-01T00:00:00.000Z");
+    let mut config = Config::from_toml(&codex_file(&server)).unwrap();
+    config.service_tier = Some(crate::chat::FAST_TIER.into());
+    let client = ChatClient::in_root(&config, Some(&root)).unwrap();
     client.complete(&a_conversation(), &[]).await.unwrap();
-    let body = server.received()[1].body_json();
-    assert!(body.get("service_tier").is_none(), "{body}");
+    client.compact(&a_conversation()).await.unwrap();
+    for request in server.received() {
+        assert_eq!(request.path, "/responses");
+        assert_eq!(request.body_json()["service_tier"], "priority");
+    }
+    client.title("title", "Name this").await.unwrap();
+    client.rewrite("rewrite", &a_conversation()).await.unwrap();
+    config.service_tier = None;
+    let client = ChatClient::in_root(&config, Some(&root)).unwrap();
+    client.complete(&a_conversation(), &[]).await.unwrap();
+    for request in &server.received()[2..] {
+        assert!(request.body_json().get("service_tier").is_none());
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]
