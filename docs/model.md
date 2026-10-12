@@ -189,6 +189,7 @@ with an `id` in `service_tiers`, `supported_service_tiers`, and
 
 `/fast`, `/fast on`, and `/fast off` switch the current session. The command
 palette lists it as **Service tier**. A model that does not list `fast` refuses
-the switch. An enabled session sends `service_tier: "fast"` on its chat completion
-or Responses request. Title and rewrite requests stay on the default tier.
+the switch. An enabled session sends `service_tier: "priority"` on its chat
+completion or Responses request. `fast` is the session-facing name; `priority`
+is the API tier. Title and rewrite requests stay on the default tier.
 A new session starts off. A subagent keeps the parent's tier.

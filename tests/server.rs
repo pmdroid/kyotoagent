@@ -2460,7 +2460,10 @@ async fn codex_fast_mode_accepts_the_live_catalog_shape_and_reaches_responses() 
         let bodies = fixture._fake.bodies();
         let request: Value = serde_json::from_str(bodies.last().unwrap()).unwrap();
         assert_eq!(request["model"], "gpt-6.1-sol");
-        assert_eq!(request["service_tier"].as_str(), expected);
+        assert_eq!(
+            request["service_tier"].as_str(),
+            expected.map(|_| "priority")
+        );
     }
     fixture
         ._fake
