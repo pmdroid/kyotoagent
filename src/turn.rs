@@ -77,6 +77,10 @@ pub fn known_tool_names() -> &'static [&'static str] {
         "check_task",
         "kill_task",
         "spawn_subagent",
+        "create_session",
+        "list_children",
+        "message_session",
+        "stop_session",
         "archive_session",
         "schedule",
         "cancel_schedule",
@@ -256,6 +260,39 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
             }),
         ),
         Tool::new(
+            "create_session",
+            "Create a coordinated child that can work across parent turns. lifetime is temporary or lasting. Lasting children are visible by default; temporary workers are hidden. Results wake the parent. Use message_session for follow-ups and stop_session to stop without deleting work.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string" },
+                    "description": { "type": "string" },
+                    "lifetime": { "type": "string", "enum": ["temporary", "lasting"] },
+                    "isolation": { "type": "string", "enum": ["none", "worktree"] },
+                    "cwd": { "type": "string" },
+                    "model": { "type": "string" },
+                    "visible": { "type": "boolean" }
+                },
+                "required": ["prompt", "description", "lifetime"],
+                "additionalProperties": false
+            }),
+        ),
+        Tool::new(
+            "list_children",
+            "List this session's coordinated children, including archived children, their latest reports, and status.",
+            serde_json::json!({ "type": "object", "properties": {} }),
+        ),
+        Tool::new(
+            "message_session",
+            "Assign follow-up work to a direct coordinated child with its history intact. Starts now or queues while working; refuses a waiting or archived child. Reports return to the parent.",
+            serde_json::json!({ "type": "object", "properties": { "id": { "type": "string" }, "text": { "type": "string" } }, "required": ["id", "text"] }),
+        ),
+        Tool::new(
+            "stop_session",
+            "Stop a direct child and its schedules without deleting its history or workspace.",
+            serde_json::json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }),
+        ),
+        Tool::new(
             "archive_session",
             "Archive a session. Pass id, or omit it to archive this session. This only archives. It cannot restore or delete a session.",
             serde_json::json!({
@@ -344,6 +381,7 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
                     "text": { "type": "string" },
                     "note": { "type": "string" },
                     "proof": { "type": "string" },
+                    "blocker": { "type": "string", "description": "For a child report: the decision or dependency preventing further work." },
                     "checkpoint": {
                         "type": "object",
                         "properties": {
@@ -438,7 +476,14 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         tools.retain(|tool| {
             !matches!(
                 tool.name.as_str(),
-                "ask" | "spawn_subagent" | "get_closeout" | "run_closeout"
+                "ask"
+                    | "spawn_subagent"
+                    | "create_session"
+                    | "list_children"
+                    | "message_session"
+                    | "stop_session"
+                    | "get_closeout"
+                    | "run_closeout"
             )
         });
     }
@@ -742,7 +787,9 @@ impl Flight {
             "generate_image" => "Generating image",
             "run" | "start_task" | "check_task" | "kill_task" => "Running",
             "run_closeout" => "Verifying",
-            "spawn_subagent" => "Delegating",
+            "spawn_subagent" | "create_session" | "message_session" => "Delegating",
+            "list_children" => "Reading",
+            "stop_session" => "Stopping",
             "archive_session" => "Archiving",
             "schedule" | "cancel_schedule" => "Scheduling",
             "todo" => "Organizing",
@@ -850,6 +897,7 @@ pub struct Runner {
     schedule_tx: tokio::sync::mpsc::UnboundedSender<ScheduleWake>,
     clock: Clock,
     child_runs: Mutex<HashMap<String, ChildRun>>,
+    delivering_reports: Mutex<HashSet<String>>,
 }
 
 impl Runner {
@@ -882,6 +930,7 @@ impl Runner {
             schedule_tx,
             clock,
             child_runs: Mutex::new(HashMap::new()),
+            delivering_reports: Mutex::new(HashSet::new()),
         });
         let weak = Arc::downgrade(&runner);
         tokio::spawn(async move {
@@ -1099,6 +1148,16 @@ impl Runner {
             if !meta.archived {
                 state.tools.schedules().arm_pending();
             }
+        }
+        let parents: Vec<_> = self
+            .sessions
+            .lock()
+            .expect("sessions")
+            .keys()
+            .cloned()
+            .collect();
+        for id in parents {
+            self.deliver_child_reports(&id);
         }
         Ok(())
     }
@@ -1337,6 +1396,9 @@ impl Runner {
     fn after_idle(self: &Arc<Self>, state: &Arc<SessionState>) {
         self.drain_asks(state);
         self.flush_wake(state);
+        if let Ok(meta) = state.session.meta() {
+            self.deliver_child_reports(&meta.id);
+        }
     }
 
     fn start_turn(
@@ -1473,6 +1535,17 @@ impl Runner {
                 );
             }
             *done.turn.lock().expect("the turn slot is not poisoned") = None;
+            runner
+                .delivering_reports
+                .lock()
+                .expect("report delivery")
+                .remove(
+                    &turn_ctx
+                        .session
+                        .meta()
+                        .map(|meta| meta.id)
+                        .unwrap_or_default(),
+                );
             runner.settle_child(&done);
             if !done.retiring.load(Ordering::Acquire) {
                 runner.after_idle(&done);
@@ -1615,6 +1688,7 @@ impl Runner {
         };
         state.retiring.store(false, Ordering::Release);
         state.tools.schedules().arm_pending();
+        self.deliver_child_reports(session_id);
     }
 
     pub fn forget(&self, session_id: &str) {
@@ -2180,6 +2254,10 @@ mod tests {
             ("check_task", "Running"),
             ("kill_task", "Running"),
             ("spawn_subagent", "Delegating"),
+            ("create_session", "Delegating"),
+            ("message_session", "Delegating"),
+            ("list_children", "Reading"),
+            ("stop_session", "Stopping"),
             ("archive_session", "Archiving"),
             ("schedule", "Scheduling"),
             ("cancel_schedule", "Scheduling"),

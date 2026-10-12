@@ -33,6 +33,18 @@ pub(super) async fn session_tool(
             }
         }
         "spawn_subagent" => runner.spawn_subagent(&parent_id, args).await,
+        "create_session" => runner.create_session(&parent_id, args).await,
+        "list_children" => runner.list_children(&parent_id),
+        "message_session" => runner.message_session(
+            &parent_id,
+            &string_arg(args, "id").unwrap_or_default(),
+            &string_arg(args, "text").unwrap_or_default(),
+        ),
+        "stop_session" => {
+            runner
+                .stop_session(&parent_id, &string_arg(args, "id").unwrap_or_default())
+                .await
+        }
         "archive_session" => {
             let id = string_arg(args, "id").unwrap_or_default();
             let target = if id.is_empty() {
@@ -86,7 +98,15 @@ pub(super) async fn execute_tool(
     if !config.tool_allowed(profile.as_deref(), call.name.as_str())
         || (session.meta()?.closeout_reviewer && !reviewer_tool(&call.name))
         || (session.meta()?.parent_id.is_some()
-            && matches!(call.name.as_str(), "get_closeout" | "run_closeout"))
+            && matches!(
+                call.name.as_str(),
+                "get_closeout"
+                    | "run_closeout"
+                    | "create_session"
+                    | "list_children"
+                    | "message_session"
+                    | "stop_session"
+            ))
     {
         return Ok(ToolOutcome {
             is_error: true,

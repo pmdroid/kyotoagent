@@ -221,6 +221,7 @@ async fn simultaneous_startup_has_one_owner_and_a_stale_socket_recovers() {
                 .arg("-c")
                 .arg(&script)
                 .env("HOME", &home)
+                .env("KYOTOAGENT_ROOT", home.join(".kyotoagent"))
                 .output()
                 .expect("startup runs")
         })
