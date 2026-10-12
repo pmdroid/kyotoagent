@@ -464,7 +464,20 @@ impl fmt::Display for ChatError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ChatError::Transport(source) => {
-                write!(f, "the model server could not be reached: {source}")
+                if source.is_body() || source.is_decode() {
+                    write!(
+                        f,
+                        "the model server's response body could not be read: {source}"
+                    )?;
+                } else {
+                    write!(f, "the model server could not be reached: {source}")?;
+                }
+                let mut cause = std::error::Error::source(source);
+                while let Some(error) = cause {
+                    write!(f, ": {error}")?;
+                    cause = error.source();
+                }
+                Ok(())
             }
             ChatError::Status { status, body } => {
                 let detail = body.trim();
@@ -733,6 +746,7 @@ impl ChatClient {
                 .await;
             let transient = match &result {
                 Err(ChatError::Status { status, body }) => retry::transient(*status, body),
+                Err(ChatError::Transport(source)) => source.is_body() || source.is_decode(),
                 _ => false,
             };
             if !transient || attempt == retry::MAX_RETRIES {
@@ -742,7 +756,12 @@ impl ChatClient {
                 sink.lock().unwrap().truncate(length);
             }
             let delay = Duration::from_secs(1 << attempt);
-            guard.set(delay);
+            let reason = if matches!(&result, Err(ChatError::Transport(_))) {
+                "Model response interrupted."
+            } else {
+                "Provider busy."
+            };
+            guard.set(delay, reason);
             tokio::time::sleep(delay).await;
             guard.clear();
         }
@@ -1127,7 +1146,7 @@ impl ChatClient {
                 if delay > retry::BUDGET.saturating_sub(waited) {
                     return Err(ChatError::Status { status: 429, body: "Provider busy. The retry delay exceeds the automatic retry budget; try again later.".into() });
                 }
-                guard.set(delay);
+                guard.set(delay, "Provider busy.");
                 let before = tokio::time::Instant::now();
                 tokio::time::sleep(delay.min(Duration::from_secs(1))).await;
                 waited = waited.saturating_add(before.elapsed());
