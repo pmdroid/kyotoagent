@@ -65,7 +65,6 @@ use crate::events::{now, open_enhance, Decision, EventKind};
 use crate::permit::Answer;
 use crate::screen::Status;
 use crate::session::{AllowList, Session, SessionError, SessionMeta, EVENTS_FILE};
-use crate::subagent;
 use crate::tools::{ToolError, Tools};
 use crate::turn::{Runner, TurnError};
 
@@ -1415,11 +1414,11 @@ async fn set_archive(
         return Err(ApiError::not_found());
     }
     if archived {
-        let children = child_ids(&state.root, &id);
-        for child in &children {
-            remove_child(&state, child).await;
-        }
+        session
+            .set_archived(true, &now())
+            .map_err(|source| ApiError::server(source.to_string()))?;
         state.runner.retire(&id).await;
+        state.runner.archive_children(&id).await;
     }
     session
         .set_archived(archived, &now())
@@ -1432,33 +1431,6 @@ async fn set_archive(
         state.runner.resume(&id);
     }
     Ok(StatusCode::NO_CONTENT)
-}
-
-fn child_ids(root: &Path, parent: &str) -> Vec<String> {
-    session_dirs(root)
-        .into_iter()
-        .filter_map(|dir| {
-            let meta = Session::at(&dir).meta().ok()?;
-            (meta.parent_id.as_deref() == Some(parent)).then_some(meta.id)
-        })
-        .collect()
-}
-
-async fn remove_child(state: &AppState, id: &str) {
-    let dir = session_dir(&state.root, id);
-    let Ok(meta) = Session::at(&dir).meta() else {
-        return;
-    };
-    state.runner.finish_for_delete(id).await;
-    if meta.isolation.as_deref() == Some("worktree") {
-        let dest = PathBuf::from(&meta.workspace);
-        let repo = parent_workspace(&state.root, &meta)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| dest.clone());
-        subagent::remove_worktree(&repo, &dest);
-    }
-    state.runner.forget(id);
-    let _ = fs::remove_dir_all(&dir);
 }
 
 async fn delete_session(

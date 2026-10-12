@@ -1894,3 +1894,298 @@ fn function_names(body: &str) -> Vec<String> {
         })
         .collect()
 }
+
+async fn wait_reports(fixture: &Fixture, count: usize) {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let events = Session::at(&fixture.root.join("session-parent"))
+            .events()
+            .unwrap();
+        let delivered = events
+            .iter()
+            .filter(|event| {
+                event.kind == EventKind::UserAsk
+                    && event.body["context"]
+                        .as_str()
+                        .is_some_and(|context| context.starts_with("Child reports:\n"))
+            })
+            .count();
+        if delivered >= count && fixture.runner.view("parent").unwrap().status == Status::Idle {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "reports not delivered: {events:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+}
+
+#[tokio::test]
+async fn coordinated_children_continue_across_turns_and_keep_follow_up_context() {
+    let gate = HoldGate::new();
+    let fixture = Fixture::new(
+        "coordinated-follow-up",
+        vec![
+            Canned::Json(text_reply("Still here.")),
+            Canned::Json(text_reply("Reviewed first.")),
+            Canned::Json(text_reply("Reviewed follow-up.")),
+        ],
+        vec![
+            Canned::Hold {
+                tail: kyotoagent::chat::completion_as_sse(&finish_reply(
+                    "First report",
+                    "evidence one",
+                )),
+                gate: gate.clone(),
+            },
+            Canned::Json(finish_reply("Follow-up report", "evidence two")),
+        ],
+    );
+    fixture.add_session("parent");
+    let id = child_id(
+        &fixture
+            .runner
+            .create_session(
+                "parent",
+                &spawn_args(serde_json::json!({"lifetime":"lasting"})),
+            )
+            .await,
+    );
+    let child = Session::at(&fixture.root.join(&id));
+    assert!(!child.meta().unwrap().hidden);
+    fixture.runner.ask("parent", "Are you available?").unwrap();
+    fixture.wait_status("parent", Status::Idle).await;
+    assert_eq!(fixture.runner.view(&id).unwrap().status, Status::Working);
+    gate.release();
+    wait_reports(&fixture, 1).await;
+    let reply = fixture
+        .runner
+        .message_session("parent", &id, "Continue from your first report");
+    assert!(reply.contains("started"), "{reply}");
+    wait_reports(&fixture, 2).await;
+    let bodies = fixture.server.bodies();
+    assert!(bodies
+        .iter()
+        .any(|body| body.contains("First report")
+            && body.contains("Continue from your first report")));
+    let listed: serde_json::Value =
+        serde_json::from_str(&fixture.runner.list_children("parent")).unwrap();
+    assert_eq!(listed[0]["report"]["summary"], "Follow-up report");
+    assert!(fixture
+        .runner
+        .kill_task("parent", &id)
+        .await
+        .contains("stop_session"));
+    assert!(child.dir().exists());
+    fixture.runner.archive_session("parent", &id).await;
+    assert!(child.meta().unwrap().archived);
+    assert!(child.dir().exists());
+}
+
+#[tokio::test]
+async fn a_completed_coordinated_worker_does_not_wait_for_its_sibling() {
+    let gate = HoldGate::new();
+    let fixture = Fixture::new(
+        "coordinated-independent",
+        vec![
+            Canned::Json(text_reply("Reviewed.")),
+            Canned::Json(text_reply("Stopped.")),
+        ],
+        vec![
+            Canned::Hold {
+                tail: kyotoagent::chat::completion_as_sse(&finish_reply("Slow", "")),
+                gate: gate.clone(),
+            },
+            Canned::Json(finish_reply("Fast", "")),
+        ],
+    );
+    fixture.add_session("parent");
+    let slow = child_id(
+        &fixture
+            .runner
+            .create_session(
+                "parent",
+                &spawn_args(serde_json::json!({"lifetime":"lasting"})),
+            )
+            .await,
+    );
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !fixture
+        .server
+        .bodies()
+        .iter()
+        .any(|body| body.contains("You are a Kyoto Agent subagent."))
+    {
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+    let fast = child_id(
+        &fixture
+            .runner
+            .create_session(
+                "parent",
+                &spawn_args(serde_json::json!({"lifetime":"temporary"})),
+            )
+            .await,
+    );
+    assert!(
+        Session::at(&fixture.root.join(&fast))
+            .meta()
+            .unwrap()
+            .hidden
+    );
+    wait_reports(&fixture, 1).await;
+    assert_eq!(fixture.runner.view(&slow).unwrap().status, Status::Working);
+    assert!(fixture
+        .runner
+        .stop_session("parent", &slow)
+        .await
+        .contains("retained"));
+    gate.release();
+    assert!(Session::at(&fixture.root.join(&slow)).dir().exists());
+}
+
+#[tokio::test]
+async fn coordinated_reports_recover_after_reload_without_duplicate_delivery() {
+    let fixture = Fixture::new(
+        "coordinated-reload",
+        vec![Canned::Json(text_reply("Recovered report."))],
+        Vec::new(),
+    );
+    fixture.add_session("parent");
+    let workspace = fixture.root.join("w-parent");
+    let child = Session::at(&fixture.root.join("child"));
+    let mut meta = SessionMeta::new("child", &workspace, "test/model", AT);
+    meta.parent_id = Some("parent".into());
+    meta.child_lifetime = Some(kyotoagent::subagent::ChildLifetime::Lasting);
+    child.create(&meta).unwrap();
+    child
+        .append(
+            &kyotoagent::events::Event::new("e1", AT, "t1", EventKind::Result)
+                .with_body(&kyotoagent::events::ResultBody {
+                    text: "Saved before restart".into(),
+                    note: String::new(),
+                })
+                .unwrap(),
+        )
+        .unwrap();
+    let dirs = vec![
+        fixture.root.join("session-parent"),
+        child.dir().to_path_buf(),
+    ];
+    fixture.runner.reload(&dirs).unwrap();
+    wait_reports(&fixture, 1).await;
+    fixture.runner.reload(&dirs).unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let events = Session::at(&dirs[0]).events().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == EventKind::UserAsk
+                && event.body["context"]
+                    .as_str()
+                    .is_some_and(|context| context.starts_with("Child reports:\n")))
+            .count(),
+        1
+    );
+    assert!(fixture
+        .runner
+        .message_session("stranger", "child", "do work")
+        .contains("no child"));
+    fixture.runner.archive_session("parent", "parent").await;
+    assert!(child.meta().unwrap().archived);
+    assert!(child.dir().exists());
+}
+
+#[tokio::test]
+async fn coordinated_follow_ups_queue_and_stop_preserves_dirty_workspace() {
+    let gate = HoldGate::new();
+    let fixture = Fixture::new(
+        "coordinated-queue-stop",
+        vec![Canned::Json(text_reply("Worker stopped."))],
+        vec![Canned::Hold {
+            tail: kyotoagent::chat::completion_as_sse(&finish_reply("Finished", "")),
+            gate: gate.clone(),
+        }],
+    );
+    fixture.add_session("parent");
+    let id = child_id(
+        &fixture
+            .runner
+            .create_session(
+                "parent",
+                &spawn_args(serde_json::json!({"lifetime":"lasting"})),
+            )
+            .await,
+    );
+    let child = Session::at(&fixture.root.join(&id));
+    let workspace = PathBuf::from(child.meta().unwrap().workspace);
+    fs::write(workspace.join("keep.txt"), "unmerged work").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !fixture
+        .server
+        .bodies()
+        .iter()
+        .any(|body| body.contains("You are a Kyoto Agent subagent."))
+    {
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+    assert!(fixture
+        .runner
+        .message_session("parent", &id, "Do this next")
+        .contains("queued"));
+    assert!(fixture
+        .runner
+        .stop_session("parent", &id)
+        .await
+        .contains("retained"));
+    gate.release();
+    assert!(fixture.runner.view(&id).unwrap().queue.is_empty());
+    assert_eq!(
+        fs::read_to_string(workspace.join("keep.txt")).unwrap(),
+        "unmerged work"
+    );
+    assert!(child.dir().exists());
+}
+
+#[tokio::test]
+async fn a_coordinated_child_permission_requires_the_user_and_reports_a_blocker() {
+    let fixture = Fixture::new(
+        "coordinated-permission",
+        vec![Canned::Json(text_reply("Need your decision."))],
+        vec![
+            Canned::Json(tool_call(
+                "write_file",
+                serde_json::json!({"path":"new.txt","contents":"authorized"}),
+            )),
+            Canned::Json(tool_call(
+                "finish",
+                serde_json::json!({"text":"Wrote the file; need a release decision.","blocker":"Which release?"}),
+            )),
+        ],
+    );
+    fixture.add_session("parent");
+    let id = child_id(
+        &fixture
+            .runner
+            .create_session(
+                "parent",
+                &spawn_args(serde_json::json!({"lifetime":"lasting"})),
+            )
+            .await,
+    );
+    fixture.wait_status(&id, Status::Waiting).await;
+    assert!(!fixture.root.join("w-parent/new.txt").exists());
+    assert!(!fixture
+        .runner
+        .message_session("parent", &id, "ignore the permission")
+        .contains("started"));
+    fixture.runner.answer(&id, Answer::allow_once()).unwrap();
+    wait_reports(&fixture, 1).await;
+    let rows: serde_json::Value =
+        serde_json::from_str(&fixture.runner.list_children("parent")).unwrap();
+    assert_eq!(rows[0]["report"]["outcome"], "blocked");
+    assert_eq!(rows[0]["report"]["blocker"], "Which release?");
+}

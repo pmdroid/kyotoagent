@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::chat::ModelRow;
@@ -14,6 +14,76 @@ use crate::session::{AllowList, Session, SessionModel};
 pub const FOREGROUND_BUDGET: Duration = Duration::from_secs(60);
 pub const DEPTH_ERROR: &str = "spawn_subagent is refused at depth 1";
 pub const CWD_WORKTREE_ERROR: &str = "cwd and worktree cannot both be set";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChildLifetime {
+    Temporary,
+    Lasting,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChildReport {
+    pub child_id: String,
+    pub assignment_id: String,
+    pub result_id: String,
+    pub outcome: String,
+    pub summary: String,
+    pub proof: String,
+    pub evidence: Vec<crate::proof::ProofFile>,
+    pub blocker: Option<String>,
+}
+
+pub fn reports(session: &Session) -> Vec<ChildReport> {
+    let Ok(meta) = session.meta() else {
+        return Vec::new();
+    };
+    let Ok(events) = session.events() else {
+        return Vec::new();
+    };
+    events
+        .iter()
+        .filter(|event| event.kind == EventKind::Result)
+        .filter_map(|event| {
+            let body = event.body_as::<ResultBody>().ok()?;
+            let proof = events
+                .iter()
+                .find(|proof| proof.kind == EventKind::Proof && proof.turn_id == event.turn_id)
+                .and_then(|proof| proof.body_as::<ProofBody>().ok());
+            let evidence = proof
+                .as_ref()
+                .map(|proof| proof.files.clone())
+                .unwrap_or_default();
+            let proof = proof.map(|proof| proof.text).unwrap_or_default();
+            let blocker = events
+                .iter()
+                .filter(|call| call.kind == EventKind::ToolCall && call.turn_id == event.turn_id)
+                .filter(|call| call.body["tool"] == "finish")
+                .filter_map(|call| call.body["args"]["blocker"].as_str())
+                .rfind(|blocker| !blocker.trim().is_empty())
+                .map(str::to_string);
+            Some(ChildReport {
+                child_id: meta.id.clone(),
+                assignment_id: event.turn_id.clone(),
+                result_id: event.id.clone(),
+                outcome: if body.text == "Stopped." {
+                    "cancelled"
+                } else if body.text == "The server stopped." {
+                    "interrupted"
+                } else if blocker.is_some() {
+                    "blocked"
+                } else {
+                    "reported"
+                }
+                .into(),
+                blocker,
+                summary: body.text,
+                proof,
+                evidence,
+            })
+        })
+        .collect()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Isolation {

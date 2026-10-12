@@ -17,6 +17,195 @@ impl Runner {
         self.spawn_child(session_id, args, None).await
     }
 
+    pub async fn create_session(&self, session_id: &str, args: &Value) -> String {
+        if !matches!(
+            args.get("lifetime").and_then(Value::as_str),
+            Some("temporary" | "lasting")
+        ) {
+            return "lifetime must be temporary or lasting".into();
+        }
+        if args.get("resume_from").is_some() {
+            return "Use message_session to follow up with an existing child.".into();
+        }
+        self.spawn_child(session_id, args, None).await
+    }
+
+    pub fn list_children(&self, session_id: &str) -> String {
+        let children = self.coordinated_children(session_id, false);
+        let rows: Vec<Value> = children
+            .iter()
+            .filter_map(|child| {
+                let meta = child.session.meta().ok()?;
+                Some(serde_json::json!({
+                    "id": meta.id, "description": meta.description, "lifetime": meta.child_lifetime,
+                    "workspace": meta.workspace, "hidden": meta.hidden, "archived": meta.archived,
+                    "snapshot": subagent::snapshot(&child.session),
+                    "report": subagent::reports(&child.session).last(),
+                }))
+            })
+            .collect();
+        serde_json::to_string(&rows).unwrap_or_default()
+    }
+
+    pub fn message_session(&self, parent_id: &str, id: &str, text: &str) -> String {
+        let Some(child) = self.child_session(parent_id, id) else {
+            return "no child session with this id".into();
+        };
+        if !child
+            .session
+            .meta()
+            .is_ok_and(|meta| meta.child_lifetime.is_some())
+        {
+            return "Use spawn_subagent resume_from for this worker.".into();
+        }
+        if text.trim().is_empty() || text.trim_start().starts_with('/') {
+            return "message_session needs a non-empty task, not a slash command".into();
+        }
+        match self.ask_with(id, text, Some(false)) {
+            Ok(AskOutcome::Started(assignment_id)) => {
+                serde_json::json!({"id": id, "state": "started", "assignment_id": assignment_id})
+                    .to_string()
+            }
+            Ok(AskOutcome::Queued(queue_id)) => {
+                serde_json::json!({"id": id, "state": "queued", "queue_id": queue_id}).to_string()
+            }
+            Ok(_) => "the message did not start".into(),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    pub async fn stop_session(&self, parent_id: &str, id: &str) -> String {
+        if self.child_session(parent_id, id).is_none() {
+            return "no child session with this id".into();
+        }
+        self.retire(id).await;
+        if let Some(child) = self.session_state(id) {
+            for schedule in child.tools.schedules().pending().unwrap_or_default() {
+                let _ = child.tools.schedules().cancel("stop", &schedule.id);
+            }
+            child.pending_wakes.lock().expect("pending wakes").clear();
+            let queued: Vec<_> = child
+                .ask_queue
+                .lock()
+                .expect("ask queue")
+                .iter()
+                .map(|ask| ask.id.clone())
+                .collect();
+            for queued_id in queued {
+                let _ = self.remove_queued(id, &queued_id);
+            }
+        }
+        format!("stopped {id}; session history and workspace retained")
+    }
+
+    fn coordinated_children(&self, parent_id: &str, active_only: bool) -> Vec<Arc<SessionState>> {
+        let mut children: Vec<_> = self
+            .sessions
+            .lock()
+            .expect("sessions")
+            .values()
+            .filter(|child| {
+                child.session.meta().is_ok_and(|meta| {
+                    meta.parent_id.as_deref() == Some(parent_id)
+                        && meta.child_lifetime.is_some()
+                        && (!active_only || !meta.archived)
+                })
+            })
+            .cloned()
+            .collect();
+        children.sort_by_key(|child| child.session.meta().map(|meta| meta.id).unwrap_or_default());
+        children
+    }
+
+    pub(super) fn deliver_child_reports(&self, parent_id: &str) {
+        let Some(parent) = self.session_state(parent_id) else {
+            return;
+        };
+        if self.occupied(&parent)
+            || self.waiting(&parent)
+            || parent.session.meta().is_ok_and(|meta| {
+                meta.goal.is_some_and(|goal| {
+                    matches!(
+                        goal.status,
+                        crate::goal::GoalStatus::Paused | crate::goal::GoalStatus::BudgetExhausted
+                    )
+                })
+            })
+            || parent.retiring.load(Ordering::Acquire)
+            || parent.session.meta().is_ok_and(|meta| meta.archived)
+        {
+            return;
+        }
+        let mut delivering = self.delivering_reports.lock().expect("report delivery");
+        if delivering.contains(parent_id) {
+            return;
+        }
+        let events = parent.session.events().unwrap_or_default();
+        let delivered: HashSet<String> = events
+            .iter()
+            .filter(|event| {
+                event.kind == EventKind::UserAsk
+                    && events.iter().any(|result| {
+                        result.kind == EventKind::Result
+                            && result.turn_id == event.turn_id
+                            && result
+                                .body_as::<ResultBody>()
+                                .is_ok_and(|body| body.text != "The server stopped.")
+                    })
+            })
+            .filter_map(|event| event.body_as::<AskBody>().ok())
+            .filter_map(|body| {
+                body.context
+                    .strip_prefix("Child reports:\n")
+                    .map(str::to_string)
+            })
+            .filter_map(|context| serde_json::from_str::<Vec<subagent::ChildReport>>(&context).ok())
+            .flatten()
+            .map(|report| format!("{}:{}", report.child_id, report.result_id))
+            .collect();
+        let reports: Vec<_> = self
+            .coordinated_children(parent_id, false)
+            .iter()
+            .filter(|child| !self.occupied(child))
+            .flat_map(|child| subagent::reports(&child.session))
+            .filter(|report| {
+                !delivered.contains(&format!("{}:{}", report.child_id, report.result_id))
+            })
+            .collect();
+        if reports.is_empty() {
+            return;
+        }
+        let context = format!(
+            "Child reports:\n{}",
+            serde_json::to_string(&reports).unwrap_or_default()
+        );
+        delivering.insert(parent_id.to_string());
+        if !matches!(self.start_turn(&parent, "Child sessions reported back. Review their results and continue coordinating the user's request.", &context, None, true, Vec::new()), Ok(TurnStart::Id(_))) {
+            delivering.remove(parent_id);
+        }
+    }
+
+    pub async fn archive_children(&self, parent_id: &str) {
+        let children: Vec<_> = self
+            .sessions
+            .lock()
+            .expect("sessions")
+            .values()
+            .filter_map(|child| child.session.meta().ok())
+            .filter(|meta| meta.parent_id.as_deref() == Some(parent_id))
+            .collect();
+        for child in children {
+            if child.child_lifetime.is_some() {
+                self.retire(&child.id).await;
+                if let Some(state) = self.session_state(&child.id) {
+                    let _ = state.session.set_archived(true, &now());
+                }
+            } else {
+                self.kill_task(parent_id, &child.id).await;
+            }
+        }
+    }
+
     pub(super) async fn spawn_closeout_reviewer(
         &self,
         session_id: &str,
@@ -85,6 +274,11 @@ impl Runner {
         };
         let mut meta = SessionMeta::new(&id, &workspace, &selection.model, &now());
         meta.parent_id = Some(parent.id.clone());
+        meta.child_lifetime = match args.get("lifetime").and_then(Value::as_str) {
+            Some("temporary") => Some(subagent::ChildLifetime::Temporary),
+            Some("lasting") => Some(subagent::ChildLifetime::Lasting),
+            _ => None,
+        };
         meta.closeout_reviewer = skill_directory.is_some();
         if let Some(directory) = skill_directory {
             meta.allow
@@ -94,7 +288,9 @@ impl Runner {
         meta.description = Some(input.description.clone());
         meta.title = Some(input.description.clone());
         meta.isolation = Some(input.isolation.label().to_string());
-        meta.hidden = !input.visible;
+        meta.hidden = !input.visible
+            && !(meta.child_lifetime == Some(subagent::ChildLifetime::Lasting)
+                && args.get("visible").is_none());
         meta.yolo = parent.yolo;
         meta.enhance = false;
         meta.show_closeout = parent.show_closeout;
@@ -128,11 +324,13 @@ impl Runner {
             }
             return error.to_string();
         }
-        self.track_child(
-            &id,
-            &parent.id,
-            input.background && skill_directory.is_none(),
-        );
+        if meta.child_lifetime.is_none() {
+            self.track_child(
+                &id,
+                &parent.id,
+                input.background && skill_directory.is_none(),
+            );
+        }
         let Some(child_state) = self.session_state(&id) else {
             self.forget_child(&id);
             return "no such session".to_string();
@@ -181,6 +379,11 @@ impl Runner {
         let Some(state) = self.session_state(id) else {
             return "no such session".to_string();
         };
+        if caller != id && self.child_session(caller, id).is_none() {
+            return "only this session or its direct children can be archived".into();
+        }
+        state.retiring.store(true, Ordering::Release);
+        self.archive_children(id).await;
         match state.session.meta() {
             Ok(meta) if meta.archived => return format!("archived {id}"),
             Ok(_) => {}
@@ -215,6 +418,13 @@ impl Runner {
             }
         }
         if let Some(child) = self.child_session(session_id, id) {
+            if child
+                .session
+                .meta()
+                .is_ok_and(|meta| meta.child_lifetime.is_some())
+            {
+                return "Use stop_session to stop execution or archive_session to retain this child's history and workspace.".into();
+            }
             self.cancel(id);
             let _ = subagent::wait_until_idle(&child.session, KILL_BUDGET).await;
             let meta = child.session.meta().ok();
@@ -249,6 +459,10 @@ impl Runner {
         let Some(parent_id) = meta.parent_id.clone() else {
             return;
         };
+        if meta.child_lifetime.is_some() {
+            self.deliver_child_reports(&parent_id);
+            return;
+        }
         let wake = {
             let mut runs = self.child_runs.lock().expect("child runs");
             let Some(slot) = runs.get_mut(&meta.id) else {

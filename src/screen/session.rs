@@ -162,6 +162,12 @@ pub(super) fn render_session(model: &ScreenModel, area: Rect, frame: &mut Frame)
                 Some(mark) => format!(" {path}  {mark} "),
                 None => format!(" {path} "),
             };
+            let heading = row
+                .parent_id
+                .as_ref()
+                .and_then(|id| model.sessions.iter().find(|parent| &parent.id == id))
+                .map(|parent| format!(" {} ← {} · alt↑ back ", row.name(), parent.name()))
+                .unwrap_or(heading);
             Line::from(Span::styled(heading, theme::faint()))
         }
         None => Line::from(Span::styled(format!(" {PRODUCT} "), theme::title())),

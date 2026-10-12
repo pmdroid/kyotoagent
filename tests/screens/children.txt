@@ -1,8 +1,8 @@
  ☰  Kyoto Agent                                     4 sessions · 0 waiting ▦
 ╭ sessions ──────────────────╮╭ ~/work/kyotoagent ─────────────────────────╮
 │all running questions archiv││                                            │
-│▸ ✓ kyotoagent              ││▎ RESULT                                    │
-│  idle                      │││ The readme now names the                  │
+│▾ ✓ kyotoagent              ││▎ RESULT                                    │
+│  idle · 1 working          │││ The readme now names the                  │
 │                            │││ binary under the heading                  │
 │    Read the tests          │││ Kyoto Agent.                              │
 │    working                 ││                                            │
