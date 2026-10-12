@@ -63,6 +63,7 @@ impl Received {
 pub(crate) enum Canned {
     Json(String),
     Raw(String),
+    Interrupted(String),
     Status(u16, String),
     HangUp,
     Silent,
@@ -176,6 +177,11 @@ fn serve_one(
         }
         Canned::Json(body) => answer_completion(&mut stream, 200, &body, &request_body),
         Canned::Raw(body) => respond(&mut stream, 200, &body),
+        Canned::Interrupted(body) => {
+            open_event_stream(&mut stream);
+            write_chunk(&mut stream, &body);
+            let _ = stream.shutdown(Shutdown::Both);
+        }
         Canned::Status(status, body) => respond(&mut stream, status, &body),
         Canned::Silent => hold_silent(&mut stream, stop),
         Canned::Pace { gap, parts } => pace(&mut stream, gap, &parts),
@@ -2394,6 +2400,117 @@ async fn failed_response_streams_retry_without_returning_partial_tools() {
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].body, requests[1].body);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn interrupted_completion_bodies_retry_without_returning_partial_tools() {
+    for codex in [false, true] {
+        let failed = if codex {
+            sse_line(
+                serde_json::json!({"type":"response.reasoning_summary_text.delta", "delta":"Discard me"}),
+            ) + &sse_line(
+                serde_json::json!({"type":"response.output_item.done", "item":{"type":"function_call", "call_id":"failed-call", "name":"run", "arguments":"{}"}}),
+            )
+        } else {
+            sse_line(
+                serde_json::json!({"choices":[{"delta":{"reasoning_content":"Discard me", "tool_calls":[{"index":0,"id":"failed-call","type":"function","function":{"name":"run","arguments":"{}"}}]}}]}),
+            )
+        };
+        let success = if codex {
+            responses_stream(serde_json::from_str(&a_responses_reply()).unwrap())
+        } else {
+            sse_line(serde_json::json!({"choices":[{"delta":{"content":"Recovered"}}]}))
+                + "data: [DONE]\n\n"
+        };
+        let server = FakeServer::start(vec![Canned::Interrupted(failed), Canned::Raw(success)]);
+        let root = grok_root(if codex {
+            "codex-body-recovery"
+        } else {
+            "chat-body-recovery"
+        });
+        let client = if codex {
+            std::fs::write(root.join("config.toml"), codex_file(&server)).unwrap();
+            write_codex(&root, "access", "refresh", "2035-01-01T00:00:00.000Z");
+            let config = Config::load(&root.join("config.toml")).unwrap();
+            ChatClient::in_root(&config, Some(&root)).unwrap()
+        } else {
+            ChatClient::new(&config_for(&server, None)).unwrap()
+        };
+        let thoughts = Arc::new(Mutex::new("Earlier.".to_string()));
+        let reply = client
+            .complete_showing(&a_conversation(), &[], Some(&thoughts))
+            .await
+            .unwrap();
+        assert!(reply.tool_calls.iter().all(|call| call.id != "failed-call"));
+        assert!(!thoughts.lock().unwrap().contains("Discard me"));
+        assert!(thoughts.lock().unwrap().starts_with("Earlier."));
+        let requests = server.received();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].body, requests[1].body);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn interrupted_completion_retries_are_bounded_and_explain_the_body_failure() {
+    let server = FakeServer::start(vec![Canned::Interrupted(": keepalive\n\n".into()); 4]);
+    let client = ChatClient::new(&config_for(&server, None)).unwrap();
+    let error = client.complete(&a_conversation(), &[]).await.unwrap_err();
+    assert!(
+        matches!(&error, ChatError::Transport(source) if source.is_body() || source.is_decode())
+    );
+    assert_eq!(server.received().len(), 4);
+    let text = error.to_string();
+    assert!(text.contains("response body could not be read"), "{text}");
+    assert!(!text.contains("could not be reached"), "{text}");
+    let ChatError::Transport(source) = error else {
+        unreachable!()
+    };
+    let cause = std::error::Error::source(&source).unwrap().to_string();
+    assert!(text.contains(&cause), "{text}");
+}
+
+#[tokio::test]
+async fn interrupted_completion_retry_status_clears_on_cancellation() {
+    let server = FakeServer::start(vec![Canned::Interrupted(": keepalive\n\n".into())]);
+    let client = ChatClient::new(&config_for(&server, None)).unwrap();
+    let status = Arc::new(Mutex::new(None));
+    let messages = a_conversation();
+    let mut request = Box::pin(client.complete_with_status(&messages, &[], None, Some(&status)));
+    let waiting = async {
+        loop {
+            if status.lock().unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::select! {
+        _ = &mut request => panic!("should wait before retrying"),
+        result = tokio::time::timeout(Duration::from_secs(2), waiting) => result.unwrap(),
+    }
+    assert_eq!(
+        status.lock().unwrap().as_deref(),
+        Some("Model response interrupted. Retrying in 1s")
+    );
+    drop(request);
+    assert!(status.lock().unwrap().is_none());
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    assert_eq!(server.received().len(), 1);
+}
+
+#[tokio::test]
+async fn malformed_completion_json_is_not_retried() {
+    let server = FakeServer::start(vec![
+        Canned::Raw("{broken".into()),
+        Canned::Json(a_text_reply()),
+    ]);
+    let client = ChatClient::new(&config_for(&server, None)).unwrap();
+    assert!(matches!(
+        client.complete(&a_conversation(), &[]).await,
+        Err(ChatError::Decode(_))
+    ));
+    assert_eq!(server.received().len(), 1);
 }
 
 #[tokio::test]

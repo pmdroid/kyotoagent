@@ -27,10 +27,10 @@ pub(super) fn shared(endpoint: &str, account: String) -> Arc<Mutex<Option<Instan
 }
 pub(super) struct StatusGuard<'a>(pub Option<&'a RetryStatus>);
 impl StatusGuard<'_> {
-    pub fn set(&self, delay: Duration) {
+    pub fn set(&self, delay: Duration, reason: &str) {
         if let Some(status) = self.0 {
             *status.lock().unwrap() = Some(format!(
-                "Provider busy. Retrying in {}s",
+                "{reason} Retrying in {}s",
                 delay
                     .as_secs()
                     .saturating_add(u64::from(delay.subsec_nanos() > 0))
