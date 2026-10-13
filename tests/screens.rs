@@ -436,7 +436,8 @@ fn the_help_frame_matches_its_golden() {
     assert!(drawn.contains("Server"), "{drawn}");
     assert!(drawn.contains("Archive session"), "{drawn}");
     assert!(drawn.contains("Unarchive session"), "{drawn}");
-    assert!(drawn.contains("Delete session"), "{drawn}");
+    assert!(drawn.contains("Select sessions"), "{drawn}");
+    assert!(drawn.contains("Clear archived sessions"), "{drawn}");
     assert!(drawn.contains("Enhance"), "{drawn}");
     assert!(drawn.contains("rewrite a short prompt"), "{drawn}");
     assert_golden("help.txt", &model);

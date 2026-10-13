@@ -3825,7 +3825,10 @@ pub(super) async fn saved_test_server(
         .unwrap();
     std::fs::write(certs.join("server.crt"), cert.pem()).unwrap();
     std::fs::write(certs.join("server.key"), key.serialize_pem()).unwrap();
-    let text = format!("base_url = \"http://127.0.0.1:1/v1\"\nmodel = \"unavailable-model\"\nlisten = \"127.0.0.1:0\"\n[projects.test]\npath = \"{}\"\n", root.display());
+    let text = format!(
+        "base_url = \"http://127.0.0.1:1/v1\"\nmodel = \"unavailable-model\"\nlisten = \"127.0.0.1:0\"\n[projects.test]\npath = \"{}\"\n",
+        root.display()
+    );
     std::fs::write(root.join("config.toml"), &text).unwrap();
     let config = crate::config::Config::from_toml(&text).unwrap();
     let serving = std::sync::Arc::new(server::Server::new(&root, &config).unwrap());

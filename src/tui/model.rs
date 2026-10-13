@@ -229,6 +229,9 @@ pub(super) fn preview_open(app: &App) -> bool {
 }
 
 pub(super) fn esc_stops(app: &App) -> bool {
+    if app.session_selection.is_some() || app.batch_confirm.is_some() || app.batch_job.is_some() {
+        return false;
+    }
     if app.delete_confirm.is_some() || app.menu.is_some() {
         return false;
     }
@@ -274,6 +277,11 @@ pub fn screen_model(app: &App) -> ScreenModel {
             (bottom, None, Vec::new())
         };
     ScreenModel {
+        session_targets: batch::marks(app),
+        session_focus: app
+            .session_selection
+            .as_ref()
+            .and_then(|selection| selection.focus.clone()),
         sessions: servers::sessions(app),
         projects: servers::project_rows(app),
         selected: servers::selected(app),
@@ -298,7 +306,8 @@ pub fn screen_model(app: &App) -> ScreenModel {
         enhance: app.enhance,
         context_percent: app.context.as_ref().and_then(|usage| usage.percent),
         file_scroll: app.file_scroll,
-        overlay: proof_files::overlay(app)
+        overlay: batch::overlay(app)
+            .or_else(|| proof_files::overlay(app))
             .or_else(|| proof::overlay(app))
             .or_else(|| projects::overlay(app))
             .or_else(|| catalog::overlay(app))

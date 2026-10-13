@@ -13,11 +13,11 @@
 │                            │││  Queued messages  remove a pending messag││
 │                            │││  Ctrl-X  Cancel  stop the turn           ││
 │                            │││  Esc  Close popup  close the open popup  ││
+│                            │││  Ctrl-S  Select sessions  select sessions││
+│                            │││  Clear archived sessions  delete archived││
 │                            │││  Archive session  hide the selected sessi││
 │                            │││  Unarchive session  restore an archived s││
-│                            │││  Ctrl-W  Delete session  delete the selec││
-│                            │││  Ctrl-B  Sessions  show or hide the sessi││
-│ctrl-n/p  ctrl-k  commands  ││╰──────────────────────────────────────────╯│
+│Select · Clear archived     ││╰──────────────────────────────────────────╯│
 ╰────────────────────────────╯╰────────────────────────────────────────────╯
 ╭ Message ─────────────────────────────────────────────────────────────────╮
 │ › █                                                                      │

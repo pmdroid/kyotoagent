@@ -8,6 +8,9 @@ pub fn keystroke(app: &App, event: KeyEvent) -> Option<Effect> {
     if event.kind != KeyEventKind::Press {
         return None;
     }
+    if let Some(effect) = batch::key(app, event) {
+        return effect;
+    }
     if app.delete_confirm.is_some() && event.code == KeyCode::Char(' ') {
         return Some(Effect::ToggleDeleteWorkspace);
     }

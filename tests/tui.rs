@@ -1614,7 +1614,10 @@ fn session_at_hits_each_three_row_block_on_the_mock_list() {
         kyotoagent::screen::session_at(&model, area, x, hint_y),
         None
     );
-    assert_eq!(mouse(list_click(x, hint_y), &model, area), None);
+    assert_eq!(
+        mouse(list_click(x, hint_y), &model, area),
+        Some(Effect::SelectSessions)
+    );
 }
 
 fn right_click(column: u16, row: u16) -> MouseEvent {
@@ -4233,4 +4236,90 @@ async fn btw_in_a_question_composer_does_not_answer_the_question() {
     assert!(!log_text(&fixture.client, &app.selected)
         .await
         .contains("question_answer"));
+}
+
+#[tokio::test]
+async fn bulk_delete_requires_exact_count_preserves_worktrees_and_keeps_new_sessions() {
+    let fixture = Fixture::new("bulk-delete-preserve").await;
+    git_init(&fixture.workspace);
+    let body = serde_json::json!({"workspace": fixture.workspace, "worktree": true}).to_string();
+    let (status, response) = fixture
+        .client
+        .request("POST", "/v1/sessions", Some(&body))
+        .await
+        .unwrap();
+    assert_eq!(status, 201);
+    let created: Value = serde_json::from_str(&response).unwrap();
+    let workspace = PathBuf::from(created["workspace"].as_str().unwrap());
+    fs::write(workspace.join("keep.txt"), "keep this work").unwrap();
+    let mut app = fixture.app();
+    poll(&mut app, &fixture.client).await.unwrap();
+    drive(&mut app, &fixture.client, ctrl('s')).await;
+    drive(&mut app, &fixture.client, press(KeyCode::Char(' '))).await;
+    assert_eq!(
+        screen_model(&app).session_targets.as_ref().unwrap().len(),
+        1
+    );
+    drive(&mut app, &fixture.client, press(KeyCode::Delete)).await;
+    drive(&mut app, &fixture.client, press(KeyCode::Enter)).await;
+    assert!(
+        matches!(screen_model(&app).overlay, Some(Overlay::Question { text, .. }) if text.contains("Type 1"))
+    );
+    assert!(workspace.exists());
+    let body = serde_json::json!({"workspace": fixture.workspace, "worktree": false}).to_string();
+    assert_eq!(
+        fixture
+            .client
+            .request("POST", "/v1/sessions", Some(&body))
+            .await
+            .unwrap()
+            .0,
+        201
+    );
+    poll(&mut app, &fixture.client).await.unwrap();
+    drive(&mut app, &fixture.client, press(KeyCode::Char('1'))).await;
+    drive(&mut app, &fixture.client, press(KeyCode::Enter)).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while matches!(screen_model(&app).overlay, Some(Overlay::Text { text }) if text.contains("Deleting")) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            advance_requests(&mut app, &fixture.client).await;
+        }
+    }).await.unwrap();
+    poll(&mut app, &fixture.client).await.unwrap();
+    assert_eq!(app.sessions.len(), 1);
+    assert_ne!(app.sessions[0].id, created["id"].as_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(workspace.join("keep.txt")).unwrap(),
+        "keep this work"
+    );
+    assert!(screen_model(&app).overlay.is_none());
+}
+
+#[tokio::test]
+async fn clearing_archived_sessions_does_not_delete_active_sessions() {
+    let fixture = Fixture::new("clear-archived").await;
+    let mut app = idle_session(&fixture).await;
+    let archived = app.selected.clone();
+    apply(&mut app, &fixture.client, Effect::ArchiveSession)
+        .await
+        .unwrap();
+    new_here(&mut app, &fixture.client).await;
+    let active = app.selected.clone();
+    apply(&mut app, &fixture.client, Effect::ClearArchivedSessions)
+        .await
+        .unwrap();
+    assert!(
+        matches!(screen_model(&app).overlay, Some(Overlay::Question { text, .. }) if text.contains("1 archived sessions on Local"))
+    );
+    drive(&mut app, &fixture.client, press(KeyCode::Char('1'))).await;
+    drive(&mut app, &fixture.client, press(KeyCode::Enter)).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while matches!(screen_model(&app).overlay, Some(Overlay::Text { text }) if text.contains("Deleting")) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            advance_requests(&mut app, &fixture.client).await;
+        }
+    }).await.unwrap();
+    poll(&mut app, &fixture.client).await.unwrap();
+    assert!(!app.sessions.iter().any(|row| row.id == archived));
+    assert!(app.sessions.iter().any(|row| row.id == active));
 }
