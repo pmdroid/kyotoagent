@@ -42,10 +42,10 @@ pub(super) fn render_overlay(model: &ScreenModel, screen: Rect, pane: Rect, fram
     }
     if matches!(overlay, Overlay::VisualQuestion { .. }) {
         dim_outside(frame, screen, crate::image_preview::popup(pane));
-        super::question::render_visual_question(overlay, pane, frame);
+        super::question::render_visual_question(model, overlay, pane, frame);
         return;
     }
-    let mut lines = overlay_lines(overlay, inner_width);
+    let mut lines = model_lines(model, inner_width);
     if let Overlay::Pairing { title, qr } = overlay {
         if lines.len() > usize::from(pane.height.saturating_sub(4))
             || qr.lines().any(|line| line.chars().count() > inner_width)
@@ -65,6 +65,9 @@ pub(super) fn render_overlay(model: &ScreenModel, screen: Rect, pane: Rect, fram
     let origin = if matches!(overlay, Overlay::File { .. } | Overlay::Text { .. }) {
         let room = usize::from(Block::bordered().inner(area).height);
         model.file_scroll.min(lines.len().saturating_sub(room))
+    } else if matches!(overlay, Overlay::Question { .. }) {
+        let inner = Block::bordered().inner(area);
+        input::question_origin(model, inner.width, inner.height, lines.len())
     } else {
         0
     };
@@ -114,6 +117,18 @@ pub(super) fn paint_close(frame: &mut Frame, area: Rect) {
         cell.set_symbol("x");
         cell.set_style(theme::key());
     }
+}
+
+pub(super) fn model_lines(model: &ScreenModel, width: usize) -> Vec<Line<'static>> {
+    let Some(overlay) = model.overlay.as_ref() else {
+        return Vec::new();
+    };
+    let mut lines = overlay_lines(overlay, width);
+    if matches!(overlay, Overlay::Question { .. }) && model.bottom_cursor.is_some() {
+        lines.pop();
+        lines.extend(input::prompt_lines(model, width as u16));
+    }
+    lines
 }
 
 pub(in crate::screen) fn overlay_lines(overlay: &Overlay, width: usize) -> Vec<Line<'static>> {

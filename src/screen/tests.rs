@@ -3035,3 +3035,57 @@ fn compaction_overrides_stale_thinking_and_retry_status() {
     model.sessions[0].compacting = false;
     assert!(!draw(&model).contains("Compacting context"));
 }
+
+#[test]
+fn composer_selection_highlights_graphemes_newlines_and_wrapped_paste_labels() {
+    let mut model = crate::mock::idle();
+    model.bottom = "a👩‍💻e\u{301}界\n[Pasted input: 60 chars]z".into();
+    model.bottom_cursor = Some(model.bottom.len());
+    model.bottom_selection = Some(1..model.bottom.len() - 1);
+    for width in [12, 76] {
+        let lines = input::prompt_lines(&model, width);
+        let selected: String = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .filter(|span| span.style.add_modifier.contains(Modifier::REVERSED))
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(selected, "👩‍💻e\u{301}界 [Pasted input: 60 chars]");
+        assert!(lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| span.content == "👩‍💻"));
+    }
+}
+
+#[test]
+fn composer_selection_is_visible_in_the_terminal_buffer() {
+    let mut model = crate::mock::idle();
+    model.left_open = false;
+    model.right_open = false;
+    model.bottom = "a👩‍💻e\u{301}界z".into();
+    model.bottom_cursor = Some(1);
+    model.bottom_selection = Some(1..model.bottom.len() - 1);
+    for width in [20, 76] {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+        terminal
+            .draw(|frame| render(&model, frame.area(), frame))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        for symbol in ["👩‍💻", "e\u{301}", "界"] {
+            let cell = buffer
+                .content
+                .iter()
+                .find(|cell| cell.symbol() == symbol)
+                .unwrap();
+            assert!(cell.modifier.contains(Modifier::REVERSED));
+        }
+        let z = buffer
+            .content
+            .iter()
+            .find(|cell| cell.symbol() == "z")
+            .unwrap();
+        assert!(!z.modifier.contains(Modifier::REVERSED));
+    }
+}

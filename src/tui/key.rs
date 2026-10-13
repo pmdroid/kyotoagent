@@ -55,6 +55,11 @@ pub fn keystroke(app: &App, event: KeyEvent) -> Option<Effect> {
         return Some(Effect::Submit);
     }
     if editor::active(app) {
+        if event.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(event.code, KeyCode::Char('a' | 'A'))
+        {
+            return Some(Effect::SelectInput);
+        }
         if event.code == KeyCode::Tab && picker_is_open(app) {
             return Some(Effect::Complete);
         }
@@ -68,17 +73,27 @@ pub fn keystroke(app: &App, event: KeyEvent) -> Option<Effect> {
             KeyCode::Right if !editor::input(app).is_empty() => Some(CursorMove::Right),
             KeyCode::Home => Some(CursorMove::Home),
             KeyCode::End => Some(CursorMove::End),
-            KeyCode::Up if !picker_is_open(app) && !editor::input(app).is_empty() => {
+            KeyCode::Up
+                if (!picker_is_open(app) || event.modifiers.contains(KeyModifiers::SHIFT))
+                    && !editor::input(app).is_empty() =>
+            {
                 Some(CursorMove::Up)
             }
-            KeyCode::Down if !picker_is_open(app) && !editor::input(app).is_empty() => {
+            KeyCode::Down
+                if (!picker_is_open(app) || event.modifiers.contains(KeyModifiers::SHIFT))
+                    && !editor::input(app).is_empty() =>
+            {
                 Some(CursorMove::Down)
             }
             KeyCode::Delete => return Some(Effect::DeleteForward),
             _ => None,
         };
         if let Some(movement) = movement {
-            return Some(Effect::MoveCursor(movement));
+            return Some(if event.modifiers.contains(KeyModifiers::SHIFT) {
+                Effect::ExtendCursor(movement)
+            } else {
+                Effect::MoveCursor(movement)
+            });
         }
     }
     if !app.overlay && event.modifiers.contains(KeyModifiers::ALT) && event.code == KeyCode::Up {

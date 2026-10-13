@@ -31,7 +31,7 @@ mod card;
 mod file;
 mod hit;
 mod input;
-pub use input::{input_cursor_at, input_image_at, move_input_vertical};
+pub use input::{input_cursor_at, input_drag_cursor_at, input_image_at, move_input_vertical};
 mod list;
 mod overlay;
 mod question;
@@ -751,6 +751,8 @@ pub struct ScreenModel {
     /// nothing at all.
     pub bottom: String,
     pub bottom_cursor: Option<usize>,
+    pub bottom_selection: Option<std::ops::Range<usize>>,
+    pub input_drag: Option<(u16, u16, usize)>,
     pub pasted_ranges: Vec<std::ops::Range<usize>>,
     pub toast: Option<String>,
     /// Whether `bottom` is something the user types or a set of keys that
@@ -822,6 +824,8 @@ impl Default for ScreenModel {
             cards: Vec::new(),
             bottom: String::new(),
             bottom_cursor: None,
+            bottom_selection: None,
+            input_drag: None,
             pasted_ranges: Vec::new(),
             toast: None,
             bottom_kind: Bottom::Prompt,

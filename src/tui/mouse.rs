@@ -21,12 +21,35 @@ pub fn mouse(event: MouseEvent, model: &ScreenModel, area: Rect) -> Option<Effec
                 area.width,
                 event.column,
             ))),
+            None if model.input_drag.is_some() => {
+                screen::input_drag_cursor_at(model, area, event.column, event.row)
+                    .map(Effect::MoveInputSelect)
+            }
             None => drag_select(model, area, event.column, event.row),
         },
         MouseEventKind::Up(MouseButton::Left) => match model.drag {
             Some(Drag::Left) if event.column == model.drag_origin => Some(Effect::ToggleLeft),
             Some(Drag::Right) if event.column == model.drag_origin => Some(Effect::ToggleRight),
             Some(_) => Some(Effect::EndDrag),
+            None if model.input_drag.is_some() => {
+                let (column, row, position) = model.input_drag.unwrap();
+                if event.column == column
+                    && event.row == row
+                    && model.bottom_selection.is_none()
+                    && model
+                        .pasted_ranges
+                        .iter()
+                        .any(|range| range.contains(&position))
+                {
+                    return model.pasted_text.clone().map(Effect::OpenText);
+                }
+                Some(Effect::EndInputSelect(screen::input_drag_cursor_at(
+                    model,
+                    area,
+                    event.column,
+                    event.row,
+                )))
+            }
             None => release_select(model, area, event.column, event.row),
         },
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
@@ -114,6 +137,13 @@ fn left_down(model: &ScreenModel, area: Rect, column: u16, row: u16) -> Option<E
 fn plain_left_down(model: &ScreenModel, area: Rect, column: u16, row: u16) -> Option<Effect> {
     if let Some(effect) = image_press(model, area, column, row) {
         return Some(effect);
+    }
+    if let Some(position) = screen::input_cursor_at(model, area, column, row) {
+        return Some(Effect::ArmInputSelect {
+            position,
+            column,
+            row,
+        });
     }
     if let Some(point) = screen::selection_anchor(model, area, column, row) {
         return Some(Effect::ArmSelect(TextSelect::begin(point, column, row)));
@@ -253,12 +283,14 @@ pub fn track_mouse(app: &mut App, area: Rect, event: MouseEvent) -> Option<Effec
     let effect = mouse(event, &screen_model(app), area);
     match event.kind {
         MouseEventKind::Down(MouseButton::Left) => {
+            app.input_drag = None;
             if !matches!(effect, Some(Effect::ArmSelect(_))) {
                 app.select = None;
             }
             effect
         }
         MouseEventKind::Up(MouseButton::Left) => {
+            app.input_drag = None;
             if !matches!(effect, Some(Effect::CopyText(_, _)))
                 && app.select.is_some_and(|sel| sel.held)
             {
@@ -282,6 +314,17 @@ pub(super) fn pointer(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent
 pub fn released_click(model: &ScreenModel, area: Rect, column: u16, row: u16) -> Option<Effect> {
     let down = pointer(MouseEventKind::Down(MouseButton::Left), column, row);
     match mouse(down, model, area) {
+        Some(Effect::ArmInputSelect { position, .. }) => {
+            if model
+                .pasted_ranges
+                .iter()
+                .any(|range| range.contains(&position))
+            {
+                model.pasted_text.clone().map(Effect::OpenText)
+            } else {
+                Some(Effect::SetCursor(position))
+            }
+        }
         Some(Effect::ArmSelect(sel)) => {
             let mut held = model.clone();
             held.select = Some(sel);

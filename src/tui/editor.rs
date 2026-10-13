@@ -43,7 +43,15 @@ pub(super) fn cursor(app: &App) -> usize {
 }
 
 fn set(app: &mut App, position: usize) {
-    let position = (position < input(app).len()).then_some(position);
+    let text = input(app);
+    let position = text
+        .grapheme_indices(true)
+        .map(|(index, _)| index)
+        .chain(std::iter::once(text.len()))
+        .take_while(|index| *index <= position.min(text.len()))
+        .last()
+        .unwrap_or(0);
+    let position = (position < text.len() || anchor(app).is_some()).then_some(position);
     if question(app) {
         app.question_cursor = position;
     } else {
@@ -51,7 +59,58 @@ fn set(app: &mut App, position: usize) {
     }
 }
 
+fn anchor(app: &App) -> Option<usize> {
+    let (anchor, cursor) = if question(app) {
+        (app.question_anchor, app.question_cursor)
+    } else {
+        (app.ask_anchor, app.ask_cursor)
+    };
+    let anchor = cursor
+        .and(anchor)
+        .filter(|anchor| *anchor <= input(app).len())?;
+    Some(
+        input(app)
+            .grapheme_indices(true)
+            .map(|(index, _)| index)
+            .chain(std::iter::once(input(app).len()))
+            .take_while(|index| *index <= anchor)
+            .last()
+            .unwrap_or(0),
+    )
+}
+
+pub(super) fn set_anchor(app: &mut App, anchor: Option<usize>) {
+    let position = cursor(app);
+    if question(app) {
+        app.question_anchor = anchor;
+        if anchor.is_some() {
+            app.question_cursor = Some(position);
+        }
+    } else {
+        app.ask_anchor = anchor;
+        if anchor.is_some() {
+            app.ask_cursor = Some(position);
+        }
+    }
+}
+
+pub(super) fn selection(app: &App) -> Option<Range<usize>> {
+    let anchor = anchor(app)?;
+    let position = cursor(app);
+    (anchor != position).then_some(anchor.min(position)..anchor.max(position))
+}
+
+pub(super) fn select_all(app: &mut App) {
+    set_anchor(app, Some(0));
+    let end = input(app).len();
+    set(app, end);
+    app.select = None;
+    app.input_drag = None;
+}
+
 pub(super) fn replace(app: &mut App, range: Range<usize>, text: &str) {
+    set_anchor(app, None);
+    app.input_drag = None;
     let question = question(app);
     let input = if question {
         &mut app.question_text
@@ -80,8 +139,9 @@ pub(super) fn replace(app: &mut App, range: Range<usize>, text: &str) {
 }
 
 pub(super) fn insert(app: &mut App, text: &str, paste: bool) {
-    let start = cursor(app);
-    replace(app, start..start, text);
+    let range = selection(app).unwrap_or_else(|| cursor(app)..cursor(app));
+    let start = range.start;
+    replace(app, range, text);
     if paste && (text.chars().count() > 2048 || text.lines().count() > 12) {
         app.pastes.push(PastedInput {
             start,
@@ -124,6 +184,10 @@ fn adjacent(app: &App, forward: bool) -> usize {
 }
 
 pub(super) fn delete(app: &mut App, effect: Effect) {
+    if let Some(range) = selection(app) {
+        replace(app, range, "");
+        return;
+    }
     let position = cursor(app);
     let start = match effect {
         Effect::DeleteForward => position,
@@ -154,6 +218,39 @@ pub(super) fn delete(app: &mut App, effect: Effect) {
 }
 
 pub(super) fn move_cursor(app: &mut App, movement: CursorMove) {
+    let selected = selection(app);
+    set_anchor(app, None);
+    app.input_drag = None;
+    if let Some(range) = selected {
+        match movement {
+            CursorMove::Left | CursorMove::Right => {
+                set(
+                    app,
+                    if movement == CursorMove::Left {
+                        range.start
+                    } else {
+                        range.end
+                    },
+                );
+                return;
+            }
+            _ => {}
+        }
+    }
+    move_to(app, movement);
+}
+
+pub(super) fn extend_cursor(app: &mut App, movement: CursorMove) {
+    if anchor(app).is_none() {
+        let position = cursor(app);
+        set_anchor(app, Some(position));
+    }
+    app.select = None;
+    app.input_drag = None;
+    move_to(app, movement);
+}
+
+fn move_to(app: &mut App, movement: CursorMove) {
     let position = cursor(app);
     let text = input(app);
     let target = match movement {
@@ -176,7 +273,8 @@ pub(super) fn move_cursor(app: &mut App, movement: CursorMove) {
             let model = layout_model(app);
             let target =
                 screen::move_input_vertical(&model, app.area, movement == CursorMove::Down);
-            set_display_cursor(app, target);
+            let target = display_position(app, target);
+            set(app, target);
             return;
         }
     };
@@ -223,7 +321,26 @@ pub(super) fn display(app: &App) -> (String, usize, Vec<Range<usize>>) {
     (bottom, position, ranges)
 }
 
-pub(super) fn set_display_cursor(app: &mut App, position: usize) {
+pub(super) fn display_selection(app: &App) -> Option<Range<usize>> {
+    let range = selection(app)?;
+    Some(display_offset(app, range.start)..display_offset(app, range.end))
+}
+
+fn display_offset(app: &App, position: usize) -> usize {
+    let mut offset = position;
+    for paste in &app.pastes {
+        if paste.question == question(app)
+            && paste_matches(input(app), paste)
+            && paste.start + paste.text.len() <= position
+        {
+            offset = offset - paste.text.len()
+                + format!("[Pasted input: {} chars]", paste.text.chars().count()).len();
+        }
+    }
+    offset
+}
+
+fn display_position(app: &App, position: usize) -> usize {
     let (_, _, ranges) = display(app);
     let mut target = position;
     for (paste, range) in app
@@ -235,17 +352,43 @@ pub(super) fn set_display_cursor(app: &mut App, position: usize) {
         if position >= range.end {
             target = target - range.len() + paste.text.len();
         } else if position > range.start {
-            target = paste.start;
+            target = if position - range.start < range.len().div_ceil(2) {
+                paste.start
+            } else {
+                paste.start + paste.text.len()
+            };
             break;
         }
     }
-    set(app, target.min(input(app).len()));
+    target.min(input(app).len())
+}
+
+pub(super) fn set_display_cursor(app: &mut App, position: usize) {
+    set_anchor(app, None);
+    app.input_drag = None;
+    let target = display_position(app, position);
+    set(app, target);
+    app.select = None;
+}
+
+pub(super) fn extend_display_cursor(app: &mut App, position: usize) {
+    if anchor(app).is_none() {
+        let position = cursor(app);
+        set_anchor(app, Some(position));
+    }
+    let target = display_position(app, position);
+    set(app, target);
     app.select = None;
 }
 
 pub(super) fn active(app: &App) -> bool {
-    !app.overlay
-        && screen_model(app).overlay.is_none()
+    let overlay = screen_model(app).overlay;
+    let question_overlay = matches!(
+        overlay,
+        Some(Overlay::Question { .. } | Overlay::VisualQuestion { .. })
+    );
+    (!app.overlay || question_overlay)
+        && (overlay.is_none() || question_overlay)
         && !choosing(app)
         && app.picker.is_none()
         && app.command_ui.is_none()
@@ -253,6 +396,6 @@ pub(super) fn active(app: &App) -> bool {
         && app.delete_confirm.is_none()
         && app.open_file.is_none()
         && app.open_text.is_none()
-        && app.open_image.is_none()
+        && (app.open_image.is_none() || question_overlay)
         && (!matches!(mode(app), Mode::Permission) || app.ask.starts_with('/'))
 }
