@@ -4091,6 +4091,75 @@ async fn projects_validate_paths_and_preserve_configuration_on_update() {
 }
 
 #[tokio::test]
+async fn removing_a_project_preserves_sessions_files_and_other_configuration() {
+    let fixture = Fixture::new("remove-project", write_then_finish()).await;
+    let config_path = fixture.root.join("config.toml");
+    let repo = fixture.root.join("repo");
+    git_repo(&repo);
+    fs::write(repo.join("keep.txt"), "keep project files").unwrap();
+    for id in ["notes", "other"] {
+        let body = serde_json::json!({"id":id, "name":id, "path":repo}).to_string();
+        assert_eq!(
+            fixture
+                .client
+                .request("POST", "/v1/projects", Some(&body))
+                .await
+                .0,
+            201
+        );
+    }
+    let body = serde_json::json!({"workspace":repo, "worktree":true}).to_string();
+    let (status, response) = fixture
+        .client
+        .request("POST", "/v1/sessions", Some(&body))
+        .await;
+    assert_eq!(status, 201, "{response}");
+    let created: Value = serde_json::from_str(&response).unwrap();
+    let id = created["id"].as_str().unwrap();
+    let workspace = PathBuf::from(created["workspace"].as_str().unwrap());
+    fs::write(workspace.join("draft.txt"), "keep worktree changes").unwrap();
+    assert_eq!(
+        fixture
+            .client
+            .request("DELETE", "/v1/projects/notes", None)
+            .await
+            .0,
+        204
+    );
+    let config = Config::load(&config_path).unwrap();
+    assert_eq!(config.projects.len(), 1);
+    assert_eq!(config.projects[0].id, "other");
+    assert_eq!(config.base_url, fixture._fake.base_url());
+    assert_eq!(config.model, "test/model");
+    assert_eq!(
+        fs::read_to_string(repo.join("keep.txt")).unwrap(),
+        "keep project files"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("draft.txt")).unwrap(),
+        "keep worktree changes"
+    );
+    assert!(fixture.root.join(SESSIONS_DIR).join(id).exists());
+    let view = fixture.client.view(id).await;
+    assert_eq!(view["status"], "idle");
+    let (status, response) = fixture.client.request("GET", "/v1/projects", None).await;
+    assert_eq!(status, 200, "{response}");
+    let projects: Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(projects.as_array().unwrap().len(), 1);
+    assert_eq!(projects[0]["id"], "other");
+    let saved = fs::read_to_string(&config_path).unwrap();
+    assert_eq!(
+        fixture
+            .client
+            .request("DELETE", "/v1/projects/notes", None)
+            .await
+            .0,
+        404
+    );
+    assert_eq!(fs::read_to_string(&config_path).unwrap(), saved);
+}
+
+#[tokio::test]
 async fn session_deletion_keeps_a_worktree_and_workspace_deletion_requires_dirty_confirmation() {
     let fixture = Fixture::new("delete-workspace-options", write_then_finish()).await;
     let repo = fixture.root.join("repo");
