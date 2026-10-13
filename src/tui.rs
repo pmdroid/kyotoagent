@@ -39,6 +39,7 @@ use crate::skills;
 use crate::view::{self, CardKind};
 
 mod apply;
+mod batch;
 mod catalog;
 mod connections;
 mod deletion;
@@ -63,6 +64,7 @@ pub async fn advance_requests(app: &mut App, client: &Client) {
     proof_files::advance(app).await;
     layout::advance(app).await;
     deletion::advance(app, client).await;
+    batch::advance(app).await;
     projects::advance(app, client).await;
     catalog::advance(app).await;
 }
@@ -322,6 +324,10 @@ pub enum Effect {
     MenuItem(usize),
     ToggleDeleteWorkspace,
     ConfirmDelete,
+    SelectSessions,
+    ToggleSessionTarget,
+    DeleteSelectedSessions,
+    ClearArchivedSessions,
     ChooseDelete(usize),
     ArchiveSession,
     UnarchiveSession,
@@ -446,6 +452,10 @@ pub struct App {
     menu: Option<SessionMenu>,
     delete_confirm: Option<DeleteConfirm>,
     delete_job: Option<deletion::Job>,
+    session_selection: Option<batch::Selection>,
+    batch_confirm: Option<batch::Confirm>,
+    batch_job: Option<batch::Job>,
+    deleted_sessions: BTreeSet<batch::Target>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -510,6 +520,8 @@ enum CommandAction {
     OpenCheckTranscripts,
     Cancel,
     CloseSession,
+    SelectSessions,
+    ClearArchivedSessions,
     ArchiveSession,
     UnarchiveSession,
     CloseOverlay,
@@ -607,6 +619,18 @@ fn command_catalog(_skills: &[SkillEntry]) -> Vec<CatalogRow> {
             "Esc",
             "close the open popup",
             CommandAction::CloseOverlay,
+        ),
+        catalog_row(
+            "Select sessions",
+            "Ctrl-S",
+            "select sessions for bulk deletion",
+            CommandAction::SelectSessions,
+        ),
+        catalog_row(
+            "Clear archived sessions",
+            "",
+            "delete archived sessions on the current server",
+            CommandAction::ClearArchivedSessions,
         ),
         catalog_row(
             "Archive session",
@@ -950,6 +974,10 @@ impl App {
             menu: None,
             delete_confirm: None,
             delete_job: None,
+            session_selection: None,
+            batch_confirm: None,
+            batch_job: None,
+            deleted_sessions: BTreeSet::new(),
         }
     }
 
@@ -1353,6 +1381,7 @@ async fn run_loop(
         proof_files::advance(app).await;
         layout::advance(app).await;
         deletion::advance(app, client).await;
+        batch::advance(app).await;
         proof_files::advance(app).await;
         projects::advance(app, client).await;
         providers::advance(app, client).await;

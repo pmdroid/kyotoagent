@@ -806,6 +806,8 @@ pub struct ScreenModel {
     pub list_header: Option<String>,
     pub list_scroll: usize,
     pub list_filter: ListFilter,
+    pub session_targets: Option<BTreeSet<String>>,
+    pub session_focus: Option<String>,
     pub context_percent: Option<u32>,
 }
 
@@ -875,6 +877,8 @@ impl Default for ScreenModel {
             list_header: None,
             list_scroll: 0,
             list_filter: ListFilter::All,
+            session_targets: None,
+            session_focus: None,
             context_percent: None,
         }
     }
@@ -1709,7 +1713,10 @@ pub fn list_scroll_for(model: &ScreenModel, area: Rect, scroll: usize) -> usize 
         let wanted = match &piece.hit {
             ListHit::Filter => false,
             ListHit::Header(key) => model.list_header.as_deref() == Some(key.as_str()),
-            ListHit::Session(id) => model.list_header.is_none() && model.selected == *id,
+            ListHit::Session(id) => model.session_focus.as_ref().map_or_else(
+                || model.list_header.is_none() && model.selected == *id,
+                |focus| focus == id,
+            ),
         };
         if wanted {
             if cursor < scroll {

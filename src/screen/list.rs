@@ -6,7 +6,14 @@ pub(super) fn render_list(model: &ScreenModel, area: Rect, frame: &mut Frame) {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(theme::border())
-        .title(Line::from(Span::styled(" sessions ", theme::title())));
+        .title(Line::from(Span::styled(
+            if model.session_targets.is_some() {
+                " sessions · Space toggles "
+            } else {
+                " sessions "
+            },
+            theme::title(),
+        )));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -52,7 +59,10 @@ pub(super) fn render_list(model: &ScreenModel, area: Rect, frame: &mut Frame) {
                 let Some(row) = model.sessions.iter().find(|row| row.id == id) else {
                     continue;
                 };
-                let is_selected = model.list_header.is_none() && model.selected == row.id;
+                let is_selected = model.session_focus.as_ref().map_or_else(
+                    || model.list_header.is_none() && model.selected == row.id,
+                    |id| id == &row.id,
+                );
                 let base = if is_selected {
                     theme::selected_row()
                 } else {
@@ -65,8 +75,10 @@ pub(super) fn render_list(model: &ScreenModel, area: Rect, frame: &mut Frame) {
                 } else {
                     Style::default().fg(theme::text())
                 };
-                let mut name = session_name_line(row, is_selected, name_style, width);
-                if has_visible_children(model, &row.id) && width > 0 {
+                let name_width =
+                    width.saturating_sub(usize::from(model.session_targets.is_some()) * 4);
+                let mut name = session_name_line(row, is_selected, name_style, name_width);
+                if has_visible_children(model, &row.id) && name_width > 0 {
                     name.spans[0] = Span::styled(
                         if model.collapsed.contains(&child_group(&row.id)) {
                             "▸ "
@@ -75,6 +87,14 @@ pub(super) fn render_list(model: &ScreenModel, area: Rect, frame: &mut Frame) {
                         },
                         name_style,
                     );
+                }
+                if let Some(targets) = &model.session_targets {
+                    let mark = if targets.contains(&row.id) {
+                        "[x] "
+                    } else {
+                        "[ ] "
+                    };
+                    name.spans.insert(0, Span::styled(mark, name_style));
                 }
                 lines.push(name);
                 let status = Span::styled(
@@ -124,13 +144,18 @@ pub(super) fn render_list(model: &ScreenModel, area: Rect, frame: &mut Frame) {
     if inner.height > 0 {
         let filter = inner.height > 1;
         let filled = inner.height.saturating_sub(1 + u16::from(filter)) as usize;
-        let hints = Line::from(vec![
-            Span::styled("ctrl-n/p", theme::quiet_key()),
-            Span::raw("  "),
-            Span::styled("ctrl-k", theme::quiet_key()),
-            Span::raw("  "),
-            Span::styled("commands", theme::hint()),
-        ]);
+        let hints = if let Some(targets) = &model.session_targets {
+            Line::from(Span::styled(
+                format!("{} selected · Delete · Esc", targets.len()),
+                theme::quiet_key(),
+            ))
+        } else {
+            Line::from(vec![
+                Span::styled("Select", theme::quiet_key()),
+                Span::raw(" · "),
+                Span::styled("Clear archived", theme::quiet_key()),
+            ])
+        };
         let scroll = model.list_scroll.min(lines.len().saturating_sub(filled));
         let content = lines.len().saturating_sub(scroll).min(filled);
         let mut body: Vec<Line<'static>> = lines.into_iter().skip(scroll).take(filled).collect();
@@ -537,5 +562,51 @@ mod tests {
         assert_eq!(filter_at(0), Some(ListFilter::All));
         assert_eq!(filter_at(4), Some(ListFilter::Running));
         assert_eq!(ListFilter::Archived.next(), ListFilter::All);
+    }
+}
+
+pub fn visible_session_ids(model: &ScreenModel) -> Vec<String> {
+    list_pieces(model)
+        .into_iter()
+        .filter_map(|piece| match piece.hit {
+            ListHit::Session(id) => Some(id),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn selected_session_checks_and_count_render_with_clickable_actions() {
+        let mut model = crate::mock::idle();
+        model.session_targets = Some([model.sessions[0].id.clone()].into_iter().collect());
+        model.session_focus = Some(model.sessions[0].id.clone());
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| render(&model, frame.area(), frame))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("[x]"), "{text}");
+        assert!(text.contains("1 selected · Delete · Esc"), "{text}");
+        let area = Rect::new(0, 0, 100, 30);
+        let inner = Block::bordered().inner(split_of(&model, area).list);
+        assert_eq!(
+            list_footer_at(&model, area, inner.x + 13, inner.bottom() - 1),
+            Some(13)
+        );
+        model.overlay = Some(Overlay::Text {
+            text: "Busy".into(),
+        });
+        assert!(list_footer_at(&model, area, inner.x, inner.bottom() - 1).is_none());
     }
 }

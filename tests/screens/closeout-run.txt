@@ -19,6 +19,6 @@
 │                            ││                                            │
 │                            ││                                            │
 │                            ││                                            │
-│ctrl-n/p  ctrl-k  commands  ││· Waiting                                   │
+│Select · Clear archived     ││· Waiting                                   │
 ╰────────────────────────────╯╰────────────────────────────────────────────╯
  › a once  s session  d deny█

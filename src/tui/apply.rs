@@ -151,6 +151,9 @@ pub async fn apply(app: &mut App, client: &Client, effect: Effect) -> Result<boo
 async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<bool, String> {
     providers::advance(app, client).await;
     catalog::advance(app).await;
+    if batch::handle(app, client, &effect) {
+        return Ok(true);
+    }
     if proof_files::handle(app, client, &effect) {
         return Ok(true);
     }
@@ -503,6 +506,10 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
         Effect::ToggleDeleteWorkspace => {
             deletion::toggle_workspace(app);
         }
+        Effect::SelectSessions
+        | Effect::ToggleSessionTarget
+        | Effect::DeleteSelectedSessions
+        | Effect::ClearArchivedSessions => {}
         Effect::ConfirmDelete => {
             let id = app.selected.clone();
             open_delete_confirm(app, client, &id);
@@ -645,6 +652,10 @@ pub(super) fn open_delete_confirm(app: &mut App, client: &Client, id: &str) {
 }
 
 pub(super) fn release_command_surfaces(app: &mut App) {
+    if app.batch_job.is_none() {
+        app.session_selection = None;
+        app.batch_confirm = None;
+    }
     app.proof_popup = None;
     proof_files::close(app);
     app.queue_open = false;
@@ -817,6 +828,10 @@ pub(super) async fn run_palette(app: &mut App, client: &Client) {
         CommandAction::TogglePane(pane) => toggle_pane(app, pane),
         CommandAction::Cancel => {
             let _ = cancel_turn(app, client).await;
+        }
+        CommandAction::SelectSessions => batch::open(app),
+        CommandAction::ClearArchivedSessions => {
+            batch::handle(app, client, &Effect::ClearArchivedSessions);
         }
         CommandAction::CloseSession => {
             let id = app.selected.clone();

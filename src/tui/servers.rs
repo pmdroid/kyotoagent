@@ -12,6 +12,16 @@ pub(super) struct Project {
     pub row: ListedProject,
 }
 
+#[cfg(test)]
+impl Snapshot {
+    pub(super) fn from_sessions(sessions: Vec<SessionRow>) -> Self {
+        Self {
+            sessions,
+            projects: Vec::new(),
+        }
+    }
+}
+
 pub(super) fn key(server: &Option<String>, id: &str) -> String {
     serde_json::to_string(&(server, id)).unwrap()
 }
@@ -45,6 +55,19 @@ pub(super) fn sessions(app: &App) -> Vec<SessionRow> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+pub(super) fn remove_session(app: &mut App, server: &Option<String>, id: &str) {
+    if &app.server == server {
+        app.sessions.retain(|row| row.id != id);
+    }
+    if let Some(snapshot) = app
+        .servers
+        .as_mut()
+        .and_then(|servers| servers.get_mut(server))
+    {
+        snapshot.sessions.retain(|row| row.id != id);
+    }
 }
 
 pub(super) fn selected(app: &App) -> String {
@@ -278,6 +301,13 @@ impl Connections {
                 refresh.advance(state, connection).await;
             }
         }
+        for target in &app.deleted_sessions {
+            if target.server == app.server {
+                app.sessions.retain(|row| row.id != target.id);
+            } else if let Some(state) = cached.get_mut(&target.server) {
+                state.sessions.retain(|row| row.id != target.id);
+            }
+        }
         let mut snapshots: BTreeMap<_, _> = cached
             .iter()
             .map(|(id, state)| {
@@ -344,6 +374,10 @@ impl Connections {
         cached: &mut BTreeMap<Option<String>, App>,
         effect: Effect,
     ) -> Result<bool, String> {
+        if app.session_selection.is_some() || app.batch_confirm.is_some() || app.batch_job.is_some()
+        {
+            return apply(app, client, effect).await;
+        }
         let effect = match effect {
             Effect::SelectNext | Effect::SelectPrev if app.servers.is_some() => {
                 match screen::adjacent_session(

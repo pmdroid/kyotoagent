@@ -574,3 +574,36 @@ pub fn queue_choice_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -
     let index = line.checked_sub(1)?;
     (index < rows.len()).then_some(index)
 }
+
+pub fn list_footer_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -> Option<usize> {
+    if !model.left_open || model.overlay.is_some() {
+        return None;
+    }
+    let inner = Block::bordered().inner(split_of(model, area).list);
+    if inner.contains(Position { x: column, y: row })
+        && row == inner.y + inner.height.saturating_sub(1)
+    {
+        Some(usize::from(column - inner.x))
+    } else {
+        None
+    }
+}
+
+pub fn list_select_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -> bool {
+    list_footer_at(model, area, column, row).is_some_and(|column| column < 6)
+}
+
+pub fn question_choice_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -> Option<usize> {
+    let Overlay::Question { text, choices, .. } = model.overlay.as_ref()? else {
+        return None;
+    };
+    let (index, width, _) = overlay_cell(model, area, column, row)?;
+    let start = markdown_lines(text, width).len();
+    index
+        .checked_sub(start)
+        .filter(|index| *index < choices.len())
+}
+
+pub fn list_clear_archived_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -> bool {
+    list_footer_at(model, area, column, row).is_some_and(|column| (9..23).contains(&column))
+}

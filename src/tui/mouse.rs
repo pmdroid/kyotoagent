@@ -116,6 +116,23 @@ fn left_down(model: &ScreenModel, area: Rect, column: u16, row: u16) -> Option<E
     if screen::overlay_close_at(model, area, column, row) {
         return Some(Effect::CloseOverlay);
     }
+    if model.session_targets.is_some() {
+        if let Some(effect) = batch::list_action(model, area, column, row) {
+            return Some(effect);
+        }
+    } else if screen::list_select_at(model, area, column, row) {
+        return Some(Effect::SelectSessions);
+    } else if screen::list_clear_archived_at(model, area, column, row) {
+        return Some(Effect::ClearArchivedSessions);
+    }
+    if model.overlay.is_none() && model.session_targets.is_some() {
+        if let Some(screen::ListHit::Session(id)) = screen::list_at(model, area, column, row) {
+            return Some(Effect::SelectSession(id));
+        }
+    }
+    if let Some(index) = screen::question_choice_at(model, area, column, row) {
+        return Some(Effect::Choose(index));
+    }
     if let Some(index) = screen::queue_choice_at(model, area, column, row) {
         return Some(Effect::SelectQueued(index));
     }
