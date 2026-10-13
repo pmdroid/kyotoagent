@@ -430,7 +430,10 @@ impl Server {
             .route("/v1/models", get(list_models))
             .route("/v1/layout", get(get_layout).put(save_layout))
             .route("/v1/projects", get(list_projects).post(add_project))
-            .route("/v1/projects/{id}", axum::routing::put(edit_project))
+            .route(
+                "/v1/projects/{id}",
+                axum::routing::put(edit_project).delete(remove_project),
+            )
             .with_state(state)
     }
 }
@@ -991,6 +994,38 @@ async fn edit_project(
         ));
     }
     save_project(&state, &body, true)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_project(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    let _editing = state
+        .config_edit
+        .lock()
+        .map_err(|_| ApiError::server("Configuration is busy."))?;
+    if !state
+        .runner
+        .current_config()
+        .projects
+        .iter()
+        .any(|project| project.id == id)
+    {
+        return Err(ApiError {
+            status: StatusCode::NOT_FOUND,
+            message: "Project no longer exists.".into(),
+        });
+    }
+    Config::edit(&state.root.join(crate::config::CONFIG_FILE), |doc| {
+        if let Some(projects) = doc
+            .get_mut("projects")
+            .and_then(|item| item.as_table_like_mut())
+        {
+            projects.remove(&id);
+        }
+    })
+    .map_err(ApiError::server)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
