@@ -99,11 +99,11 @@ pub fn selection_text(model: &ScreenModel, area: Rect, sel: TextSelect) -> Strin
             session_column(model, usize::from(inner.width))
         }
         SelectPlace::Overlay => {
-            let Some(overlay) = model.overlay.as_ref() else {
+            if model.overlay.is_none() {
                 return String::new();
-            };
+            }
             let pane = split_of(model, area).session;
-            overlay_lines(overlay, overlay_inner_width(pane))
+            overlay::model_lines(model, overlay_inner_width(pane))
         }
     };
     let (from, to) = sel.ordered();

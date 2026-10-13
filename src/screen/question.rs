@@ -28,15 +28,60 @@ pub fn question_preview_area(pane: Rect, overlay: &Overlay) -> Option<Rect> {
     (height >= 5).then(|| Rect::new(frame.x, inner.y + header as u16, frame.width, height))
 }
 
-pub(super) fn render_visual_question(overlay: &Overlay, pane: Rect, frame: &mut Frame) {
+pub(super) fn visual_question_prompt_area(model: &ScreenModel, pane: Rect) -> Rect {
+    let Some(
+        overlay @ Overlay::VisualQuestion {
+            text,
+            choices,
+            visual,
+            ..
+        },
+    ) = model.overlay.as_ref()
+    else {
+        return Rect::default();
+    };
+    let inner = Block::bordered().inner(crate::image_preview::popup(pane));
+    let width = usize::from(inner.width).max(1);
+    let image_rows = question_preview_area(pane, overlay).map_or_else(
+        || wrap(&visual.alt, width).len(),
+        |area| usize::from(area.height),
+    );
+    let header = markdown_lines(text, width).len()
+        + wrap(&visual.title, width).len()
+        + image_rows
+        + choices
+            .iter()
+            .map(|choice| wrap(&choice.label, width.saturating_sub(3).max(1)).len())
+            .sum::<usize>()
+        + 1;
+    let y = inner.y + (header as u16).min(inner.height.saturating_sub(1));
+    Rect::new(inner.x, y, inner.width, inner.bottom().saturating_sub(y))
+}
+
+pub(super) fn render_visual_question(
+    model: &ScreenModel,
+    overlay: &Overlay,
+    pane: Rect,
+    frame: &mut Frame,
+) {
     let Overlay::VisualQuestion {
         text,
         choices,
-        prompt,
+        prompt: draft,
         visual,
+        ..
     } = overlay
     else {
         return;
+    };
+    let mut fallback;
+    let model = if model.bottom_cursor.is_none() {
+        fallback = model.clone();
+        fallback.bottom = draft.clone();
+        fallback.bottom_cursor = Some(draft.len());
+        &fallback
+    } else {
+        model
     };
     let area = crate::image_preview::popup(pane);
     frame.render_widget(Clear, area);
@@ -70,7 +115,8 @@ pub(super) fn render_visual_question(overlay: &Overlay, pane: Rect, frame: &mut 
         ));
     }
     lines.push(key_hint_line("Ctrl-V next diagram · Esc back"));
-    lines.push(Line::from(format!(" › {prompt}█")));
+    let prompt = visual_question_prompt_area(model, pane);
+    lines.truncate(usize::from(prompt.y.saturating_sub(inner.y)));
     for (index, line) in lines
         .into_iter()
         .take(usize::from(inner.height))
@@ -83,5 +129,11 @@ pub(super) fn render_visual_question(overlay: &Overlay, pane: Rect, frame: &mut 
             );
         }
     }
+    let prompt_lines = input::prompt_lines(model, prompt.width);
+    let start = input::input_start(model, prompt, prompt_lines.len());
+    frame.render_widget(
+        Paragraph::new(prompt_lines.into_iter().skip(start).collect::<Vec<_>>()),
+        prompt,
+    );
     super::overlay::paint_close(frame, area);
 }

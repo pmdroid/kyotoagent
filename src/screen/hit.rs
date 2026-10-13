@@ -253,7 +253,7 @@ fn overlay_frame(model: &ScreenModel, area: Rect, overlay: &Overlay) -> Rect {
         return crate::image_preview::popup(pane);
     }
     let width = overlay_inner_width(pane);
-    let lines = overlay_lines(overlay, width);
+    let lines = overlay::model_lines(model, width);
     overlay_rect(pane, lines.len())
 }
 
@@ -276,7 +276,7 @@ pub(super) fn overlay_cell(
     let overlay = model.overlay.as_ref()?;
     let rect = overlay_frame(model, area, overlay);
     let width = usize::from(Block::bordered().inner(rect).width).max(1);
-    let lines = overlay_lines(overlay, width);
+    let lines = overlay::model_lines(model, width);
     let inner = Block::bordered().inner(rect);
     if inner.width == 0 || inner.height == 0 {
         return None;
@@ -286,6 +286,8 @@ pub(super) fn overlay_cell(
     }
     let origin = if matches!(overlay, Overlay::File { .. } | Overlay::Text { .. }) {
         model.file_scroll.min(file_scroll_max(model, area))
+    } else if matches!(overlay, Overlay::Question { .. }) {
+        input::question_origin(model, inner.width, inner.height, lines.len())
     } else {
         0
     };

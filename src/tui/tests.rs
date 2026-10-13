@@ -60,6 +60,22 @@ async fn visual_question_keeps_choice_keys_and_free_text_while_cycling_previews(
     assert!(app.open_image.is_none());
     assert!(app.overlay);
     assert_eq!(app.question_text, "Custom route");
+    let image = match &app.cards[0] {
+        Card::Question { visuals, .. } => visuals[0].image.clone(),
+        _ => unreachable!(),
+    };
+    apply(&mut app, &client, Effect::OpenImage(image))
+        .await
+        .unwrap();
+    composer_modified_key(&mut app, KeyCode::Left, KeyModifiers::SHIFT).await;
+    assert_eq!(&app.question_text[editor::selection(&app).unwrap()], "e");
+    let model = screen_model(&app);
+    let cursor = model.bottom_cursor.unwrap();
+    assert!((0..app.area.height).any(|row| (0..app.area.width)
+        .any(|column| { screen::input_cursor_at(&model, app.area, column, row) == Some(cursor) })));
+    composer_modified_key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL).await;
+    composer_key(&mut app, KeyCode::Char('界')).await;
+    assert_eq!(app.question_text, "界");
 }
 
 #[test]
@@ -4557,6 +4573,8 @@ async fn composer_mouse_and_keyboard_agree_across_wrapping_and_resize() {
         app.area = Rect::new(0, 0, width, 15);
         for target in [0, "界".len(), app.ask.len() / 2, app.ask.len()] {
             app.ask_cursor = Some(target);
+            app.ask_anchor = None;
+            app.input_drag = None;
             let model = screen_model(&app);
             let cursor = model.bottom_cursor.unwrap();
             let backend = ratatui::backend::TestBackend::new(width, 15);
@@ -4575,7 +4593,14 @@ async fn composer_mouse_and_keyboard_agree_across_wrapping_and_resize() {
                 })
                 .expect("visible caret");
             let effect = mouse(click(x, y), &model, app.area).unwrap();
-            assert_eq!(effect, Effect::SetCursor(cursor));
+            assert_eq!(
+                effect,
+                Effect::ArmInputSelect {
+                    position: cursor,
+                    column: x,
+                    row: y
+                }
+            );
             apply(&mut app, &client, effect).await.unwrap();
             assert_eq!(editor::cursor(&app), cursor);
         }
@@ -4665,4 +4690,268 @@ fn coordinated_children_collapse_and_return_to_parent_without_losing_drafts() {
     let drawn = draw_app(&app);
     assert!(drawn.contains("Read the tests"), "{drawn}");
     assert!(drawn.contains("1 waiting"), "{drawn}");
+}
+
+async fn composer_modified_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+    let effect = keystroke(app, KeyEvent::new(code, modifiers)).expect("composer modified key");
+    apply(app, &Client::at(PathBuf::from("/unused")), effect)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn composer_selection_replaces_graphemes_and_collapses_at_either_edge() {
+    let mut app = idle_with_skills();
+    app.ask = "a👩‍💻e\u{301}界z".into();
+    composer_key(&mut app, KeyCode::Left).await;
+    composer_modified_key(&mut app, KeyCode::Left, KeyModifiers::SHIFT).await;
+    composer_modified_key(&mut app, KeyCode::Left, KeyModifiers::SHIFT).await;
+    assert_eq!(
+        editor::selection(&app),
+        Some("a👩‍💻".len().."a👩‍💻e\u{301}界".len())
+    );
+    composer_key(&mut app, KeyCode::Char('!')).await;
+    assert_eq!(app.ask, "a👩‍💻!z");
+    assert!(editor::selection(&app).is_none());
+    composer_modified_key(&mut app, KeyCode::Home, KeyModifiers::SHIFT).await;
+    composer_key(&mut app, KeyCode::Right).await;
+    assert_eq!(editor::cursor(&app), "a👩‍💻!".len());
+    assert!(editor::selection(&app).is_none());
+    composer_modified_key(&mut app, KeyCode::Home, KeyModifiers::SHIFT).await;
+    composer_key(&mut app, KeyCode::Left).await;
+    assert_eq!(editor::cursor(&app), 0);
+    composer_modified_key(&mut app, KeyCode::End, KeyModifiers::SHIFT).await;
+    composer_key(&mut app, KeyCode::Delete).await;
+    assert!(app.ask.is_empty());
+}
+
+#[tokio::test]
+async fn composer_selection_extends_words_lines_and_wrapped_rows() {
+    let mut app = idle_with_skills();
+    app.ask = "first\nhello world".into();
+    composer_modified_key(
+        &mut app,
+        KeyCode::Left,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    )
+    .await;
+    assert_eq!(&app.ask[editor::selection(&app).unwrap()], "world");
+    composer_modified_key(&mut app, KeyCode::Home, KeyModifiers::SHIFT).await;
+    assert_eq!(&app.ask[editor::selection(&app).unwrap()], "hello world");
+    composer_modified_key(&mut app, KeyCode::End, KeyModifiers::SHIFT).await;
+    assert!(editor::selection(&app).is_none());
+    composer_modified_key(&mut app, KeyCode::Up, KeyModifiers::SHIFT).await;
+    let selected = editor::selection(&app).unwrap();
+    assert!(selected.start < "first\n".len());
+    composer_modified_key(&mut app, KeyCode::Down, KeyModifiers::SHIFT).await;
+    assert!(editor::selection(&app).is_some());
+    app.area = Rect::new(0, 0, 20, 15);
+    app.ask = "界e\u{301}👩‍💻 hello ".repeat(12);
+    app.ask_cursor = None;
+    composer_modified_key(&mut app, KeyCode::Up, KeyModifiers::SHIFT).await;
+    let selected = editor::selection(&app).unwrap();
+    assert!(selected.len() < app.ask.len());
+    assert!(app.ask.is_char_boundary(selected.start));
+    assert_eq!(editor::display_selection(&app), Some(selected));
+}
+
+#[tokio::test]
+async fn composer_select_all_replaces_pastes_and_question_drafts_independently() {
+    let mut app = idle_with_skills();
+    app.ask = "old draft".into();
+    composer_modified_key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL).await;
+    let pasted = "界\n".repeat(30);
+    editor::insert(&mut app, &pasted, true);
+    assert_eq!(app.ask, pasted);
+    assert_eq!(app.pastes.len(), 1);
+    composer_modified_key(&mut app, KeyCode::Left, KeyModifiers::SHIFT).await;
+    let model = screen_model(&app);
+    assert_eq!(model.bottom_selection, Some(0..model.bottom.len()));
+    composer_key(&mut app, KeyCode::Backspace).await;
+    assert!(app.ask.is_empty());
+    assert!(app.pastes.is_empty());
+    let mut app = waiting_question("👩‍💻 answer");
+    app.ask = "chat draft".into();
+    composer_modified_key(&mut app, KeyCode::Char('A'), KeyModifiers::CONTROL).await;
+    composer_key(&mut app, KeyCode::Char('界')).await;
+    assert_eq!(app.question_text, "界");
+    assert_eq!(app.ask, "chat draft");
+    assert!(app.ask_anchor.is_none());
+    open_palette(&mut app);
+    assert_ne!(
+        keystroke(
+            &app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)
+        ),
+        Some(Effect::SelectInput)
+    );
+    close_overlay(&mut app);
+    app.question_cursor = None;
+    assert!(editor::selection(&app).is_none());
+}
+
+#[tokio::test]
+async fn composer_selection_mouse_drag_does_not_copy_or_select_the_transcript() {
+    let mut app = idle_with_skills();
+    app.ask = "a👩‍💻e\u{301}界z".into();
+    let area = app.area;
+    let model = screen_model(&app);
+    let point = |position| {
+        (0..area.height)
+            .flat_map(|row| (0..area.width).map(move |column| (column, row)))
+            .find(|&(column, row)| {
+                screen::input_cursor_at(&model, area, column, row) == Some(position)
+            })
+            .unwrap()
+    };
+    let (x, y) = point(1);
+    let (end_x, end_y) = point("a👩‍💻e\u{301}界".len());
+    let client = Client::at(PathBuf::from("/unused"));
+    let down = track_mouse(
+        &mut app,
+        area,
+        pointer(MouseEventKind::Down(MouseButton::Left), x, y),
+    )
+    .unwrap();
+    assert!(matches!(down, Effect::ArmInputSelect { .. }));
+    apply(&mut app, &client, down).await.unwrap();
+    let drag = track_mouse(
+        &mut app,
+        area,
+        pointer(MouseEventKind::Drag(MouseButton::Left), end_x, end_y),
+    )
+    .unwrap();
+    assert!(matches!(drag, Effect::MoveInputSelect(_)));
+    apply(&mut app, &client, drag).await.unwrap();
+    let up = track_mouse(
+        &mut app,
+        area,
+        pointer(MouseEventKind::Up(MouseButton::Left), end_x, end_y),
+    )
+    .unwrap();
+    assert!(matches!(up, Effect::EndInputSelect(_)));
+    apply(&mut app, &client, up).await.unwrap();
+    assert_eq!(&app.ask[editor::selection(&app).unwrap()], "👩‍💻e\u{301}界");
+    assert!(app.select.is_none());
+    assert!(app.input_drag.is_none());
+    composer_key(&mut app, KeyCode::Char('!')).await;
+    assert_eq!(app.ask, "a!z");
+}
+
+#[tokio::test]
+async fn composer_selection_paste_tokens_are_atomic_for_words_and_mouse() {
+    let mut app = idle_with_skills();
+    app.ask = "before after".into();
+    app.ask_cursor = Some(7);
+    let pasted = "界\n".repeat(30);
+    editor::insert(&mut app, &pasted, true);
+    composer_modified_key(
+        &mut app,
+        KeyCode::Left,
+        KeyModifiers::ALT | KeyModifiers::SHIFT,
+    )
+    .await;
+    assert_eq!(&app.ask[editor::selection(&app).unwrap()], pasted);
+    let model = screen_model(&app);
+    assert_eq!(model.bottom_selection, Some(model.pasted_ranges[0].clone()));
+    composer_key(&mut app, KeyCode::Char('!')).await;
+    assert_eq!(app.ask, "before !after");
+    assert!(app.pastes.is_empty());
+    editor::insert(&mut app, &pasted, true);
+    let model = screen_model(&app);
+    let range = model.pasted_ranges[0].clone();
+    editor::set_display_cursor(&mut app, range.start + 1);
+    let anchor = editor::cursor(&app);
+    editor::set_anchor(&mut app, Some(anchor));
+    editor::extend_display_cursor(&mut app, range.end - 1);
+    assert_eq!(&app.ask[editor::selection(&app).unwrap()], pasted);
+    editor::delete(&mut app, Effect::DeleteForward);
+    assert_eq!(app.ask, "before !after");
+    assert!(app.pastes.is_empty());
+}
+
+#[tokio::test]
+async fn composer_selection_edits_the_open_question_overlay() {
+    let mut app = waiting_question("a👩‍💻e\u{301}界z");
+    app.overlay = true;
+    let area = app.area;
+    let model = screen_model(&app);
+    assert!(matches!(model.overlay, Some(Overlay::Question { .. })));
+    let point = |position| {
+        (0..area.height)
+            .flat_map(|row| (0..area.width).map(move |column| (column, row)))
+            .find(|&(column, row)| {
+                screen::input_cursor_at(&model, area, column, row) == Some(position)
+            })
+            .unwrap()
+    };
+    let (x, y) = point(1);
+    let (end_x, end_y) = point("a👩‍💻e\u{301}界".len());
+    let client = Client::at(PathBuf::from("/unused"));
+    for event in [
+        pointer(MouseEventKind::Down(MouseButton::Left), x, y),
+        pointer(MouseEventKind::Drag(MouseButton::Left), end_x, end_y),
+        pointer(MouseEventKind::Up(MouseButton::Left), end_x, end_y),
+    ] {
+        let effect = track_mouse(&mut app, area, event).unwrap();
+        apply(&mut app, &client, effect).await.unwrap();
+    }
+    assert_eq!(
+        &app.question_text[editor::selection(&app).unwrap()],
+        "👩‍💻e\u{301}界"
+    );
+    composer_key(&mut app, KeyCode::Char('!')).await;
+    assert_eq!(app.question_text, "a!z");
+    composer_modified_key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL).await;
+    composer_key(&mut app, KeyCode::Delete).await;
+    assert!(app.question_text.is_empty());
+}
+
+#[tokio::test]
+async fn composer_selection_question_overlay_scrolls_the_active_edge_into_view() {
+    let mut app = waiting_question(&"界e\u{301}👩‍💻 answer\n".repeat(20));
+    app.overlay = true;
+    app.area = Rect::new(0, 0, 42, 15);
+    composer_modified_key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL).await;
+    for movement in [
+        CursorMove::Home,
+        CursorMove::Up,
+        CursorMove::Down,
+        CursorMove::End,
+    ] {
+        editor::extend_cursor(&mut app, movement);
+        let model = screen_model(&app);
+        let cursor = model.bottom_cursor.unwrap();
+        assert!(
+            (0..app.area.height).any(|row| (0..app.area.width).any(|column| {
+                screen::input_cursor_at(&model, app.area, column, row) == Some(cursor)
+            }))
+        );
+    }
+    editor::set_display_cursor(&mut app, 0);
+    let model = screen_model(&app);
+    assert!((0..app.area.height).any(|row| (0..app.area.width)
+        .any(|column| { screen::input_cursor_at(&model, app.area, column, row) == Some(0) })));
+}
+
+#[test]
+fn composer_selection_shortcuts_do_not_override_permission_or_modal_bindings() {
+    let mut app = idle_with_skills();
+    app.ask = "draft".into();
+    let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert_eq!(keystroke(&app, ctrl_a), Some(Effect::SelectInput));
+    assert_eq!(
+        keystroke(
+            &app,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT | KeyModifiers::CONTROL)
+        ),
+        Some(Effect::ExtendCursor(CursorMove::WordRight))
+    );
+    app.overlay = true;
+    assert_ne!(keystroke(&app, ctrl_a), Some(Effect::SelectInput));
+    assert_eq!(key(ctrl_a, Mode::Permission, false), None);
+    assert_eq!(
+        key(press(KeyCode::Char('a')), Mode::Permission, false),
+        Some(Effect::AllowOnce)
+    );
 }

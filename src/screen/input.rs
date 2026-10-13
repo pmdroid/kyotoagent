@@ -26,8 +26,7 @@ fn prompt_layout(model: &ScreenModel, width: u16) -> PromptLayout {
         .chain(text)
         .chain(std::iter::once((Some(model.bottom.len()), " ")))
     {
-        let cells =
-            UnicodeWidthStr::width(part).max(usize::from(part == "\n" && index == Some(cursor)));
+        let cells = UnicodeWidthStr::width(part).max(usize::from(part == "\n"));
         if x > 0 && x + cells > width {
             layout.lines.push(Line::default());
             x = 0;
@@ -40,8 +39,19 @@ fn prompt_layout(model: &ScreenModel, width: u16) -> PromptLayout {
             }
         }
         let at_cursor = index == Some(cursor);
+        let selected = index.is_some_and(|index| {
+            model
+                .bottom_selection
+                .as_ref()
+                .is_some_and(|range| range.contains(&index))
+        });
         if part == "\n" {
-            if at_cursor {
+            if selected {
+                layout.lines[y].spans.push(Span::styled(
+                    " ",
+                    theme::input().add_modifier(Modifier::REVERSED),
+                ));
+            } else if at_cursor {
                 layout.lines[y]
                     .spans
                     .push(Span::styled("█", theme::cursor().bg(theme::selected_bg())));
@@ -51,7 +61,9 @@ fn prompt_layout(model: &ScreenModel, width: u16) -> PromptLayout {
             y += 1;
             continue;
         }
-        let style = if at_cursor {
+        let style = if selected {
+            theme::input().add_modifier(Modifier::REVERSED)
+        } else if at_cursor {
             if index == Some(model.bottom.len()) {
                 theme::cursor().bg(theme::selected_bg())
             } else {
@@ -83,12 +95,34 @@ pub(super) fn prompt_lines(model: &ScreenModel, width: u16) -> Vec<Line<'static>
 }
 
 fn content_area(model: &ScreenModel, area: Rect) -> Rect {
+    if matches!(model.overlay, Some(Overlay::VisualQuestion { .. })) {
+        return question::visual_question_prompt_area(model, split_of(model, area).session);
+    }
+    if matches!(model.overlay, Some(Overlay::Question { .. })) {
+        let pane = split_of(model, area).session;
+        let width = overlay::overlay_inner_width(pane);
+        let lines = overlay::model_lines(model, width);
+        let inner = Block::bordered().inner(overlay::overlay_rect(pane, lines.len()));
+        let prompt_rows = prompt_layout(model, inner.width).lines.len();
+        let header_rows = lines.len().saturating_sub(prompt_rows);
+        let origin = question_origin(model, inner.width, inner.height, lines.len());
+        let y = inner.y + header_rows.saturating_sub(origin) as u16;
+        return Rect::new(inner.x, y, inner.width, inner.bottom().saturating_sub(y));
+    }
     let input = split_of(model, area).input;
     if composer_framed(model, area.height) {
         Block::bordered().inner(input)
     } else {
         input
     }
+}
+
+pub(super) fn question_origin(model: &ScreenModel, width: u16, height: u16, total: usize) -> usize {
+    let layout = prompt_layout(model, width);
+    let header = total.saturating_sub(layout.lines.len());
+    total
+        .saturating_sub(usize::from(height))
+        .min(header + layout.cursor_row)
 }
 
 pub(super) fn input_start(model: &ScreenModel, content: Rect, total: usize) -> usize {
@@ -113,7 +147,13 @@ fn nearest(layout: &PromptLayout, x: usize, y: usize) -> usize {
 }
 
 pub fn input_cursor_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -> Option<usize> {
-    if model.bottom_cursor.is_none() || model.overlay.is_some() {
+    if model.bottom_cursor.is_none()
+        || (model.overlay.is_some()
+            && !matches!(
+                model.overlay,
+                Some(Overlay::Question { .. } | Overlay::VisualQuestion { .. })
+            ))
+    {
         return None;
     }
     let content = content_area(model, area);
@@ -128,6 +168,24 @@ pub fn input_cursor_at(model: &ScreenModel, area: Rect, column: u16, row: u16) -
     );
     let y = usize::from(row - content.y) + start;
     (y < layout.lines.len()).then(|| nearest(&layout, usize::from(column - content.x), y))
+}
+
+pub fn input_drag_cursor_at(
+    model: &ScreenModel,
+    area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    let content = content_area(model, area);
+    if content.width == 0 || content.height == 0 {
+        return None;
+    }
+    input_cursor_at(
+        model,
+        area,
+        column.clamp(content.x, content.right() - 1),
+        row.clamp(content.y, content.bottom() - 1),
+    )
 }
 
 pub fn move_input_vertical(model: &ScreenModel, area: Rect, down: bool) -> usize {

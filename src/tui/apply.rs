@@ -333,6 +333,25 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
             editor::delete(app, Effect::Backspace);
         }
         Effect::MoveCursor(movement) => editor::move_cursor(app, movement),
+        Effect::ExtendCursor(movement) => editor::extend_cursor(app, movement),
+        Effect::SelectInput => editor::select_all(app),
+        Effect::ArmInputSelect {
+            position,
+            column,
+            row,
+        } => {
+            editor::set_display_cursor(app, position);
+            let anchor = editor::cursor(app);
+            editor::set_anchor(app, Some(anchor));
+            app.input_drag = Some((column, row, position));
+        }
+        Effect::MoveInputSelect(position) => editor::extend_display_cursor(app, position),
+        Effect::EndInputSelect(position) => {
+            if let Some(position) = position {
+                editor::extend_display_cursor(app, position);
+            }
+            app.input_drag = None;
+        }
         Effect::SetCursor(position) => editor::set_display_cursor(app, position),
         Effect::DeleteForward => editor::delete(app, Effect::DeleteForward),
         Effect::Complete => {
