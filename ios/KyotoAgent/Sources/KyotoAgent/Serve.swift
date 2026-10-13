@@ -55,6 +55,7 @@ nonisolated public enum ServeCall: Equatable, Sendable {
     case deleteDevice(String)
     case sessions
     case projects
+    case deleteProject(String)
     case view(String)
     case message(id: String, text: String, images: [ImageAttachment] = [])
     case btw(id: String, text: String)
@@ -203,6 +204,10 @@ nonisolated public struct ServeClient: Sendable {
         } catch {
             throw HostError.status(response.status, responseText(response.body))
         }
+    }
+
+    nonisolated public func deleteProject(_ id: String) async throws {
+        try await expectEmpty(.deleteProject(id))
     }
 
     nonisolated public func profiles() async throws -> [String] {
@@ -420,6 +425,9 @@ nonisolated public func serveRequest(baseURL: URL, call: ServeCall) -> URLReques
         path = "/v1/sessions"
     case .projects:
         path = "/v1/projects"
+    case .deleteProject(let id):
+        path = "/v1/projects/" + id
+        method = "DELETE"
     case .view(let id):
         path = "/v1/sessions/" + id + "/view"
     case .message(let id, let text, let images):

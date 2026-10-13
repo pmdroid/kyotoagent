@@ -39,6 +39,7 @@ struct RootView: SwiftUI.View {
             guard press.key == KeyEquivalent("w"), press.modifiers.contains(.control) else {
                 return .ignored
             }
+            guard !connections.selectingSessions, !connections.deletingSessions else { return .ignored }
             model.pressDelete()
             return .handled
         }

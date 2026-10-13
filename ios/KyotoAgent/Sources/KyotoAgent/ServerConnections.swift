@@ -38,10 +38,17 @@ public final class ServerConnections {
     public private(set) var models: [String: AppModel]
     public var visibleSessionID: String?
     public var sessionFilter: SessionListFilter = .all
+    public private(set) var selectingSessions = false
+    public private(set) var selectedSessions: Set<ServerItemID> = []
+    public private(set) var sessionDeletion: SessionDeletionConfirmation?
+    public private(set) var deletingSessions = false
+    public private(set) var sessionDeletionFailures: [SessionDeletionFailure] = []
+    public private(set) var sessionDeletionNotice: String?
     public private(set) var notificationRevision = 0
     public var notificationsChanged: (@MainActor () async -> Void)?
     public var serverRemoved: (@MainActor (SavedServer) -> Void)?
     private var selectionRevision = 0
+    private var lastSessionDeletion: UUID?
     private var launchConnection: Swift.Task<Void, Never>?
     private var connectionTasks: [ObjectIdentifier: Swift.Task<Void, Never>] = [:]
     private let store: any BaseURLStoring
@@ -246,6 +253,97 @@ public final class ServerConnections {
         connectionTasks.removeValue(forKey: id)
     }
 
+    public func beginSessionSelection() {
+        guard !deletingSessions else { return }
+        selectingSessions = true
+        selectedSessions = []
+        sessionDeletionFailures = []
+        sessionDeletionNotice = nil
+    }
+
+    public func cancelSessionSelection() {
+        guard !deletingSessions else { return }
+        selectingSessions = false
+        selectedSessions = []
+        sessionDeletion = nil
+        sessionDeletionFailures = []
+        sessionDeletionNotice = nil
+    }
+
+    public func updateSelectedSessions(_ ids: Set<ServerItemID>) {
+        guard selectingSessions, !deletingSessions, sessionDeletion == nil else { return }
+        selectedSessions = ids
+    }
+
+    public func toggleSessionSelection(_ id: ServerItemID) {
+        guard selectingSessions, !deletingSessions, sessionDeletion == nil else { return }
+        if selectedSessions.contains(id) { selectedSessions.remove(id) } else { selectedSessions.insert(id) }
+    }
+
+    private func deletionTarget(_ id: ServerItemID) -> SessionDeletionTarget? {
+        guard let candidate = models[id.serverID], let session = candidate.sessions.first(where: { $0.id == id.itemID }),
+              let server = servers.first(where: { $0.id == id.serverID }) else { return nil }
+        return SessionDeletionTarget(id: id, serverTitle: server.title, title: session.title ?? session.id, model: candidate)
+    }
+
+    public func requestSelectedSessionDeletion() {
+        guard !deletingSessions else { return }
+        let retries = Dictionary(uniqueKeysWithValues: sessionDeletionFailures.map { ($0.target.id, $0.target) })
+        let targets = selectedSessions.compactMap { deletionTarget($0) ?? retries[$0] }
+            .sorted { ($0.id.serverID, $0.id.itemID ?? "") < ($1.id.serverID, $1.id.itemID ?? "") }
+        guard !targets.isEmpty else { return }
+        sessionDeletion = SessionDeletionConfirmation(targets: targets, serverTitle: nil)
+    }
+
+    public var currentServerArchivedCount: Int { model.sessions.filter(\.archived).count }
+
+    public func requestArchivedSessionDeletion() {
+        guard !deletingSessions, let activeID, let server = servers.first(where: { $0.id == activeID }) else { return }
+        let targets = model.sessions.filter(\.archived).compactMap {
+            deletionTarget(ServerItemID(serverID: activeID, itemID: $0.id))
+        }
+        guard !targets.isEmpty else { return }
+        sessionDeletion = SessionDeletionConfirmation(targets: targets, serverTitle: server.title)
+    }
+
+    public func cancelSessionDeletion() {
+        guard !deletingSessions else { return }
+        sessionDeletion = nil
+    }
+
+    public func confirmSessionDeletion(_ confirmation: SessionDeletionConfirmation) async {
+        guard !deletingSessions, lastSessionDeletion != confirmation.id else { return }
+        lastSessionDeletion = confirmation.id
+        deletingSessions = true
+        selectingSessions = true
+        sessionDeletion = nil
+        sessionDeletionFailures = []
+        sessionDeletionNotice = nil
+        defer { deletingSessions = false }
+        var failures: [SessionDeletionFailure] = []
+        var affected: [String: AppModel] = [:]
+        for target in confirmation.targets {
+            guard let sessionID = target.id.itemID else { continue }
+            affected[target.id.serverID] = target.model
+            do {
+                try await target.model.deleteSessionWithoutRefresh(sessionID)
+            } catch let error as HostError {
+                failures.append(SessionDeletionFailure(target: target, message: error.serverMessage))
+            } catch {
+                failures.append(SessionDeletionFailure(target: target, message: error.localizedDescription))
+            }
+        }
+        for candidate in affected.values { await candidate.refreshSessions() }
+        sessionDeletionFailures = failures
+        selectedSessions = Set(failures.map { $0.target.id })
+        selectingSessions = !failures.isEmpty
+        let deleted = confirmation.targets.count - failures.count
+        sessionDeletionNotice = failures.isEmpty
+            ? "Deleted \(deleted) sessions. Worktrees and files were kept."
+            : "Deleted \(deleted) of \(confirmation.targets.count) sessions. \(failures.count) could not be deleted. Retry the selected sessions."
+        await notificationsChanged?()
+    }
+
     public func pollSessions() async {
         await withTaskGroup(of: Void.self) { group in
             for server in servers {
@@ -320,6 +418,30 @@ public final class ServerConnections {
 nonisolated public struct ServerItemID: Hashable, Sendable {
     public var serverID: String
     public var itemID: String?
+}
+
+nonisolated public struct SessionDeletionTarget: Identifiable, Sendable {
+    public let id: ServerItemID
+    public let serverTitle: String
+    public let title: String
+    public let model: AppModel
+}
+
+nonisolated public struct SessionDeletionConfirmation: Identifiable, Sendable {
+    public let id = UUID()
+    public let targets: [SessionDeletionTarget]
+    public let serverTitle: String?
+    public var title: String { "Delete \(targets.count) sessions?" }
+    public var message: String {
+        let scope = serverTitle.map { "These archived sessions are on \($0). " } ?? ""
+        return scope + "This permanently deletes the selected sessions. Worktrees and files will be kept."
+    }
+}
+
+nonisolated public struct SessionDeletionFailure: Identifiable, Sendable {
+    public var target: SessionDeletionTarget
+    public var message: String
+    public var id: ServerItemID { target.id }
 }
 
 nonisolated public struct ServerProject: Identifiable, Sendable {
