@@ -4,6 +4,9 @@ struct NewSessionScreen: SwiftUI.View {
     var model: AppModel
     @Environment(ServerConnections.self) private var connections
     @State private var selectedServerID: String?
+    @State private var projectToRemove: ServerProject?
+    @State private var removingProject = false
+    @State private var removalFailure: String?
     var onClose: () -> Void = {}
 
     private var creationModel: AppModel {
@@ -14,6 +17,12 @@ struct NewSessionScreen: SwiftUI.View {
         @Bindable var model = creationModel
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if removingProject { ProgressView("Removing project") }
+                if let removalFailure {
+                    Text(removalFailure)
+                        .foregroundStyle(Ink.permission)
+                        .accessibilityIdentifier("project-removal-failure")
+                }
                 places
                 placeSwitch
                 profilePicker
@@ -44,6 +53,34 @@ struct NewSessionScreen: SwiftUI.View {
                 }
             }
             .padding(20)
+        }
+        .disabled(removingProject)
+        .confirmationDialog(
+            "Remove project?",
+            isPresented: Binding(get: { projectToRemove != nil }, set: { if !$0 { projectToRemove = nil } }),
+            titleVisibility: .visible,
+            presenting: projectToRemove
+        ) { item in
+            Button("Remove \(item.project.name)", role: .destructive) {
+                Swift.Task {
+                    removingProject = true
+                    removalFailure = nil
+                    defer { removingProject = false }
+                    do {
+                        guard let owner = connections.models[item.server.id] else {
+                            throw HostError.transport("This server is no longer saved")
+                        }
+                        try await owner.removeProject(item.project.id)
+                    } catch let error as HostError {
+                        removalFailure = error.serverMessage
+                    } catch {
+                        removalFailure = error.localizedDescription
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) { projectToRemove = nil }
+        } message: { item in
+            Text("Forget \(item.project.name) on \(item.server.title)? Sessions, worktrees, and files will be kept.")
         }
         .background(Ink.canvas)
         .navigationTitle("New")
@@ -97,38 +134,49 @@ struct NewSessionScreen: SwiftUI.View {
         let project = item.project
         let model = creationModel
         let chosen = (selectedServerID ?? connections.activeID) == item.server.id && model.selectedProjectID == project.id
-        return Button {
-            selectedServerID = item.server.id
-            connections.models[item.server.id]?.selectedProjectID = project.id
-        } label: {
-            HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text(project.name)
-                            .font(.headline)
-                            .foregroundStyle(Ink.text)
-                        ServerBadge(title: item.server.title)
+        return HStack(spacing: 12) {
+            Button {
+                selectedServerID = item.server.id
+                connections.models[item.server.id]?.selectedProjectID = project.id
+            } label: {
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 8) {
+                            Text(project.name)
+                                .font(.headline)
+                                .foregroundStyle(Ink.text)
+                            ServerBadge(title: item.server.title)
+                        }
+                        Text(project.path)
+                            .font(.subheadline)
+                            .foregroundStyle(Ink.faint)
+                            .lineLimit(1)
                     }
-                    Text(project.path)
-                        .font(.subheadline)
-                        .foregroundStyle(Ink.faint)
-                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    if chosen {
+                        Text("selected")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Ink.accent)
+                    }
                 }
-                Spacer(minLength: 8)
-                if chosen {
-                    Text("selected")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Ink.accent)
-                }
+                .padding(16)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(chosen ? Ink.selected : Ink.card)
+                )
             }
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(chosen ? Ink.selected : Ink.card)
-            )
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("project-" + item.server.id + "-" + project.id)
+            Menu {
+                Button("Remove project", systemImage: "trash", role: .destructive) { projectToRemove = item }
+                    .accessibilityIdentifier("remove-project-" + item.server.id + "-" + project.id)
+            } label: {
+                Label("Manage \(project.name)", systemImage: "ellipsis")
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .accessibilityIdentifier("manage-project-" + item.server.id + "-" + project.id)
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("project-" + item.server.id + "-" + project.id)
     }
 
     private var profilePicker: some SwiftUI.View {

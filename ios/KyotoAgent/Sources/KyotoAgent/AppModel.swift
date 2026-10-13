@@ -541,6 +541,16 @@ public final class AppModel {
         projectsReady = true
     }
 
+    public func removeProject(_ id: String) async throws {
+        guard connected, let client else { throw HostError.transport("Connect to this server first") }
+        let context = serverContext
+        try await client.deleteProject(id)
+        guard currentServer(context, server: client.baseURL) else { return }
+        projects.removeAll { $0.id == id }
+        if selectedProjectID == id { selectedProjectID = nil }
+        await loadProjects(resetCreation: false)
+    }
+
     @discardableResult
     public func createSession() async -> Bool {
         guard connected, let client, canCreate else {
@@ -641,11 +651,9 @@ public final class AppModel {
     }
 
     public func closeSession(_ id: String, deleteWorkspace: Bool = false) async {
-        guard connected, let client else {
-            return
-        }
+        guard connected else { return }
         do {
-            try await client.deleteSession(id, deleteWorkspace: deleteWorkspace)
+            try await deleteSessionWithoutRefresh(id, deleteWorkspace: deleteWorkspace)
         } catch let error as HostError {
             notice = error.serverMessage
             return
@@ -654,6 +662,14 @@ public final class AppModel {
             return
         }
         notice = nil
+        await refreshSessions()
+    }
+
+    public func deleteSessionWithoutRefresh(_ id: String, deleteWorkspace: Bool = false) async throws {
+        guard connected, let client else { throw HostError.transport("Connect to this server first") }
+        let context = serverContext
+        try await client.deleteSession(id, deleteWorkspace: deleteWorkspace)
+        guard currentServer(context, server: client.baseURL) else { return }
         if selection == id {
             selection = nil
             requestContext = UUID()
@@ -661,12 +677,18 @@ public final class AppModel {
             pastedDraft = nil
             transcriptFailure = nil
             transcript = TranscriptWindow()
+            openedFile = nil
+            fileFailure = nil
+            closeTask()
+            overlay = nil
+            shownImage = nil
+            shownPull = nil
+            dismissedQuestion = nil
+            dismissedPermission = nil
         }
-        if preferences.id == id {
-            preferences.id = nil
-        }
+        if preferences.id == id { preferences.id = nil }
+        if deleteConfirm?.id == id { deleteConfirm = nil }
         sessions.removeAll { $0.id == id }
-        await refreshSessions()
     }
 
     public func openPull(_ session: Session) {

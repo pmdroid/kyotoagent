@@ -538,6 +538,25 @@ final class CommandClientTests: XCTestCase {
         XCTAssertNotNil(model.pastedInput)
     }
 
+    func testNativeSelectionBindingAcceptsRangeReplacementAndDeletionWithoutSending() async throws {
+        let gate = try scriptGate()
+        let model = try await open(gate)
+        model.updateComposerDraft("hello 👩‍💻 brave world")
+        var edited = model.composerDraft
+        edited.replaceSubrange(try XCTUnwrap(edited.range(of: "👩‍💻 brave")), with: "wonderful")
+        model.updateComposerDraft(edited)
+        XCTAssertEqual(model.composerDraft, "hello wonderful world")
+        edited = model.composerDraft
+        edited.removeSubrange(try XCTUnwrap(edited.range(of: "wonderful ")))
+        model.updateComposerDraft(edited)
+        await model.refreshOpenView()
+        XCTAssertEqual(model.composerDraft, "hello world")
+        model.open("c0ffee01")
+        model.open("a11a0001")
+        XCTAssertEqual(model.composerDraft, "hello world")
+        XCTAssertFalse(gate.calls.contains { $0.path.hasSuffix("/messages") })
+    }
+
     private func open(_ gate: Gate) async throws -> AppModel {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("kyoto-" + UUID().uuidString, isDirectory: true)

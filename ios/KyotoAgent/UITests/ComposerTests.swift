@@ -41,6 +41,7 @@ final class ComposerTests: XCTestCase {
         app.buttons["composer-send"].tap()
         XCTAssertTrue(app.staticTexts[edited].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["composer-notice"].exists)
+        verifyNativeSelection(in: app, field: field)
         field.tap()
         typeAtKeyboardPace("/pre", into: field)
         let skill = app.buttons["slash-match-preflight"]
@@ -50,6 +51,23 @@ final class ComposerTests: XCTestCase {
         capture("Skill autocomplete")
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "/preflight ".count))
         verifyCloseout(in: app, field: field)
+    }
+
+    private func verifyNativeSelection(in app: XCUIApplication, field: XCUIElement) {
+        field.tap()
+        typeAtKeyboardPace("hello brave world", into: field)
+        let firstWord = field.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
+            .withOffset(CGVector(dx: 30, dy: 0))
+        firstWord.doubleTap()
+        field.typeText("goodbye")
+        XCTAssertEqual(field.value as? String, "goodbye brave world")
+        capture("Native selected word replacement")
+        firstWord.doubleTap()
+        field.typeText(XCUIKeyboardKey.delete.rawValue)
+        XCTAssertEqual(field.value as? String, " brave world")
+        capture("Native selected word deletion")
+        app.buttons["composer-send"].tap()
+        XCTAssertTrue(app.staticTexts["brave world"].waitForExistence(timeout: 10))
     }
 
     private func verifyCloseout(in app: XCUIApplication, field: XCUIElement) {

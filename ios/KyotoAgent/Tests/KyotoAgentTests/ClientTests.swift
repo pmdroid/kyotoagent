@@ -6,6 +6,26 @@ import FoundationNetworking
 
 @MainActor
 final class ClientTests: XCTestCase {
+    func testProjectDeletionUsesAuthenticatedEndpointAndRequiresEmptyAcknowledgement() async throws {
+        let gate = Gate()
+        gate.handler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/projects/project-id")
+            XCTAssertEqual(request.httpMethod, "DELETE")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
+            XCTAssertNil(request.httpBody)
+            return HostResponse(status: 204, body: Data())
+        }
+        let client = ServeClient(baseURL: URL(string: "https://example.test")!, transport: gate, token: "test-token")
+        try await client.deleteProject("project-id")
+        gate.handler = { _ in HostResponse(status: 404, body: Data("Unknown project".utf8)) }
+        do {
+            try await client.deleteProject("project-id")
+            XCTFail("Expected unknown project error")
+        } catch {
+            XCTAssertEqual(error as? HostError, .status(404, "Unknown project"))
+        }
+    }
+
     func testBtwUsesItsOwnAuthenticatedEndpointAndPreservesErrors() async throws {
         let gate = Gate()
         gate.handler = { request in
