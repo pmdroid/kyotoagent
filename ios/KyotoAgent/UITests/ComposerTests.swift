@@ -64,7 +64,7 @@ final class ComposerTests: XCTestCase {
         capture("Native selected word replacement")
         firstWord.doubleTap()
         field.typeText(XCUIKeyboardKey.delete.rawValue)
-        XCTAssertEqual(field.value as? String, " brave world")
+        XCTAssertEqual(field.value as? String, "brave world")
         capture("Native selected word deletion")
         app.buttons["composer-send"].tap()
         XCTAssertTrue(app.staticTexts["brave world"].waitForExistence(timeout: 10))
