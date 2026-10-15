@@ -48,10 +48,10 @@ pub(super) fn failure(error: &ChatError) -> Failure {
             if permanent(body) {
                 return Failure::Fatal;
             }
-            if *status == 400 || *status == 413 {
-                if code.as_deref().is_some_and(overflow_code) || overflow_text(body) {
-                    return Failure::Overflow;
-                }
+            if (*status == 400 || *status == 413)
+                && (code.as_deref().is_some_and(overflow_code) || overflow_text(body))
+            {
+                return Failure::Overflow;
             }
             if retry_status(*status) || code.as_deref().is_some_and(retry_code) {
                 return Failure::Retry {
