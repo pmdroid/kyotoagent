@@ -121,6 +121,12 @@ pub(super) async fn run_compact(
                     break;
                 }
                 failure = String::from("the summary was empty or too short to preserve the task");
+                if attempt < 2 {
+                    tokio::select! {
+                        _ = cancel.changed() => return Ok(()),
+                        _ = tokio::time::sleep(Duration::from_secs(3)) => {},
+                    }
+                }
             }
             Ok(Err(error)) if error.is_context_overflow() => {
                 shrink_transcript(messages.get_mut(1));
