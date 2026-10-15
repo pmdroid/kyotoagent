@@ -456,7 +456,16 @@ async fn type_text(app: &mut App, client: &Client, text: &str) {
 }
 
 async fn wait_until(app: &mut App, client: &Client, pred: impl Fn(&App) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    wait_until_within(app, client, Duration::from_secs(10), pred).await
+}
+
+async fn wait_until_within(
+    app: &mut App,
+    client: &Client,
+    limit: Duration,
+    pred: impl Fn(&App) -> bool,
+) {
+    let deadline = Instant::now() + limit;
     loop {
         poll(app, client).await.expect("the screen polls");
         if pred(app) {
@@ -3853,6 +3862,9 @@ async fn retry_posts_when_the_card_has_an_error() {
         "enhance-retry",
         vec![
             Canned::Status(500, "down".into()),
+            Canned::Status(500, "down".into()),
+            Canned::Status(500, "down".into()),
+            Canned::Status(500, "down".into()),
             Canned::Json(prose("A better prompt.")),
             Canned::Json(tool_call_reply(vec![(
                 "finish",
@@ -3863,7 +3875,16 @@ async fn retry_posts_when_the_card_has_an_error() {
     .await;
     let mut app = idle_session(&fixture).await;
     turn_enhance_on(&mut app, &fixture.client).await;
-    send_for_card(&mut app, &fixture.client, "ship it").await;
+    type_text(&mut app, &fixture.client, "ship it").await;
+    drive(&mut app, &fixture.client, press(KeyCode::Enter)).await;
+    assert!(app.ask.is_empty());
+    wait_until_within(&mut app, &fixture.client, Duration::from_secs(20), |app| {
+        enhance_open(app)
+            && app
+                .selected_session()
+                .is_some_and(|row| row.status == Status::Waiting)
+    })
+    .await;
     assert!(matches!(
         screen_model(&app).overlay,
         Some(Overlay::Enhance { error: Some(_), .. })

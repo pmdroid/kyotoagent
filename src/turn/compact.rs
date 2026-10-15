@@ -111,10 +111,10 @@ pub(super) async fn run_compact(
     for attempt in 0..3 {
         let reply = tokio::select! {
             _ = cancel.changed() => return Ok(()),
-            result = tokio::time::timeout(Duration::from_secs(120), client.compact(&messages)) => result,
+            result = client.compact(&messages) => result,
         };
         match reply {
-            Ok(Ok(reply)) => {
+            Ok(reply) => {
                 let text = reply.text().trim().to_string();
                 if text.chars().count() >= crate::compact::MIN_SUMMARY_CHARS {
                     summary = Some(text);
@@ -122,7 +122,7 @@ pub(super) async fn run_compact(
                 }
                 failure = String::from("the summary was empty or too short to preserve the task");
             }
-            Ok(Err(error)) if error.is_context_overflow() => {
+            Err(error) if error.is_context_overflow() => {
                 shrink_transcript(messages.get_mut(1));
                 if messages.len() > 2 {
                     shrink_transcript(messages.last_mut());
@@ -130,7 +130,7 @@ pub(super) async fn run_compact(
                 failure = error.to_string();
                 continue;
             }
-            Ok(Err(error)) => {
+            Err(error) => {
                 let retryable = matches!(
                     &error,
                     ChatError::Transport(_)
@@ -145,7 +145,6 @@ pub(super) async fn run_compact(
                     break;
                 }
             }
-            Err(_) => failure = String::from("the summary request timed out"),
         }
         if attempt < 2 {
             tokio::select! {
