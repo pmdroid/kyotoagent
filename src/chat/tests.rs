@@ -1862,6 +1862,7 @@ async fn compact_recovers_from_a_rejected_request() {
     assert!(client.compact(&a_conversation()).await.is_ok());
     assert_eq!(server.received.lock().unwrap().len(), 2);
 }
+
 #[tokio::test]
 async fn auth_and_payment_errors_are_not_retried() {
     for code in [400, 401, 402, 403] {

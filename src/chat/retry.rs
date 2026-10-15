@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime};
 use tokio::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Failure {
+pub enum Failure {
     Retry { after: Option<Duration> },
     Overflow,
     Fatal,

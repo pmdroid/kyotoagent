@@ -37,7 +37,7 @@ use crate::config::Config;
 
 mod catalog;
 mod retry;
-pub use retry::RetryStatus;
+pub use retry::{Failure, RetryStatus};
 
 pub use catalog::*;
 
