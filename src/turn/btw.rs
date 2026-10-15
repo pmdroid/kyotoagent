@@ -1,5 +1,4 @@
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use crate::chat::{ChatClient, Message};
 use crate::events::{now, Event, EventKind};
@@ -164,11 +163,10 @@ impl Runner {
             let outcome = tokio::select! {
                 biased;
                 _ = receiver.changed() => ("cancelled", "Side question cancelled.".to_string()),
-                result = tokio::time::timeout(Duration::from_secs(120), client.rewrite(&model, &snapshot)) => match result {
-                    Ok(Ok(reply)) if !reply.wants_tools() && !reply.text().trim().is_empty() => ("answered", reply.text().trim().to_string()),
-                    Ok(Ok(_)) => ("failed", "The model did not return a text answer. Use /btw retry.".into()),
-                    Ok(Err(error)) => ("failed", error.to_string()),
-                    Err(_) => ("failed", "The side answer timed out. Use /btw retry.".into()),
+                result = client.rewrite(&model, &snapshot) => match result {
+                    Ok(reply) if !reply.wants_tools() && !reply.text().trim().is_empty() => ("answered", reply.text().trim().to_string()),
+                    Ok(_) => ("failed", "The model did not return a text answer. Use /btw retry.".into()),
+                    Err(error) => ("failed", error.to_string()),
                 }
             };
             let mut slot = state.btw.lock().expect("btw slot");
