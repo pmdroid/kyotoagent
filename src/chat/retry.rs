@@ -1,3 +1,4 @@
+use super::ChatError;
 use reqwest::header::HeaderMap;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -5,6 +6,87 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 use tokio::time::Instant;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Failure {
+    Retry { after: Option<Duration> },
+    Overflow,
+    Fatal,
+}
+
+const RETRY_CODES: &[&str] = &[
+    "server_is_overloaded",
+    "server_error",
+    "internal_server_error",
+    "rate_limit_exceeded",
+    "overloaded_error",
+];
+
+const OVERFLOW_CODES: &[&str] = &[
+    "input_too_large",
+    "context_length_exceeded",
+    "context_window_exceeded",
+];
+
+pub(super) fn error_code(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body).ok().and_then(|value| {
+        value
+            .pointer("/error/code")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+}
+
+pub(super) fn failure(error: &ChatError) -> Failure {
+    match error {
+        ChatError::Status {
+            status,
+            body,
+            code,
+            retry_after,
+        } => {
+            if permanent(body) {
+                return Failure::Fatal;
+            }
+            if *status == 400 || *status == 413 {
+                if code.as_deref().is_some_and(overflow_code) || overflow_text(body) {
+                    return Failure::Overflow;
+                }
+            }
+            if retry_status(*status) || code.as_deref().is_some_and(retry_code) {
+                return Failure::Retry {
+                    after: *retry_after,
+                };
+            }
+            Failure::Fatal
+        }
+        ChatError::Idle { .. } => Failure::Retry { after: None },
+        ChatError::Transport(source) if connection_transport(source) => {
+            Failure::Retry { after: None }
+        }
+        _ => Failure::Fatal,
+    }
+}
+
+fn retry_status(status: u16) -> bool {
+    status == 408 || matches!(status, 500..=599 if status != 501 && status != 505)
+}
+
+fn retry_code(code: &str) -> bool {
+    RETRY_CODES.contains(&code)
+}
+
+fn overflow_code(code: &str) -> bool {
+    OVERFLOW_CODES.contains(&code)
+}
+
+fn overflow_text(body: &str) -> bool {
+    OVERFLOW_CODES.iter().any(|code| body.contains(code))
+}
+
+fn connection_transport(error: &reqwest::Error) -> bool {
+    error.is_connect() || error.is_timeout() || error.is_decode() || error.is_body()
+}
 pub(super) const BUDGET: Duration = Duration::from_secs(120);
 pub(super) const MAX_RETRIES: usize = 3;
 pub type RetryStatus = Arc<Mutex<Option<String>>>;
@@ -119,16 +201,6 @@ pub(super) fn message(body: &str) -> String {
                 .map(str::to_string)
         })
         .unwrap_or_else(|| "The provider is rate limiting requests.".to_string())
-}
-pub(super) fn transient(status: u16, body: &str) -> bool {
-    matches!(status, 500 | 502 | 503 | 504)
-        || (status == 400
-            && serde_json::from_str::<Value>(body)
-                .ok()
-                .is_some_and(|value| {
-                    value.pointer("/error/code").and_then(Value::as_str)
-                        == Some("server_is_overloaded")
-                }))
 }
 pub(super) fn permanent(body: &str) -> bool {
     let text = message(body).to_ascii_lowercase();

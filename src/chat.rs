@@ -350,10 +350,7 @@ fn validate_tool_calls(calls: &[ToolCall]) -> Result<(), ChatError> {
     let mut seen = std::collections::HashSet::new();
     for call in calls {
         if call.id.trim().is_empty() || !seen.insert(call.id.clone()) {
-            return Err(ChatError::Status {
-                status: 502,
-                body: "the model repeated a tool call id".to_string(),
-            });
+            return Err(plain_status(502, "the model repeated a tool call id"));
         }
     }
     Ok(())
@@ -442,6 +439,8 @@ pub enum ChatError {
     Status {
         status: u16,
         body: String,
+        code: Option<String>,
+        retry_after: Option<Duration>,
     },
     /// The answer was not a completion this crate can read.
     Decode(serde_json::Error),
@@ -456,7 +455,11 @@ pub enum ChatError {
 
 impl ChatError {
     pub fn is_context_overflow(&self) -> bool {
-        matches!(self, Self::Status { status: 400 | 413, body } if ["input_too_large", "context_length_exceeded", "context_window_exceeded"].iter().any(|code| body.contains(code)))
+        matches!(self.failure(), retry::Failure::Overflow)
+    }
+
+    pub(crate) fn failure(&self) -> retry::Failure {
+        retry::failure(self)
     }
 }
 
@@ -479,7 +482,7 @@ impl fmt::Display for ChatError {
                 }
                 Ok(())
             }
-            ChatError::Status { status, body } => {
+            ChatError::Status { status, body, .. } => {
                 let detail = body.trim();
                 if detail.is_empty() {
                     write!(f, "the model server answered {status}")
@@ -679,7 +682,7 @@ impl ChatClient {
             (status, text)
         };
         if !(200..300).contains(&status) {
-            return Err(ChatError::Status { status, body: text });
+            return Err(status_error(status, text));
         }
         let mut rows = if self.codex.is_some() {
             catalog::parse_codex_catalog(&text)
@@ -740,32 +743,39 @@ impl ChatClient {
     ) -> Result<Reply, ChatError> {
         let guard = retry::StatusGuard(status);
         let thought_length = thoughts.map(|sink| sink.lock().unwrap().len());
-        for attempt in 0..=retry::MAX_RETRIES {
+        let mut waited = Duration::ZERO;
+        let mut attempt = 0;
+        loop {
             let result = self
                 .complete_attempt(messages, tools, thoughts, status)
                 .await;
-            let transient = match &result {
-                Err(ChatError::Status { status, body }) => retry::transient(*status, body),
-                Err(ChatError::Transport(source)) => source.is_body() || source.is_decode(),
-                _ => false,
-            };
-            if !transient || attempt == retry::MAX_RETRIES {
+            let Err(error) = result else {
                 return result;
+            };
+            let retry::Failure::Retry { after } = error.failure() else {
+                return Err(error);
+            };
+            if attempt == retry::MAX_RETRIES {
+                return Err(error);
+            }
+            let delay = after.unwrap_or_else(|| Duration::from_secs(1 << attempt.min(2)));
+            if delay > retry::BUDGET.saturating_sub(waited) {
+                return Err(error);
             }
             if let (Some(sink), Some(length)) = (thoughts, thought_length) {
                 sink.lock().unwrap().truncate(length);
             }
-            let delay = Duration::from_secs(1 << attempt);
-            let reason = if matches!(&result, Err(ChatError::Transport(_))) {
+            let reason = if matches!(error, ChatError::Transport(_)) {
                 "Model response interrupted."
             } else {
                 "Provider busy."
             };
             guard.set(delay, reason);
             tokio::time::sleep(delay).await;
+            waited = waited.saturating_add(delay);
             guard.clear();
+            attempt += 1;
         }
-        unreachable!()
     }
 
     async fn complete_attempt(
@@ -795,10 +805,7 @@ impl ChatClient {
                     self.send_with_retry(&url, &body, Some(refreshed.as_str()), None, status, true)
                         .await?
                 } else {
-                    return Err(ChatError::Status {
-                        status: 401,
-                        body: text,
-                    });
+                    return Err(status_error(401, text));
                 }
             } else {
                 response
@@ -829,10 +836,7 @@ impl ChatClient {
                 self.send_with_retry(&url, &body, Some(refreshed.as_str()), None, status, true)
                     .await?
             } else {
-                return Err(ChatError::Status {
-                    status: 401,
-                    body: text,
-                });
+                return Err(status_error(401, text));
             }
         } else {
             response
@@ -883,7 +887,7 @@ impl ChatClient {
             (status, text)
         };
         if !(200..300).contains(&status) {
-            return Err(ChatError::Status { status, body: text });
+            return Err(status_error(status, text));
         }
         decode_message(&text)
     }
@@ -918,7 +922,7 @@ impl ChatClient {
             (status, text)
         };
         if !(200..300).contains(&status) {
-            return Err(ChatError::Status { status, body: text });
+            return Err(status_error(status, text));
         }
         decode_message(&text)
     }
@@ -960,7 +964,7 @@ impl ChatClient {
             (status, text)
         };
         if !(200..300).contains(&status) {
-            return Err(ChatError::Status { status, body: text });
+            return Err(status_error(status, text));
         }
         decode_message(&text)
     }
@@ -1036,10 +1040,7 @@ impl ChatClient {
                 )
                 .await?
             } else {
-                return Err(ChatError::Status {
-                    status: 401,
-                    body: text,
-                });
+                return Err(status_error(401, text));
             }
         } else {
             response
@@ -1138,13 +1139,13 @@ impl ChatClient {
                     break;
                 };
                 if !retry_allowed {
-                    return Err(ChatError::Status {
-                        status: 429,
-                        body: "Provider busy. Skipping the background title request.".into(),
-                    });
+                    return Err(plain_status(
+                        429,
+                        "Provider busy. Skipping the background title request.",
+                    ));
                 }
                 if delay > retry::BUDGET.saturating_sub(waited) {
-                    return Err(ChatError::Status { status: 429, body: "Provider busy. The retry delay exceeds the automatic retry budget; try again later.".into() });
+                    return Err(plain_status(429, "Provider busy. The retry delay exceeds the automatic retry budget; try again later."));
                 }
                 guard.set(delay, "Provider busy.");
                 let before = tokio::time::Instant::now();
@@ -1154,10 +1155,10 @@ impl ChatClient {
             if waited > Duration::ZERO {
                 let stagger = retry::jitter();
                 if stagger > retry::BUDGET.saturating_sub(waited) {
-                    return Err(ChatError::Status {
-                        status: 429,
-                        body: "Provider busy. Automatic retry wait budget exhausted.".into(),
-                    });
+                    return Err(plain_status(
+                        429,
+                        "Provider busy. Automatic retry wait budget exhausted.",
+                    ));
                 }
                 tokio::time::sleep(stagger).await;
                 waited = waited.saturating_add(stagger);
@@ -1184,10 +1185,7 @@ impl ChatClient {
             let text = response.text().await.map_err(ChatError::Transport)?;
             let delay = retry::delay(&headers, &text, attempts);
             if retry::permanent(&text) {
-                return Err(ChatError::Status {
-                    status: 429,
-                    body: retry::message(&text),
-                });
+                return Err(status_error(429, retry::message(&text)));
             }
             let scheduled = delay.saturating_add(retry::jitter());
             let retained_delay = scheduled.min(Duration::from_secs(86400 * 365));
@@ -1199,14 +1197,14 @@ impl ChatClient {
                 || attempts >= retry::MAX_RETRIES
                 || scheduled > retry::BUDGET.saturating_sub(waited)
             {
-                return Err(ChatError::Status {
-                    status: 429,
-                    body: format!(
+                return Err(plain_status(
+                    429,
+                    format!(
                         "Provider busy: {} Try again later. Retry delay: {}s.",
                         retry::message(&text),
                         delay.as_secs()
                     ),
-                });
+                ));
             }
             attempts += 1;
         }
@@ -1234,22 +1232,40 @@ impl ChatClient {
     }
 }
 
+fn status_error(status: u16, body: String) -> ChatError {
+    ChatError::Status {
+        status,
+        code: retry::error_code(&body),
+        retry_after: None,
+        body,
+    }
+}
+
+fn plain_status(status: u16, body: impl Into<String>) -> ChatError {
+    ChatError::Status {
+        status,
+        body: body.into(),
+        code: None,
+        retry_after: None,
+    }
+}
+
 fn decode_message(text: &str) -> Result<Reply, ChatError> {
     let wire: WireResponse = serde_json::from_str(text).map_err(ChatError::Decode)?;
     let tokens = wire.usage.as_ref().and_then(|usage| usage.prompt_tokens);
     let completion_tokens = wire.usage.and_then(|usage| usage.completion_tokens);
     let choice = wire.choices.into_iter().next().ok_or(ChatError::NoChoice)?;
     if !successful_finish(choice.finish_reason.as_deref()) {
-        return Err(ChatError::Status {
-            status: 502,
-            body: format!(
+        return Err(plain_status(
+            502,
+            format!(
                 "the model generation ended with {}",
                 choice
                     .finish_reason
                     .as_deref()
                     .unwrap_or("no finish reason")
             ),
-        });
+        ));
     }
     let mut reply = choice.message;
     validate_tool_calls(&reply.tool_calls)?;
@@ -1266,8 +1282,17 @@ async fn read_completion(
 ) -> Result<Reply, ChatError> {
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
+        let headers = response.headers().clone();
         let body = response.text().await.map_err(ChatError::Transport)?;
-        return Err(ChatError::Status { status, body });
+        let retry_after = retry::delay(&headers, &body, 0);
+        let mut error = status_error(status, body);
+        if let ChatError::Status {
+            retry_after: slot, ..
+        } = &mut error
+        {
+            *slot = Some(retry_after);
+        }
+        return Err(error);
     }
     let mut buf = Vec::new();
     let mut mode = BodyMode::Unknown;
@@ -1430,10 +1455,10 @@ fn successful_finish(reason: Option<&str>) -> bool {
 fn decode_response_value(value: &Value) -> Result<Reply, ChatError> {
     if let Some(status) = value.get("status").and_then(Value::as_str) {
         if status != "completed" {
-            return Err(ChatError::Status {
-                status: 502,
-                body: format!("the model generation ended with {status}"),
-            });
+            return Err(plain_status(
+                502,
+                format!("the model generation ended with {status}"),
+            ));
         }
     }
     let Some(output) = value.get("output").and_then(Value::as_array) else {
@@ -1550,13 +1575,13 @@ impl Partial {
             return Err(ChatError::NoChoice);
         }
         if !self.responses && !successful_finish(self.finish_reason.as_deref()) {
-            return Err(ChatError::Status {
-                status: 502,
-                body: format!(
+            return Err(plain_status(
+                502,
+                format!(
                     "the model generation ended with {}",
                     self.finish_reason.as_deref().unwrap_or("no finish reason")
                 ),
-            });
+            ));
         }
         let mut tool_calls = self.calls;
         tool_calls.retain(|call| !call.id.is_empty() || !call.name.is_empty());
@@ -1636,6 +1661,11 @@ fn apply_sse_line(
         return Err(ChatError::Status {
             status: 502,
             body: message.to_string(),
+            code: value
+                .pointer("/error/code")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            retry_after: None,
         });
     }
     let chunk: StreamChunk = serde_json::from_value(value).map_err(ChatError::Decode)?;
@@ -1655,10 +1685,7 @@ fn apply_sse_line(
         partial.finish_reason = Some(reason);
     }
     if choice.error.is_some() {
-        return Err(ChatError::Status {
-            status: 502,
-            body: "the model stream failed".to_string(),
-        });
+        return Err(plain_status(502, "the model stream failed"));
     }
     let Some(delta) = choice.delta else {
         return Ok(());
@@ -1776,6 +1803,8 @@ fn apply_response_event(
                     (None, Some(message)) => message.to_string(),
                     (None, None) => format!("{kind}: {event}"),
                 },
+                code: code.map(str::to_string),
+                retry_after: None,
             });
         }
         _ => {}

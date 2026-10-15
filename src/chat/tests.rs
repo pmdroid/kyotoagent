@@ -223,7 +223,8 @@ fn hold_silent(stream: &mut TcpStream, stop: &AtomicBool) {
 }
 
 fn cut_stream(stream: &mut TcpStream) {
-    let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n";
+    let head =
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n";
     let _ = stream.write_all(head.as_bytes());
     let part = sse_line(serde_json::json!({"choices": [{"delta": {"content": "partial"}}]}));
     let head = format!("{:x}\r\n", part.len());
@@ -1072,11 +1073,12 @@ async fn a_silent_stream_times_out_and_names_the_timeout() {
         .await
         .expect_err("a silent body is not a completion");
     assert!(
-        started.elapsed() < Duration::from_secs(5),
+        started.elapsed() < Duration::from_secs(12),
         "the wait stayed short"
     );
     assert!(matches!(error, ChatError::Idle { .. }), "{error:?}");
     assert!(error.to_string().contains("timed out"), "{error}");
+    assert_eq!(server.received().len(), 4);
 }
 
 #[tokio::test]
@@ -1836,16 +1838,22 @@ async fn a_cut_stream_is_retried() {
 }
 
 #[tokio::test]
-async fn a_partial_stream_timeout_is_not_replayed() {
+async fn a_partial_stream_timeout_is_replayed() {
     let part = sse_line(serde_json::json!({"choices": [{"delta": {"content": "partial"}}]}));
-    let server = FakeServer::start(vec![Canned::Pace {
-        gap: Duration::from_millis(200),
-        parts: vec![part, "data: [DONE]\n\n".into()],
-    }]);
+    let server = FakeServer::start(vec![
+        Canned::Pace {
+            gap: Duration::from_millis(200),
+            parts: vec![part, "data: [DONE]\n\n".into()],
+        },
+        Canned::Json(a_text_reply()),
+    ]);
     let mut client = ChatClient::new(&config_for(&server, None)).unwrap();
     client.stream_idle = Duration::from_millis(30);
-    assert!(client.complete(&a_conversation(), &[]).await.is_err());
-    assert_eq!(server.received.lock().unwrap().len(), 1);
+    let reply = client.complete(&a_conversation(), &[]).await.unwrap();
+    assert_eq!(reply.text(), "It names the binary.");
+    let requests = server.received();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body, requests[1].body);
 }
 #[tokio::test]
 async fn compact_recovers_from_a_rejected_request() {
