@@ -7,7 +7,6 @@ import UIKit
 struct ImageAttachmentsView: SwiftUI.View {
     @Bindable var model: AppModel
     @State private var picks: [PhotosPickerItem] = []
-    @State private var dropTarget = false
 
     var body: some SwiftUI.View {
         PhotosPicker(selection: $picks, maxSelectionCount: 4, matching: .images) {
@@ -21,14 +20,13 @@ struct ImageAttachmentsView: SwiftUI.View {
         .foregroundStyle(Ink.accent)
         .disabled(model.sending || model.images.count >= 4)
         .accessibilityIdentifier("composer-images")
-        .background(dropTarget ? Ink.accent.opacity(0.2) : Color.clear, in: Circle())
         .onChange(of: picks) { _, selected in
             let sessionID = model.selection
             Swift.Task {
                 for item in selected {
                     do {
                         if let data = try await item.loadTransferable(type: Data.self) {
-                            attach(data, sessionID: sessionID)
+                            attachImage(data, model: model, sessionID: sessionID)
                         }
                     } catch {
                         model.imageFailure(error.localizedDescription)
@@ -37,38 +35,62 @@ struct ImageAttachmentsView: SwiftUI.View {
                 picks = []
             }
         }
-        .onDrop(of: [UTType.image], isTargeted: $dropTarget) { providers in
-            let sessionID = model.selection
-            for provider in providers {
-                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, error in
-                    Swift.Task { @MainActor in
-                        if let data {
-                            attach(data, sessionID: sessionID)
-                        } else {
-                            model.imageFailure(error?.localizedDescription ?? "The image could not be opened.")
+    }
+}
+
+struct ChatImageDrop: ViewModifier {
+    var model: AppModel
+    @State private var targeted = false
+
+    func body(content: Content) -> some SwiftUI.View {
+        content
+            .overlay {
+                if targeted {
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Ink.accent, lineWidth: 2)
+                        .allowsHitTesting(false)
+                }
+            }
+            .onDrop(of: [UTType.image], isTargeted: $targeted) { providers in
+                let sessionID = model.selection
+                guard sessionID != nil, !model.sending else { return false }
+                let images = providers.compactMap { provider -> (NSItemProvider, String)? in
+                    guard let type = provider.registeredTypeIdentifiers.first(where: {
+                        UTType($0)?.conforms(to: .image) == true
+                    }) else { return nil }
+                    return (provider, type)
+                }
+                for (provider, type) in images {
+                    provider.loadDataRepresentation(forTypeIdentifier: type) { data, error in
+                        Swift.Task { @MainActor in
+                            if let data {
+                                attachImage(data, model: model, sessionID: sessionID)
+                            } else {
+                                model.imageFailure(error?.localizedDescription ?? "The image could not be opened.")
+                            }
                         }
                     }
                 }
+                return !images.isEmpty
             }
-            return !providers.isEmpty
-        }
     }
+}
 
-    private func attach(_ data: Data, sessionID: String?) {
-        guard data.count <= 20 * 1024 * 1024,
-              let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: 4096,
-              ] as CFDictionary),
-              let bytes = UIImage(cgImage: thumbnail).jpegData(compressionQuality: 0.85),
-              bytes.count <= 5 * 1024 * 1024 else {
-            model.imageFailure("Choose an image that fits within 5 MiB.")
-            return
-        }
-        model.addImage(ImageAttachment(name: "photo-\(UUID().uuidString).jpg", mimeType: "image/jpeg", data: bytes.base64EncodedString()), sessionID: sessionID)
+@MainActor
+private func attachImage(_ data: Data, model: AppModel, sessionID: String?) {
+    guard data.count <= 20 * 1024 * 1024,
+          let source = CGImageSourceCreateWithData(data as CFData, nil),
+          let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 4096,
+          ] as CFDictionary),
+          let bytes = UIImage(cgImage: thumbnail).jpegData(compressionQuality: 0.85),
+          bytes.count <= 5 * 1024 * 1024 else {
+        model.imageFailure("Choose an image that fits within 5 MiB.")
+        return
     }
+    model.addImage(ImageAttachment(name: "photo-\(UUID().uuidString).jpg", mimeType: "image/jpeg", data: bytes.base64EncodedString()), sessionID: sessionID)
 }
 
 struct ImageAttachmentStrip: SwiftUI.View {

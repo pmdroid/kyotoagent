@@ -1412,6 +1412,26 @@ fn ctrl_y_toggles_yolo() {
     );
 }
 
+#[tokio::test]
+async fn model_and_effort_commands_run_before_busy_session_message_dispatch() {
+    let client = Client::at(PathBuf::from("/missing.sock"));
+    for model in [crate::mock::working(), crate::mock::waiting()] {
+        for command in ["/model", "/effort"] {
+            let mut app = app_from(model.clone());
+            app.ask = command.into();
+            let effect = keystroke(&app, press(KeyCode::Enter)).unwrap();
+            apply(&mut app, &client, effect).await.unwrap();
+            assert!(app.ask.is_empty(), "{command}");
+            if command == "/model" {
+                assert!(app.catalog_popup.is_some());
+                catalog::close(&mut app);
+            } else {
+                assert!(matches!(app.picker, Some(Picker::Effort { .. })));
+            }
+        }
+    }
+}
+
 #[test]
 fn ctrl_m_opens_the_model_picker() {
     assert_eq!(key(ctrl('m'), Mode::Idle, false), Some(Effect::OpenModel));
