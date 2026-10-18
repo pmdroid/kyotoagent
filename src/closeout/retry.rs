@@ -10,6 +10,16 @@ use std::path::{Path, PathBuf};
 pub struct RetryPolicy {
     pub max_failed_attempts_per_item: u32,
     pub scope: RetryScope,
+    #[serde(
+        default,
+        deserialize_with = "review_cap",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_failed_review_attempts: Option<u32>,
+}
+
+fn review_cap<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u32>, D::Error> {
+    u32::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +35,13 @@ impl RetryPolicy {
             return Err(CloseoutError::BadDefinition {
                 message: "maxFailedAttemptsPerItem must be between 1 and 100000".into(),
             });
+        }
+        if let Some(cap) = self.max_failed_review_attempts {
+            if !(1..=100000).contains(&cap) || cap < self.max_failed_attempts_per_item {
+                return Err(CloseoutError::BadDefinition {
+                    message: "maxFailedReviewAttempts must be between 1 and 100000 and at least maxFailedAttemptsPerItem".into(),
+                });
+            }
         }
         Ok(())
     }
@@ -146,6 +163,32 @@ struct Attempt {
     identity: AttemptIdentity,
     attempt: u32,
     state: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    finding_keys: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RetryBudget {
+    pub failures: u32,
+    pub finding_attempts: BTreeMap<String, u32>,
+    pub exhausted: bool,
+}
+
+pub(crate) fn finding_key(location: &str) -> &str {
+    let mut key = location.trim();
+    for _ in 0..2 {
+        match key.rsplit_once(':') {
+            Some((prefix, digits))
+                if !prefix.is_empty()
+                    && !digits.is_empty()
+                    && digits.bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                key = prefix
+            }
+            _ => break,
+        }
+    }
+    key
 }
 
 pub(crate) struct RetryLedger {
@@ -222,25 +265,60 @@ impl RetryLedger {
         Ok(Self { file, entries })
     }
 
-    pub fn failures(&self, identity: &AttemptIdentity, scope: RetryScope) -> u32 {
-        self.entries
-            .iter()
-            .filter(|entry| {
-                entry.state == "failed"
-                    && entry.identity.item_id == identity.item_id
-                    && entry.identity.policy_digest == identity.policy_digest
-                    && entry.identity.retry_epoch == identity.retry_epoch
-                    && match scope {
-                        RetryScope::Task => entry.identity.task == identity.task,
-                        RetryScope::Candidate => {
-                            entry.identity.base == identity.base
-                                && entry.identity.head == identity.head
-                        }
+    pub fn budget(
+        &self,
+        identity: &AttemptIdentity,
+        policy: &RetryPolicy,
+        review: bool,
+    ) -> RetryBudget {
+        let progress = review && policy.max_failed_review_attempts.is_some();
+        let mut budget = RetryBudget::default();
+        for entry in self.entries.iter().filter(|entry| {
+            entry.state == "failed"
+                && entry.identity.item_id == identity.item_id
+                && entry.identity.policy_digest == identity.policy_digest
+                && (progress || entry.identity.retry_epoch == identity.retry_epoch)
+                && match policy.scope {
+                    RetryScope::Task => entry.identity.task == identity.task,
+                    RetryScope::Candidate => {
+                        entry.identity.base == identity.base && entry.identity.head == identity.head
                     }
-            })
-            .count()
-            .try_into()
-            .unwrap_or(u32::MAX)
+                }
+        }) {
+            budget.failures = budget.failures.saturating_add(1);
+            for key in entry
+                .finding_keys
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+            {
+                let count = budget.finding_attempts.entry(key.clone()).or_default();
+                *count = count.saturating_add(1);
+            }
+        }
+        budget.exhausted = if progress {
+            budget.failures >= policy.max_failed_review_attempts.unwrap()
+                || budget
+                    .finding_attempts
+                    .values()
+                    .any(|count| *count >= policy.max_failed_attempts_per_item)
+        } else {
+            budget.failures >= policy.max_failed_attempts_per_item
+        };
+        budget
+    }
+
+    #[cfg(test)]
+    pub fn failures(&self, identity: &AttemptIdentity, scope: RetryScope) -> u32 {
+        self.budget(
+            identity,
+            &RetryPolicy {
+                max_failed_attempts_per_item: 3,
+                scope,
+                max_failed_review_attempts: None,
+            },
+            false,
+        )
+        .failures
     }
 
     pub fn start(&mut self, identity: AttemptIdentity) -> Result<u32, String> {
@@ -261,16 +339,23 @@ impl RetryLedger {
             identity,
             attempt,
             state: "invalid".into(),
+            finding_keys: Vec::new(),
         });
         self.save()?;
         Ok(attempt)
     }
 
     pub fn finish(&mut self, state: &str) -> Result<(), String> {
-        self.entries
+        self.finish_review(state, Vec::new())
+    }
+
+    pub fn finish_review(&mut self, state: &str, finding_keys: Vec<String>) -> Result<(), String> {
+        let entry = self
+            .entries
             .last_mut()
-            .ok_or("Closeout attempt is missing")?
-            .state = state.into();
+            .ok_or("Closeout attempt is missing")?;
+        entry.state = state.into();
+        entry.finding_keys = finding_keys;
         self.save()
     }
 
@@ -298,6 +383,66 @@ mod tests {
             task: "task".into(),
             retry_epoch: String::new(),
         }
+    }
+
+    #[test]
+    fn location_keys_strip_only_two_nonempty_ascii_numeric_suffixes() {
+        for (location, key) in [
+            ("src/a.rs:12", "src/a.rs"),
+            ("src/a.rs:40:7", "src/a.rs"),
+            (" src/a.rs ", "src/a.rs"),
+            ("src/a.rs:12-20", "src/a.rs:12-20"),
+            (":12", ":12"),
+            ("a:1:2:3", "a:1"),
+            ("a:", "a:"),
+            ("a:１２", "a:１２"),
+        ] {
+            assert_eq!(finding_key(location), key);
+        }
+    }
+
+    #[tokio::test]
+    async fn progress_budget_is_order_independent_and_scoped_without_epoch_resets() {
+        let dir = std::env::temp_dir().join(crate::session::new_task_id());
+        let (_, mut cancel) = tokio::sync::watch::channel(false);
+        let mut ledger = RetryLedger::lock(&dir, &mut cancel).await.unwrap();
+        let mut next = identity();
+        let mut policy = RetryPolicy {
+            max_failed_attempts_per_item: 3,
+            max_failed_review_attempts: Some(8),
+            scope: RetryScope::Task,
+        };
+        for (head, state, keys) in [
+            ("one", "failed", vec!["a", "a"]),
+            ("two", "failed", vec!["b"]),
+            ("three", "passed", vec!["a"]),
+            ("four", "failed", vec!["a"]),
+            ("five", "independence", vec!["a"]),
+            ("six", "failed", vec!["a"]),
+        ] {
+            next.head = head.into();
+            assert_eq!(ledger.start(next.clone()).unwrap(), 1);
+            ledger
+                .finish_review(state, keys.into_iter().map(String::from).collect())
+                .unwrap();
+        }
+        let budget = ledger.budget(&next, &policy, true);
+        assert_eq!(budget.failures, 4);
+        assert_eq!(budget.finding_attempts["a"], 3);
+        assert!(budget.exhausted);
+        ledger.entries.reverse();
+        assert_eq!(
+            ledger.budget(&next, &policy, true).finding_attempts,
+            budget.finding_attempts
+        );
+        next.retry_epoch = "new-session-epoch".into();
+        assert!(ledger.budget(&next, &policy, true).exhausted);
+        policy.scope = RetryScope::Candidate;
+        assert_eq!(ledger.budget(&next, &policy, true).failures, 1);
+        next.base = "another-base".into();
+        assert_eq!(ledger.budget(&next, &policy, true).failures, 0);
+        drop(ledger);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]

@@ -708,9 +708,10 @@ async fn completion_blocker(
                 .chain(&file.items)
                 .find(|item| {
                     closeout.is_required(item)
-                        && closeout.items.get(&item.id).is_some_and(|state| {
-                            !state.passed && state.failures >= file.max_failures
-                        })
+                        && closeout
+                            .items
+                            .get(&item.id)
+                            .is_some_and(|state| !state.passed && closeout.exhausted(&item.id))
                 })
                 .map(|item| item.id.clone())
         });

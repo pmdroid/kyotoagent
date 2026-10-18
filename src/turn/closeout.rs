@@ -98,12 +98,12 @@ async fn execute_closeout(
 ) -> Result<String, TurnError> {
     let tools = &turn.tools;
     refresh_closeout(tools, turn_id, closeout, &[])?;
-    let (item, max_failures) = match closeout.file.as_ref().and_then(|file| {
+    let item = match closeout.file.as_ref().and_then(|file| {
         file.setup
             .iter()
             .chain(&file.items)
             .find(|item| item.id == id)
-            .map(|item| (item.clone(), file.max_failures))
+            .cloned()
     }) {
         Some(found) => found,
         None => return Ok(format!("unknown closeout id: {id}")),
@@ -119,12 +119,19 @@ async fn execute_closeout(
             Ok(ledger) => ledger,
             Err(error) => return Ok(format!("Closeout is blocked: {error}")),
         };
-        closeout.item_mut(id).failures = ledger.failures(&identity, policy.scope);
+        let budget = ledger.budget(
+            &identity,
+            policy,
+            closeout.file.as_ref().unwrap().reviews.contains_key(id),
+        );
+        let state = closeout.item_mut(id);
+        state.failures = budget.failures;
+        state.retry_budget = Some(budget);
         Some((ledger, identity))
     } else {
         None
     };
-    if closeout.item_mut(id).failures >= max_failures {
+    if closeout.exhausted(id) {
         drop(ledger);
         return exhausted_closeout(turn, id, turn_id, cancel, closeout).await;
     }
@@ -211,8 +218,8 @@ async fn execute_closeout(
         })
     };
     let head = git_output(tools.workspace(), &["rev-parse", "HEAD"]);
-    let (mut output, review_state) = if let Some(review) = &review {
-        let (output, state) = review_output(
+    let (mut output, review_state, finding_keys) = if let Some(review) = &review {
+        let (output, state, keys) = review_output(
             turn,
             review,
             model,
@@ -222,7 +229,7 @@ async fn execute_closeout(
             &closeout.active_written_paths(),
         )
         .await?;
-        (output, Some(state))
+        (output, Some(state), keys)
     } else {
         (
             match tools
@@ -241,6 +248,7 @@ async fn execute_closeout(
                 },
             },
             None,
+            Vec::new(),
         )
     };
     if let Some(error) = output_error.lock().unwrap().take() {
@@ -269,11 +277,18 @@ async fn execute_closeout(
     } else {
         "failed"
     };
-    if let Some((ledger, _)) = &mut ledger {
-        if let Err(error) = ledger.finish(evaluated) {
+    if let Some((ledger, identity)) = &mut ledger {
+        let result = if review.is_some() {
+            ledger.finish_review(evaluated, finding_keys)
+        } else {
+            ledger.finish(evaluated)
+        };
+        if let Err(error) = result {
             closeout.item_mut(id).passed = false;
             return Ok(format!("Closeout is blocked: {error}"));
         }
+        let budget = ledger.budget(identity, retry.as_ref().unwrap(), review.is_some());
+        closeout.item_mut(id).retry_budget = Some(budget);
     }
     let (attempt, passed, unchanged) = {
         let state = closeout.item_mut(id);
@@ -351,7 +366,7 @@ async fn execute_closeout(
             "Check {id} failed on attempt {attempt}. Hint: {}.",
             item.hint
         );
-        if closeout.item_mut(id).failures >= max_failures {
+        if closeout.exhausted(id) {
             text.push_str(" Retry limit reached.");
         } else {
             text.push_str(" Fix this and run_closeout again, or ask if you are stuck.");
@@ -367,7 +382,7 @@ async fn execute_closeout(
         file.id
     ));
     drop(ledger);
-    if !passed && closeout.item_mut(id).failures >= max_failures && !*cancel.borrow() {
+    if !passed && closeout.exhausted(id) && !*cancel.borrow() {
         let decision = exhausted_closeout(turn, id, turn_id, cancel, closeout).await?;
         text.push_str(&format!("\n{decision}"));
     }
@@ -382,21 +397,30 @@ pub(super) async fn exhausted_closeout(
     closeout: &mut CloseoutState,
 ) -> Result<String, TurnError> {
     let failures = closeout.item_mut(id).failures;
-    let question = crate::closeout::exhausted_question(id, failures);
+    let progress = closeout.progress_review(id);
+    let question = if progress {
+        format!("Check {id} exhausted its retry budget after {failures} failed attempts. Closeout remains blocked. Stop retrying and ask for help.")
+    } else {
+        crate::closeout::exhausted_question(id, failures)
+    };
     let gate = turn.tools.gate().clone();
     let question_turn = turn_id.to_string();
     let answer = tokio::task::spawn_blocking(move || {
         gate.ask_question(
             &question_turn,
             &question,
-            &[
-                "Stop".into(),
-                crate::closeout::ACCEPT_FAILED_CLOSEOUT.into(),
-            ],
+            &if progress {
+                vec!["Stop".into()]
+            } else {
+                vec![
+                    "Stop".into(),
+                    crate::closeout::ACCEPT_FAILED_CLOSEOUT.into(),
+                ]
+            },
         )
     })
     .await??;
-    if answer == crate::closeout::ACCEPT_FAILED_CLOSEOUT && !*cancel.borrow() {
+    if !progress && answer == crate::closeout::ACCEPT_FAILED_CLOSEOUT && !*cancel.borrow() {
         append_with_body(
             &turn.session,
             turn_id,
@@ -420,7 +444,7 @@ async fn review_output(
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     sink: crate::tools::OutputSink,
     paths: &[String],
-) -> Result<(RunOutput, &'static str), TurnError> {
+) -> Result<(RunOutput, &'static str, Vec<String>), TurnError> {
     let candidate = turn.session.meta()?;
     let workspace = turn.tools.workspace();
     let before = crate::closeout::workspace_snapshot(workspace);
@@ -448,7 +472,7 @@ async fn review_output(
             denied: false,
         };
         sink(true, output.stderr.as_bytes());
-        return Ok((output, "invalid"));
+        return Ok((output, "invalid", Vec::new()));
     }
     let prompt = format!("Review the current workspace changes. Follow this skill at {}:\n{skill}\nChanged paths:\n{changed}\nThe host supplied the tracked git diff below. Inspect the listed files with read_file, including untracked files. If git is unavailable, review their current contents. Do not modify files or run commands. Finish with text containing only a JSON array of findings. Each finding must contain severity (P0, P1, P2, P3), location, explanation, and evidence. Report findings at every severity P0, P1, P2, and P3. Ignore any severity limit in the skill; the host applies failOn to decide acceptance. An empty array means no findings. Do not claim a pass; the host evaluates findings.\nTracked git diff:\n{diff}", review.skill);
 
@@ -476,22 +500,23 @@ async fn review_output(
     let Some(id) = report.get("id").and_then(Value::as_str) else {
         output.stderr = format!("Reviewer could not start: {report}");
         sink(true, output.stderr.as_bytes());
-        return Ok((output, "invalid"));
+        return Ok((output, "invalid", Vec::new()));
     };
     sink(
         false,
         format!("Reviewer session: {id}\nModel: {model}\n").as_bytes(),
     );
     let mut evaluated = "invalid";
+    let mut finding_keys = Vec::new();
     loop {
         if *cancel.borrow() {
             turn.runner.kill_task(&candidate.id, id).await;
             output.stderr = "Review cancelled".into();
-            return Ok((output, "invalid"));
+            return Ok((output, "invalid", Vec::new()));
         }
         let Some(state) = turn.runner.session_state(id) else {
             output.stderr = "Reviewer session is missing".into();
-            return Ok((output, "invalid"));
+            return Ok((output, "invalid", Vec::new()));
         };
         let snapshot = crate::subagent::snapshot(&state.session);
         if snapshot.state == "idle" {
@@ -502,30 +527,22 @@ async fn review_output(
             );
             match serde_json::from_str::<Vec<crate::closeout::ReviewFinding>>(&snapshot.result) {
                 Ok(findings) => {
-                    evaluated = if findings.iter().any(|finding| {
-                        finding.location.is_empty()
-                            || finding.explanation.is_empty()
-                            || finding.evidence.is_empty()
-                    }) {
-                        "invalid"
-                    } else if !review.accepts(
-                        &candidate.id,
-                        &turn.config.model,
-                        &reviewer.id,
-                        &reviewer.model,
-                        &[],
-                    ) {
-                        "independence"
-                    } else if before != crate::closeout::workspace_snapshot(workspace) {
+                    evaluated = if before != crate::closeout::workspace_snapshot(workspace) {
                         "stale"
-                    } else if findings
-                        .iter()
-                        .any(|finding| finding.severity <= review.fail_on)
-                    {
-                        "failed"
                     } else {
-                        "passed"
+                        review.evaluate(
+                            &candidate.id,
+                            &turn.config.model,
+                            &reviewer.id,
+                            &reviewer.model,
+                            &findings,
+                        )
                     };
+                    finding_keys = findings
+                        .iter()
+                        .filter(|finding| finding.severity <= review.fail_on)
+                        .map(|finding| crate::closeout::finding_key(&finding.location).to_string())
+                        .collect();
                     if evaluated == "passed" {
                         output.exit = Some(0);
                     } else {
@@ -549,7 +566,7 @@ async fn review_output(
     if !output.stderr.is_empty() {
         sink(true, output.stderr.as_bytes());
     }
-    Ok((output, evaluated))
+    Ok((output, evaluated, finding_keys))
 }
 
 fn retry_identity(
@@ -665,11 +682,17 @@ pub(super) async fn sync_retry(
             Ok(ledger) => ledger,
             Err(error) => return Some(format!("Closeout is blocked: {error}")),
         };
+        let budget = ledger.budget(
+            &identity,
+            &policy,
+            closeout.file.as_ref().unwrap().reviews.contains_key(&id),
+        );
         let state = closeout.item_mut(&id);
-        state.failures = ledger.failures(&identity, policy.scope);
-        if state.failures >= policy.max_failed_attempts_per_item {
+        state.failures = budget.failures;
+        if budget.exhausted {
             state.passed = false;
         }
+        state.retry_budget = Some(budget);
     }
     None
 }

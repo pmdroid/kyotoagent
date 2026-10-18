@@ -2376,6 +2376,222 @@ async fn pr_creation_requires_another_pass_after_a_new_write() {
 }
 
 #[tokio::test]
+async fn review_cap_does_not_increase_command_or_setup_limits() {
+    for setup in [false, true] {
+        let mut replies = vec![Canned::Json(tool_call_reply(vec![(
+            "write_file",
+            serde_json::json!({"path":"changed.txt","contents":"changed"}),
+        )]))];
+        for _ in 0..2 {
+            replies.push(Canned::Json(tool_call_reply(vec![(
+                "run_closeout",
+                serde_json::json!({"id":"test"}),
+            )])));
+        }
+        let fixture = Fixture::new(
+            if setup {
+                "progress-setup"
+            } else {
+                "progress-command"
+            },
+            replies,
+        );
+        let workspace = fixture.add_session("91bc");
+        fs::create_dir_all(workspace.join(".agents")).unwrap();
+        let steps = if setup {
+            "setup:\n  - id: prepare\n    exec: ['false']\n    timeoutSeconds: 5\n"
+        } else {
+            ""
+        };
+        fs::write(workspace.join(".agents/closeout.yaml"), format!("specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 2\n  scope: task\n  maxFailedReviewAttempts: 12\n{steps}items:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: ['false']\n    timeoutSeconds: 5\n")).unwrap();
+        fixture.ask("91bc", "Run until exhausted");
+        for _ in 0..3 {
+            fixture.respond("91bc", Answer::allow_once()).await;
+        }
+        let question = fixture.wait_for_waiting_question("91bc").await;
+        assert_eq!(
+            question.body["choices"],
+            serde_json::json!(["Stop", "Accept failed closeout for this session"])
+        );
+        assert!(question.body["text"]
+            .as_str()
+            .unwrap()
+            .contains("failed 2 times"));
+        fixture.answer_question("91bc", "Stop");
+        fixture.wait_for_status("91bc", Status::Idle).await;
+        assert_eq!(fixture.closeout_runs("91bc"), 2);
+        if setup {
+            let events = Session::at(&fixture.root.join("session-91bc"))
+                .events()
+                .unwrap();
+            assert!(events
+                .iter()
+                .filter(|event| event.kind == EventKind::CloseoutRun)
+                .all(|event| event.body["id"] == "prepare"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn progress_reviews_exceed_command_budget_then_exhaust_repeated_locations() {
+    progress_reviews(
+        "progress-repeat",
+        &["a.rs:12", "b.rs:1", "a.rs:40:7", "c.rs", " a.rs "],
+        12,
+        "task",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn distinct_review_findings_exhaust_the_total_cap() {
+    progress_reviews(
+        "progress-total",
+        &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs"],
+        6,
+        "task",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn candidate_review_budget_starts_again_only_for_a_new_candidate() {
+    progress_reviews(
+        "progress-candidate",
+        &["a.rs:1", "a.rs:2", "a.rs:3", "a.rs:4"],
+        12,
+        "candidate",
+    )
+    .await;
+}
+
+async fn progress_reviews(name: &str, locations: &[&str], cap: u32, scope: &str) {
+    let call = |name: &str, args| Canned::Json(tool_call_reply(vec![(name, args)]));
+    let mut replies = vec![call(
+        "write_file",
+        serde_json::json!({"path":"changed.txt","contents":"candidate"}),
+    )];
+    for (round, location) in locations.iter().enumerate() {
+        replies.push(call(
+            "run_closeout",
+            serde_json::json!({"id":"review","model":"test/reviewer"}),
+        ));
+        let findings = serde_json::json!([
+            {"severity":"P1","location":location,"explanation":"fix this","evidence":"observed"},
+            {"severity":"P0","location":location,"explanation":"another bug","evidence":"observed"},
+            {"severity":"P2","location":"ignored.rs:1","explanation":"below threshold","evidence":"observed"}
+        ]);
+        replies.push(call(
+            "finish",
+            serde_json::json!({"text":findings.to_string()}),
+        ));
+        if round == 0 {
+            replies.push(call(
+                "ask",
+                serde_json::json!({"text":"Ready for next candidate?","choices":["Continue"]}),
+            ));
+        }
+        replies.push(call("get_closeout", serde_json::json!({})));
+    }
+    replies.push(call(
+        "run_closeout",
+        serde_json::json!({"id":"review","model":"test/reviewer"}),
+    ));
+    replies.push(call("finish", serde_json::json!({"text":"[]"})));
+    let fixture = Fixture::new(name, replies);
+    let workspace = fixture.add_session("91bc");
+    let first = Session::at(&fixture.root.join("session-91bc"));
+    first
+        .update(|meta| {
+            meta.task_id = Some("stable-review-task".into());
+            true
+        })
+        .unwrap();
+    fs::create_dir_all(workspace.join(".agents/skills/review")).unwrap();
+    fs::write(
+        workspace.join(".agents/skills/review/SKILL.md"),
+        "Review correctness",
+    )
+    .unwrap();
+    fs::write(workspace.join(".agents/closeout.yaml"), format!("specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 3\n  scope: {scope}\n  maxFailedReviewAttempts: {cap}\nitems:\n  - id: review\n    kind: review\n    gate: beforePR\n    skill: .agents/skills/review/SKILL.md\n    independence:\n      differentSession: true\n      differentModel: true\n    failOn: P1\n")).unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&workspace)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "Review Test"]);
+    git(&["config", "user.email", "review@example.test"]);
+    fs::write(workspace.join("changed.txt"), "original").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "Base"]);
+    git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    fixture.ask("91bc", "Review each round");
+    fixture.respond("91bc", Answer::allow_once()).await;
+    for round in 0..locations.len() {
+        if round == 1 {
+            fixture.wait_for_waiting_question("91bc").await;
+            git(&["add", "changed.txt"]);
+            git(&["commit", "-m", "New candidate"]);
+            fixture.answer_question("91bc", "Continue");
+        }
+        fixture.respond("91bc", Answer::allow_once()).await;
+    }
+    let question = fixture.wait_for_waiting_question("91bc").await;
+    assert_eq!(question.body["choices"], serde_json::json!(["Stop"]));
+    fixture.answer_question("91bc", "Stop");
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert_eq!(fixture.closeout_runs("91bc"), locations.len());
+    let second = Session::at(&fixture.root.join("session-92bc"));
+    let mut meta = SessionMeta::new("92bc", &workspace, "test/model", AT);
+    meta.task_id = Some("stable-review-task".into());
+    second.create(&meta).unwrap();
+    fixture.runner.add_session(&second).unwrap();
+    fixture.ask("92bc", "Try a clean review after exhaustion");
+    let question = fixture.wait_for_waiting_question("92bc").await;
+    assert_eq!(question.body["choices"], serde_json::json!(["Stop"]));
+    fixture.answer_question("92bc", "Stop");
+    fixture.wait_for_status("92bc", Status::Idle).await;
+    assert_eq!(fixture.closeout_runs("92bc"), 0);
+    let log = fixture.log("91bc");
+    let reports = tool_outputs(&log, "get_closeout");
+    assert_eq!(reports.len(), locations.len() - 1);
+    let report: serde_json::Value = serde_json::from_str(reports.last().unwrap()).unwrap();
+    assert_eq!(report["required"][0]["status"], "failed");
+    assert!(report["required"][0]["remaining_attempts"].is_null());
+    assert_eq!(
+        report["required"][0]["failed_attempts"],
+        locations.len() - if scope == "candidate" { 2 } else { 1 }
+    );
+    assert!(report["required"][0]["finding_attempts"]
+        .get("ignored.rs")
+        .is_none());
+    let evidence = fs::read_dir(fixture.root.join("closeout"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join("retry.json");
+    let entries: serde_json::Value = serde_json::from_slice(&fs::read(evidence).unwrap()).unwrap();
+    assert_eq!(entries.as_array().unwrap().len(), locations.len());
+    assert_eq!(entries[0]["attempt"], 1);
+    assert_eq!(entries[1]["attempt"], 1);
+    assert_ne!(
+        entries[0]["identity"]["head"],
+        entries[1]["identity"]["head"]
+    );
+}
+
+#[tokio::test]
 async fn imported_review_uses_a_fresh_read_only_session_and_retains_its_findings() {
     imported_review_candidate("imported-review", false, false, false).await;
 }
