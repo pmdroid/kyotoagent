@@ -355,9 +355,11 @@ impl CloseoutState {
                     .into_iter()
                     .filter(|path| item.matches_path(path))
                     .collect();
+                let argv = (item.kind != CloseoutKind::Review).then(|| file.execution(item).0);
                 required.push(serde_json::json!({
                     "id": item.id,
                     "kind": item.kind.label(),
+                    "argv": argv,
                     "hint": item.hint,
                     "matched_paths": matched_paths,
                     "status": status,
@@ -477,6 +479,14 @@ pub(crate) fn workspace_fingerprint(workspace: &Path, head: &str, status: &str) 
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+pub(crate) fn current_fingerprint(workspace: &Path) -> String {
+    workspace_fingerprint(
+        workspace,
+        &git_text(workspace, &["rev-parse", "HEAD"]).unwrap_or_default(),
+        &git_text(workspace, &["status", "--porcelain"]).unwrap_or_default(),
+    )
 }
 
 fn git_text(workspace: &Path, args: &[&str]) -> Option<String> {

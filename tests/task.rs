@@ -1210,3 +1210,54 @@ async fn the_view_lists_a_running_task_and_the_task_route_returns_its_tail() {
     handle.abort();
     let _ = fs::remove_dir_all(&root);
 }
+
+#[tokio::test]
+async fn a_fingerprinted_task_keeps_its_fingerprint_only_when_the_workspace_stays_unchanged() {
+    let root = std::env::temp_dir().join(format!("kyoto-task-fingerprint-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let workspace = root.join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let session = Session::at(&root.join("session"));
+    session
+        .create(&SessionMeta::new("s", &workspace, "test/model", AT))
+        .unwrap();
+    let tools = kyotoagent::tools::Tools::at(&session).unwrap();
+    let quiet = vec!["true".to_string()];
+    let writer = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "echo changed > notes.md".to_string(),
+    ];
+    let mut fingerprints = Vec::new();
+    for argv in [quiet, writer] {
+        let started = tools
+            .tasks()
+            .start_fingerprinted("t1", &argv, Some(5))
+            .await
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while tools.tasks().is_running(&started.id) {
+            assert!(Instant::now() < deadline, "the task did not exit");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let done = session
+            .events()
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == EventKind::TaskDone)
+            .filter_map(|event| event.body_as::<TaskDoneBody>().ok())
+            .find(|body| body.id == started.id)
+            .expect("the task finished");
+        assert_eq!(done.exit, 0);
+        fingerprints.push(done.workspace_fingerprint);
+    }
+    assert!(
+        !fingerprints[0].is_empty(),
+        "an unchanged workspace keeps the fingerprint"
+    );
+    assert!(
+        fingerprints[1].is_empty(),
+        "a write during the task clears it"
+    );
+    let _ = fs::remove_dir_all(&root);
+}

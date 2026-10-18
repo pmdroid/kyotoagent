@@ -205,6 +205,25 @@ impl Tasks {
         argv: &[String],
         timeout_sec: Option<u64>,
     ) -> Result<Started, ToolError> {
+        self.launch(turn_id, argv, timeout_sec, false).await
+    }
+
+    pub async fn start_fingerprinted(
+        &self,
+        turn_id: &str,
+        argv: &[String],
+        timeout_sec: Option<u64>,
+    ) -> Result<Started, ToolError> {
+        self.launch(turn_id, argv, timeout_sec, true).await
+    }
+
+    async fn launch(
+        &self,
+        turn_id: &str,
+        argv: &[String],
+        timeout_sec: Option<u64>,
+        fingerprinted: bool,
+    ) -> Result<Started, ToolError> {
         let program = argv.first().cloned().ok_or(ToolError::NoCommand)?;
         let id = self.new_id()?;
         let command = crate::operator_config::command(&program, &argv[1..], self.sandbox).map_err(
@@ -213,6 +232,11 @@ impl Tasks {
                 source,
             },
         )?;
+        let before = if fingerprinted {
+            Some(fingerprint(&self.workspace).await)
+        } else {
+            None
+        };
         let mut child = TokioCommand::from(command)
             .current_dir(&self.workspace)
             .stdin(Stdio::null())
@@ -312,6 +336,11 @@ impl Tasks {
                 }
             }
             body.tail = last_lines(&output.lock().expect("task output").text(), LAST_TASK_LINES);
+            if let Some(before) = before {
+                if fingerprint(&tasks.workspace).await == before {
+                    body.workspace_fingerprint = before;
+                }
+            }
             tasks.finish(&turn_id, body);
         });
 
@@ -383,6 +412,7 @@ impl Tasks {
                 exit: -1,
                 tail: String::new(),
                 state: TaskStatus::Stopped,
+                workspace_fingerprint: String::new(),
             };
             self.append_done(&turn_id, &body)?;
             done.push(body);
@@ -514,7 +544,15 @@ async fn wait_for_child(
         exit,
         tail,
         state,
+        workspace_fingerprint: String::new(),
     }
+}
+
+async fn fingerprint(workspace: &Path) -> String {
+    let workspace = workspace.to_path_buf();
+    tokio::task::spawn_blocking(move || crate::closeout::current_fingerprint(&workspace))
+        .await
+        .unwrap_or_default()
 }
 
 async fn drain_into<R: AsyncRead + Unpin>(mut pipe: R, dest: Arc<Mutex<Tail>>) {

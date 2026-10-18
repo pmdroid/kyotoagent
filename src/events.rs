@@ -847,6 +847,12 @@ pub struct TaskDoneBody {
     #[serde(default)]
     pub tail: String,
     pub state: TaskStatus,
+    #[serde(
+        default,
+        rename = "workspaceFingerprint",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub workspace_fingerprint: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -584,6 +584,7 @@ fn every_kind_round_trips_through_the_log() {
                     exit: 0,
                     tail: String::new(),
                     state: kyotoagent::events::TaskStatus::Exited,
+                    workspace_fingerprint: String::new(),
                 }),
                 EventKind::Schedule => serde_json::to_value(kyotoagent::events::ScheduleBody {
                     id: "cd34ef56".into(),
