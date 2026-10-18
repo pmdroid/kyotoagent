@@ -45,7 +45,6 @@ struct TranscriptScreen: SwiftUI.View {
             composer
         }
         .background(Ink.canvas)
-        .modifier(ChatImageDrop(model: model))
         .onChange(of: sessionId) { _, _ in composerSelection = nil }
         .navigationTitle(bar.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -402,6 +401,7 @@ struct TranscriptScreen: SwiftUI.View {
                 }
             }
         }
+        .modifier(ChatImageDrop(model: model))
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
         .background(.bar)
