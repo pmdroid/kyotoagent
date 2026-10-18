@@ -452,7 +452,7 @@ pub(super) async fn execute_tool(
                 return Ok(ToolOutcome {
                     is_error: false,
                     images: Vec::new(),
-                    summary: format!("Use run_closeout with id {id} to run this check."),
+                    summary: pinned_message(&id),
                     wrote: None,
                     failure: None,
                 });
@@ -562,7 +562,15 @@ pub(super) async fn execute_tool(
                 {
                     return Ok(failed(reason));
                 }
-                match tools.tasks().start(turn_id, &argv, timeout_sec).await {
+                let started = if closeout.pinned_run(&argv).is_some() {
+                    tools
+                        .tasks()
+                        .start_fingerprinted(turn_id, &argv, timeout_sec)
+                        .await
+                } else {
+                    tools.tasks().start(turn_id, &argv, timeout_sec).await
+                };
+                match started {
                     Ok(started) => serde_json::to_string(&started).unwrap_or_else(|_| {
                         format!("{{\"id\":\"{}\",\"state\":\"running\"}}", started.id)
                     }),
@@ -1328,6 +1336,10 @@ pub(super) fn last_n_lines(stdout: &str, stderr: &str, n: usize) -> String {
 
 /// The stdout of a git command in the workspace, or an empty string when git is
 /// missing or the directory is not a repository.
+pub(super) fn pinned_message(id: &str) -> String {
+    format!("Use run_closeout with id {id} to run this check, or run this exact command with start_task. A passing start_task run counts for closeout while the workspace stays unchanged.")
+}
+
 pub(super) fn git_output(workspace: &Path, args: &[&str]) -> String {
     match std::process::Command::new("git")
         .arg("-C")

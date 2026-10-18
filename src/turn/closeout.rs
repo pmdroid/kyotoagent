@@ -699,6 +699,96 @@ pub(super) fn refresh_closeout(
             &crate::events::CloseoutChangedBody { paths },
         )?;
     }
+    adopt_passing_tasks(tools, turn_id, closeout)
+}
+
+fn adopt_passing_tasks(
+    tools: &Tools,
+    turn_id: &str,
+    closeout: &mut CloseoutState,
+) -> Result<(), TurnError> {
+    if closeout.bypassed {
+        return Ok(());
+    }
+    let Some(file) = closeout.file.clone() else {
+        return Ok(());
+    };
+    let session = tools.session();
+    let mut current = None;
+    for event in session.events()?.into_iter().rev() {
+        if event.kind != EventKind::TaskDone {
+            continue;
+        }
+        let Ok(done) = event.body_as::<crate::events::TaskDoneBody>() else {
+            continue;
+        };
+        if done.state != crate::events::TaskStatus::Exited
+            || done.exit != 0
+            || done.workspace_fingerprint.is_empty()
+        {
+            continue;
+        }
+        let Some(item) = closeout.pinned_run(&done.argv).and_then(|id| {
+            file.setup
+                .iter()
+                .chain(&file.items)
+                .find(|item| item.id == id)
+        }) else {
+            continue;
+        };
+        if closeout.item_mut(&item.id).passed || !closeout.is_required(item) {
+            continue;
+        }
+        let fingerprint =
+            current.get_or_insert_with(|| crate::closeout::current_fingerprint(tools.workspace()));
+        if *fingerprint != done.workspace_fingerprint {
+            continue;
+        }
+        let state = closeout.item_mut(&item.id);
+        let attempt = state.attempts + 1;
+        state.attempts = attempt;
+        state.passed = true;
+        state.last_failure = None;
+        let transcript = format!(
+            "Check {} · attempt {attempt} · passed in task {}\n{}\nexit: 0\n\noutput:\n{}",
+            item.id,
+            done.id,
+            done.argv.join(" "),
+            done.tail
+        );
+        let name = format!(
+            "{}-attempt-{attempt}.txt",
+            item.id.chars().take(200).collect::<String>()
+        );
+        let stored =
+            crate::proof::store_bytes(session, &name, transcript.as_bytes()).map_err(|source| {
+                ToolError::Io {
+                    path: session.dir().join("proof"),
+                    source,
+                }
+            })?;
+        append_with_body(
+            session,
+            turn_id,
+            EventKind::CloseoutRun,
+            &crate::events::CloseoutRunBody {
+                passed: Some(true),
+                transcript: Some(stored),
+                argv: done.argv.clone(),
+                timed_out: false,
+                truncated: false,
+                id: item.id.clone(),
+                attempt,
+                exit: 0,
+                tail: done.tail.clone(),
+                workspace_fingerprint: done.workspace_fingerprint.clone(),
+                policy_digest: file.policy_digest.clone(),
+            },
+        )?;
+        let mut proof = crate::closeout::proof_item(&item.id, true, done.argv, 0, done.tail);
+        proof.kind = item.kind.label().to_string();
+        closeout.record_run(proof);
+    }
     Ok(())
 }
 

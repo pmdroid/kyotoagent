@@ -81,10 +81,7 @@ pub(super) async fn execute(
                     if let Some(reason) = blocked {
                         Err((reason, true))
                     } else if let Some(id) = pinned {
-                        Err((
-                            format!("Use run_closeout with id {id} to run this check."),
-                            false,
-                        ))
+                        Err((pinned_message(&id), false))
                     } else {
                         let tools = turn.tools.clone();
                         let path = args

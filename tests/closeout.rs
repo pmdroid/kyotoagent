@@ -1085,6 +1085,77 @@ async fn get_closeout_tracks_paths_passes_and_later_edits() {
 }
 
 #[tokio::test]
+async fn a_passing_task_of_the_exact_check_command_counts_without_another_run() {
+    let check = serde_json::json!({"argv": ["sh", "-c", "test -f src/ok"]});
+    let pause = serde_json::json!({"argv": ["sleep", "1"]});
+    let calls = vec![
+        (
+            "write_file",
+            serde_json::json!({"path":"src/lib.rs","contents":"first"}),
+        ),
+        ("start_task", check.clone()),
+        ("run", pause.clone()),
+        ("get_closeout", serde_json::json!({})),
+        (
+            "write_file",
+            serde_json::json!({"path":"src/ok","contents":""}),
+        ),
+        ("start_task", check.clone()),
+        ("run", pause.clone()),
+        ("get_closeout", serde_json::json!({})),
+        (
+            "write_file",
+            serde_json::json!({"path":"src/lib.rs","contents":"second"}),
+        ),
+        ("get_closeout", serde_json::json!({})),
+        ("start_task", check),
+        ("run", pause),
+        ("finish", serde_json::json!({"text":"Done"})),
+    ];
+    let fixture = Fixture::new(
+        "task-adoption",
+        calls
+            .into_iter()
+            .map(|call| Canned::Json(tool_call_reply(vec![call])))
+            .collect(),
+    );
+    let workspace = fixture.add_session("91bc");
+    fs::create_dir_all(workspace.join(".agents")).unwrap();
+    fs::create_dir_all(workspace.join("src")).unwrap();
+    fs::write(workspace.join(".agents/closeout.yaml"), "specVersion: '0.1'\nitems:\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: ['sh', '-c', 'test -f src/ok']\n    timeoutSeconds: 5\n    paths: ['src/**']\n").unwrap();
+    fixture.ask("91bc", "Edit source and verify with background checks");
+    fixture.wait_for_turn_to_start("91bc").await;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fixture.view("91bc").status != Status::Idle {
+        assert!(Instant::now() < deadline, "the turn did not end");
+        if fixture.view("91bc").status == Status::Waiting {
+            fixture.respond("91bc", Answer::allow_once()).await;
+        } else {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    let log = fixture.log("91bc");
+    let reports: Vec<serde_json::Value> = tool_outputs(&log, "get_closeout")
+        .iter()
+        .map(|output| serde_json::from_str(output).expect("closeout returns JSON"))
+        .collect();
+    assert_eq!(reports.len(), 3, "{log}");
+    assert_eq!(reports[0]["required"][0]["status"], "missing");
+    assert_eq!(reports[0]["required"][0]["failed_attempts"], 0);
+    assert_eq!(
+        reports[0]["required"][0]["argv"],
+        serde_json::json!(["sh", "-c", "test -f src/ok"])
+    );
+    assert_eq!(reports[1]["required"][0]["status"], "passed");
+    assert_eq!(reports[1]["pending"], serde_json::json!([]));
+    assert_eq!(reports[2]["pending"], serde_json::json!(["test"]));
+    assert!(!tool_outputs(&log, "finish")[0].contains("Cannot finish yet"));
+    assert!(log.contains("\"kind\":\"result\""), "{log}");
+    assert_eq!(fixture.closeout_runs("91bc"), 2);
+    assert!(!log.contains("closeout_started"), "{log}");
+}
+
+#[tokio::test]
 async fn committed_candidates_require_recorded_checks_across_sessions_and_turns() {
     let calls = vec![
         ("get_closeout", serde_json::json!({})),

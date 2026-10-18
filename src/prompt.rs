@@ -258,6 +258,9 @@ fn closeout_block(closeout: Option<&CloseoutFile>) -> String {
         "This workspace has closeout checks. After changes and before finishing, call `get_closeout` to discover the required checks and their current status. Run each pending ID in order with `run_closeout`, then call `get_closeout` again. The run_closeout tool runs matching setup steps before checks. Pass a different model to run_closeout when a review has different_model set. Further workspace edits can make passed checks stale. The turn cannot finish until every required check has passed. If blocked is non-null, stop retrying and report the blocker.\n",
     );
     suffix.push_str(
+        "While you work, run a check by starting its exact `argv` from get_closeout with start_task, without a shell wrapper, cd or pipe. A passing run counts as that check while the workspace stays unchanged, so run_closeout only runs what is still pending, and a failing run does not use up retry attempts.\n",
+    );
+    suffix.push_str(
         "If a required check fails, fix it and call run_closeout again. If you cannot fix it, call ask with the error and what you tried.\n\n",
     );
     suffix
@@ -625,6 +628,11 @@ mod tests {
                 "If a required check fails, fix it and call run_closeout again. If you cannot fix it, call ask with the error and what you tried."
             ),
             "the retry instruction: {prompt}"
+        );
+        assert!(
+            prompt
+                .contains("A passing run counts as that check while the workspace stays unchanged"),
+            "the earlier-run instruction: {prompt}"
         );
     }
 
