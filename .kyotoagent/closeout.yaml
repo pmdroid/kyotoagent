@@ -2,6 +2,7 @@ specVersion: '0.1'
 retry:
   maxFailedAttemptsPerItem: 3
   scope: task
+  maxFailedReviewAttempts: 12
 items:
   - id: cargo-test
     kind: command

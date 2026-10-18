@@ -10,7 +10,7 @@ use crate::events::{
 use crate::tools::RunOutput;
 
 mod retry;
-pub(crate) use retry::{AttemptIdentity, RetryLedger};
+pub(crate) use retry::{finding_key, AttemptIdentity, RetryBudget, RetryLedger};
 pub use retry::{RetryPolicy, RetryScope};
 
 pub const DEFAULT_MAX_FAILURES: u32 = 3;
@@ -127,6 +127,7 @@ pub struct ItemState {
     pub failures: u32,
     pub passed: bool,
     pub last_failure: Option<(i32, String)>,
+    pub(crate) retry_budget: Option<RetryBudget>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -260,6 +261,28 @@ impl CloseoutState {
         items
     }
 
+    pub(crate) fn progress_review(&self, id: &str) -> bool {
+        self.file.as_ref().is_some_and(|file| {
+            file.reviews.contains_key(id)
+                && file
+                    .retry
+                    .as_ref()
+                    .is_some_and(|retry| retry.max_failed_review_attempts.is_some())
+        })
+    }
+
+    pub(crate) fn exhausted(&self, id: &str) -> bool {
+        let state = self.items.get(id).cloned().unwrap_or_default();
+        state.retry_budget.as_ref().map_or_else(
+            || {
+                self.file
+                    .as_ref()
+                    .is_some_and(|file| state.failures >= file.max_failures)
+            },
+            |budget| budget.exhausted,
+        )
+    }
+
     pub fn cannot_finish(&self) -> Option<String> {
         self.required_blocker()
     }
@@ -284,14 +307,23 @@ impl CloseoutState {
         }
         let mut result = String::from("Cannot finish yet.");
         for (item, state) in open {
-            let status = if state.failures >= file.max_failures {
+            let status = if self.exhausted(&item.id) {
                 "exhausted"
             } else if state.failures > 0 {
                 "failed"
             } else {
                 "missing"
             };
-            let attempts = if file.max_failures == u32::MAX {
+            let attempts = if self.progress_review(&item.id) {
+                format!(
+                    "Failed review attempts {}. Per-location counts {:?}.",
+                    state.failures,
+                    state
+                        .retry_budget
+                        .as_ref()
+                        .map(|budget| &budget.finding_attempts)
+                )
+            } else if file.max_failures == u32::MAX {
                 format!("Failed attempts {}.", state.failures)
             } else {
                 format!("Attempts {} of {}.", state.failures, file.max_failures)
@@ -330,7 +362,7 @@ impl CloseoutState {
                 .filter(|item| self.is_required(item))
             {
                 let state = self.items.get(&item.id).cloned().unwrap_or_default();
-                let exhausted = state.failures >= file.max_failures;
+                let exhausted = self.exhausted(&item.id);
                 let status = if exhausted {
                     blocked = self.required_blocker();
                     "exhausted"
@@ -362,7 +394,10 @@ impl CloseoutState {
                     "matched_paths": matched_paths,
                     "status": status,
                     "failed_attempts": state.failures,
-                    "remaining_attempts": (file.max_failures != u32::MAX).then(|| file.max_failures.saturating_sub(state.failures)),
+                    "remaining_attempts": (!self.progress_review(&item.id) && file.max_failures != u32::MAX).then(|| file.max_failures.saturating_sub(state.failures)),
+                    "remaining_failed_review_attempts": file.retry.as_ref().and_then(|retry| retry.max_failed_review_attempts).filter(|_| self.progress_review(&item.id)).map(|cap| cap.saturating_sub(state.failures)),
+                    "finding_attempts": state.retry_budget.as_ref().filter(|_| self.progress_review(&item.id)).map(|budget| &budget.finding_attempts),
+                    "max_failed_attempts_per_finding": file.retry.as_ref().filter(|_| self.progress_review(&item.id)).map(|retry| retry.max_failed_attempts_per_item),
                     "retry_scope": file.retry.as_ref().map(|retry| retry.scope),
                     "different_model": file.reviews.get(&item.id).is_some_and(|review| review.independence.different_model),
                 }));
@@ -796,6 +831,38 @@ pub struct ReviewFinding {
 }
 
 impl CloseoutReview {
+    pub(crate) fn evaluate(
+        &self,
+        candidate_session: &str,
+        candidate_model: &str,
+        reviewer_session: &str,
+        reviewer_model: &str,
+        findings: &[ReviewFinding],
+    ) -> &'static str {
+        if findings.iter().any(|finding| {
+            finding.location.is_empty()
+                || finding.explanation.is_empty()
+                || finding.evidence.is_empty()
+        }) {
+            "invalid"
+        } else if findings
+            .iter()
+            .any(|finding| finding.severity <= self.fail_on)
+        {
+            "failed"
+        } else if !self.accepts(
+            candidate_session,
+            candidate_model,
+            reviewer_session,
+            reviewer_model,
+            &[],
+        ) {
+            "independence"
+        } else {
+            "passed"
+        }
+    }
+
     pub fn accepts(
         &self,
         candidate_session: &str,
@@ -1424,6 +1491,38 @@ mod tests {
     }
 
     #[test]
+    fn review_cap_validation_and_legacy_digest_are_stable() {
+        for cap in ["0", "4", "100001", "1.5", "null", "-1"] {
+            assert!(serde_yaml::from_str::<CloseoutFile>(&format!("specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 5\n  scope: task\n  maxFailedReviewAttempts: {cap}\n")).is_err());
+        }
+        let dir = temp_dir("review-cap-digest");
+        let entry = "specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 5\n  scope: task\n";
+        write_file(&dir, entry);
+        let original = read(&dir).unwrap().unwrap();
+        let canonical = serde_json::json!({"specVersion":"0.1","files":[{"path":".kyotoagent/closeout.yaml","sha256":retry::hash(entry.as_bytes())}],"items":[],"retry":{"maxFailedAttemptsPerItem":5,"scope":"task"}});
+        assert_eq!(
+            original.policy_digest,
+            format!(
+                "sha256:{}",
+                retry::hash(&serde_json::to_vec(&canonical).unwrap())
+            )
+        );
+        assert_eq!(
+            serde_json::to_value(original.retry.unwrap()).unwrap(),
+            canonical["retry"]
+        );
+        let mut digests = std::collections::HashSet::new();
+        for cap in [5, 12, 100000] {
+            write_file(&dir, &format!("{entry}  maxFailedReviewAttempts: {cap}\n"));
+            let file = read(&dir).unwrap().unwrap();
+            assert_eq!(file.retry.unwrap().max_failed_review_attempts, Some(cap));
+            assert_ne!(file.policy_digest, original.policy_digest);
+            assert!(digests.insert(file.policy_digest));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn an_import_cannot_set_a_retry_limit() {
         let dir = temp_dir("import-retry");
         write_file(
@@ -1608,6 +1707,20 @@ mod tests {
                 explanation: "Finding".into(),
                 evidence: "Observed behavior".into(),
             };
+            assert_eq!(
+                review.evaluate(
+                    "candidate",
+                    "writer",
+                    "candidate",
+                    "writer",
+                    std::slice::from_ref(&finding)
+                ),
+                if severity <= Severity::P1 {
+                    "failed"
+                } else {
+                    "independence"
+                }
+            );
             assert_eq!(
                 review.accepts("candidate", "writer", "reviewer", "reader", &[finding]),
                 severity > Severity::P1

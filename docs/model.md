@@ -170,6 +170,19 @@ A task ID must be nonblank and at most 256 bytes. Kyoto retains the retry
 records under its server root and serializes attempts sharing a repository.
 Failed review findings count; invalid, stale, and independence results do not.
 
+Add `maxFailedReviewAttempts` to the entry policy's `retry` block to give reviews
+both a total failed-round cap and a per-location budget. The cap must be between
+1 and 100000 and at least `maxFailedAttemptsPerItem`. Commands and setup still
+use `maxFailedAttemptsPerItem`. Reviews stop when the total cap is reached or a
+location appears in that many failed rounds. Locations are trimmed and up to
+two trailing numeric line/column segments are removed. Only findings meeting
+`failOn` count, once per location per round. Passes do not reset the counts.
+`get_closeout` reports the remaining total review budget and per-location counts
+separately. These review budgets survive re-enabling checks. An exhausted review
+stays blocked and needs operator intervention rather than session acceptance.
+Commands and setup still offer session acceptance when they reach their own limit.
+
+
 ## The request
 
 Chat Completions providers receive streaming requests at `/chat/completions`.
