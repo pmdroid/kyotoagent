@@ -68,6 +68,7 @@ pub(crate) enum Canned {
     HangUp,
     Silent,
     Pace { gap: Duration, parts: Vec<String> },
+    Cut,
 }
 
 /// A local HTTP server that records what it was sent and answers from a
@@ -185,6 +186,7 @@ fn serve_one(
         Canned::Status(status, body) => respond(&mut stream, status, &body),
         Canned::Silent => hold_silent(&mut stream, stop),
         Canned::Pace { gap, parts } => pace(&mut stream, gap, &parts),
+        Canned::Cut => cut_stream(&mut stream),
     }
 }
 
@@ -218,6 +220,18 @@ fn hold_silent(stream: &mut TcpStream, stop: &AtomicBool) {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn cut_stream(stream: &mut TcpStream) {
+    let head =
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n";
+    let _ = stream.write_all(head.as_bytes());
+    let part = sse_line(serde_json::json!({"choices": [{"delta": {"content": "partial"}}]}));
+    let head = format!("{:x}\r\n", part.len());
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(&part.as_bytes()[..part.len() / 2]);
+    let _ = stream.flush();
+    let _ = stream.shutdown(Shutdown::Both);
 }
 
 fn pace(stream: &mut TcpStream, gap: Duration, parts: &[String]) {
@@ -1059,11 +1073,12 @@ async fn a_silent_stream_times_out_and_names_the_timeout() {
         .await
         .expect_err("a silent body is not a completion");
     assert!(
-        started.elapsed() < Duration::from_secs(5),
+        started.elapsed() < Duration::from_secs(12),
         "the wait stayed short"
     );
     assert!(matches!(error, ChatError::Idle { .. }), "{error:?}");
     assert!(error.to_string().contains("timed out"), "{error}");
+    assert_eq!(server.received().len(), 4);
 }
 
 #[tokio::test]
@@ -1769,16 +1784,76 @@ async fn background_titles_do_not_amplify_429s() {
 }
 
 #[tokio::test]
-async fn a_partial_stream_timeout_is_not_replayed() {
+async fn an_overload_code_inside_a_response_stream_is_retried() {
+    let failed = sse_line(serde_json::json!({
+        "type": "response.failed",
+        "response": {
+            "error": {
+                "code": "server_is_overloaded",
+                "message": "The server is overloaded"
+            }
+        }
+    }));
+    let server = FakeServer::start(vec![
+        Canned::Raw(failed),
+        Canned::Raw(responses_stream(
+            serde_json::from_str(&a_responses_reply()).unwrap(),
+        )),
+    ]);
+    let root = grok_root("stream-overload");
+    std::fs::write(root.join("config.toml"), codex_file(&server)).unwrap();
+    write_codex(&root, "access", "refresh", "2035-01-01T00:00:00.000Z");
+    let config = Config::load(&root.join("config.toml")).unwrap();
+    let client = ChatClient::in_root(&config, Some(&root)).unwrap();
+    let reply = client.complete(&a_conversation(), &[]).await.unwrap();
+    assert_eq!(reply.text(), "Reading.");
+    let requests = server.received();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body, requests[1].body);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn http_507_is_retried_like_other_transient_server_statuses() {
+    let server = FakeServer::start(vec![
+        Canned::Status(507, "insufficient storage".into()),
+        Canned::Json(a_text_reply()),
+    ]);
+    let client = ChatClient::new(&config_for(&server, None)).unwrap();
+    assert!(client.complete(&a_conversation(), &[]).await.is_ok());
+    let requests = server.received();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body, requests[1].body);
+}
+
+#[tokio::test]
+async fn a_cut_stream_is_retried() {
+    let server = FakeServer::start(vec![Canned::Cut, Canned::Json(a_text_reply())]);
+    let client = ChatClient::new(&config_for(&server, None)).unwrap();
+    let reply = client.complete(&a_conversation(), &[]).await.unwrap();
+    assert_eq!(reply.text(), "It names the binary.");
+    let requests = server.received();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body, requests[1].body);
+}
+
+#[tokio::test]
+async fn a_partial_stream_timeout_is_replayed() {
     let part = sse_line(serde_json::json!({"choices": [{"delta": {"content": "partial"}}]}));
-    let server = FakeServer::start(vec![Canned::Pace {
-        gap: Duration::from_millis(200),
-        parts: vec![part, "data: [DONE]\n\n".into()],
-    }]);
+    let server = FakeServer::start(vec![
+        Canned::Pace {
+            gap: Duration::from_millis(200),
+            parts: vec![part, "data: [DONE]\n\n".into()],
+        },
+        Canned::Json(a_text_reply()),
+    ]);
     let mut client = ChatClient::new(&config_for(&server, None)).unwrap();
     client.stream_idle = Duration::from_millis(30);
-    assert!(client.complete(&a_conversation(), &[]).await.is_err());
-    assert_eq!(server.received.lock().unwrap().len(), 1);
+    let reply = client.complete(&a_conversation(), &[]).await.unwrap();
+    assert_eq!(reply.text(), "It names the binary.");
+    let requests = server.received();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body, requests[1].body);
 }
 #[tokio::test]
 async fn compact_recovers_from_a_rejected_request() {
@@ -1787,6 +1862,7 @@ async fn compact_recovers_from_a_rejected_request() {
     assert!(client.compact(&a_conversation()).await.is_ok());
     assert_eq!(server.received.lock().unwrap().len(), 2);
 }
+
 #[tokio::test]
 async fn auth_and_payment_errors_are_not_retried() {
     for code in [400, 401, 402, 403] {

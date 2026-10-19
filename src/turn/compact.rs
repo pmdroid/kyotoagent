@@ -121,6 +121,12 @@ pub(super) async fn run_compact(
                     break;
                 }
                 failure = String::from("the summary was empty or too short to preserve the task");
+                if attempt < 2 {
+                    tokio::select! {
+                        _ = cancel.changed() => return Ok(()),
+                        _ = tokio::time::sleep(Duration::from_secs(3)) => {},
+                    }
+                }
             }
             Ok(Err(error)) if error.is_context_overflow() => {
                 shrink_transcript(messages.get_mut(1));
@@ -131,26 +137,26 @@ pub(super) async fn run_compact(
                 continue;
             }
             Ok(Err(error)) => {
-                let retryable = matches!(
-                    &error,
-                    ChatError::Transport(_)
-                        | ChatError::Status {
-                            status: 429 | 500..=599,
-                            ..
-                        }
-                        | ChatError::Idle { .. }
-                );
                 failure = error.to_string();
-                if !retryable {
+                let crate::chat::Failure::Retry { after } = error.failure() else {
                     break;
+                };
+                if attempt < 2 {
+                    let delay = after.unwrap_or(Duration::from_secs(3));
+                    tokio::select! {
+                        _ = cancel.changed() => return Ok(()),
+                        _ = tokio::time::sleep(delay) => {},
+                    }
                 }
             }
-            Err(_) => failure = String::from("the summary request timed out"),
-        }
-        if attempt < 2 {
-            tokio::select! {
-                _ = cancel.changed() => return Ok(()),
-                _ = tokio::time::sleep(Duration::from_secs(3)) => {},
+            Err(_) => {
+                failure = String::from("the summary request timed out");
+                if attempt < 2 {
+                    tokio::select! {
+                        _ = cancel.changed() => return Ok(()),
+                        _ = tokio::time::sleep(Duration::from_secs(3)) => {},
+                    }
+                }
             }
         }
     }
