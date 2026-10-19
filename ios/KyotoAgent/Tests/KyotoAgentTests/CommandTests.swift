@@ -517,6 +517,34 @@ final class CommandClientTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(MessageText.self, from: call.body ?? Data()).text, "/goal status")
     }
 
+    func testModelAndEffortCommandsWhileWorkingKeepPendingImagesOutOfTheQueue() async throws {
+        for command in ["/model", "/effort", "/model grok-4.7", "/effort high"] {
+            let gate = try scriptGate()
+            let handler = gate.handler
+            gate.handler = { request in
+                if request.url?.path.hasSuffix("/view") == true {
+                    return HostResponse(status: 200, body: Data(#"{"status":"working","cards":[],"revision":1}"#.utf8))
+                }
+                return try handler(request)
+            }
+            let model = try await open(gate)
+            await model.refreshOpenView()
+            XCTAssertEqual(model.displayedStatus, .working)
+            let image = ImageAttachment(name: "pending.png", mimeType: "image/png", data: Data([1, 2, 3]).base64EncodedString())
+            model.addImage(image)
+            model.updateDraft(command)
+            await model.send()
+            XCTAssertTrue(model.draft.isEmpty)
+            XCTAssertEqual(model.images, [image])
+            XCTAssertFalse(gate.calls.contains { $0.path.hasSuffix("/messages") })
+            if command == "/model" || command == "/effort" {
+                XCTAssertNotNil(model.overlay)
+            } else {
+                XCTAssertTrue(gate.calls.contains { $0.path.hasSuffix("/model/session") })
+            }
+        }
+    }
+
     func testCompletionRejectsAStaleSuggestionAndPreservesMidDraftEdits() async throws {
         let gate = try scriptGate()
         let model = try await open(gate)

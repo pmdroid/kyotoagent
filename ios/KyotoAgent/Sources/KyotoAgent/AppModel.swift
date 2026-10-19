@@ -396,16 +396,12 @@ public final class AppModel {
             notice = "Side questions take text only."
             return
         }
-        if !attachments.isEmpty {
-            await postAsk(id, client, text, images: attachments)
-            return
-        }
         let command = await classified(text)
         switch command {
         case .btw:
             await postAsk(id, client, text)
         case .ask:
-            await postAsk(id, client, text)
+            await postAsk(id, client, text, images: attachments)
         case .openModel:
             clearDraft(id, text)
             await openModelList()

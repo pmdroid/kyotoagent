@@ -9,6 +9,17 @@ pub(super) fn pending(app: &App) -> &[ImageAttachment] {
         .unwrap_or(&[])
 }
 
+pub(super) fn attach_input(app: &mut App) -> bool {
+    if dropped_paths(&app.ask).is_some_and(|paths| paths.iter().all(|path| path.is_file())) {
+        let text = app.ask.clone();
+        if attach_drop(app, &text) {
+            editor::replace(app, 0..text.len(), "");
+            return true;
+        }
+    }
+    false
+}
+
 pub(super) fn attach_drop(app: &mut App, text: &str) -> bool {
     let Some(paths) = dropped_paths(text) else {
         return false;
@@ -88,7 +99,7 @@ fn dropped_paths(text: &str) -> Option<Vec<PathBuf>> {
             quote = None;
         } else if quote.is_none() && (ch == '\'' || ch == '"') {
             quote = Some(ch);
-        } else if quote.is_none() && ch.is_whitespace() {
+        } else if quote.is_none() && ch.is_ascii_whitespace() {
             if !word.is_empty() {
                 paths.push(PathBuf::from(std::mem::take(&mut word)));
             }
@@ -123,6 +134,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn macos_screenshot_paths_keep_the_narrow_nonbreaking_space() {
+        assert_eq!(
+            dropped_paths(
+                "/Users/pascal/Desktop/Screenshot\\ 2026-10-15\\ at\\ 10.48.49\u{202f}AM.png"
+            ),
+            Some(vec![PathBuf::from(
+                "/Users/pascal/Desktop/Screenshot 2026-10-15 at 10.48.49\u{202f}AM.png"
+            )])
+        );
+    }
+
+    #[test]
     fn dropped_image_paths_preserve_spaces_and_reject_prose() {
         assert_eq!(
             dropped_paths("'/tmp/a b.png' /tmp/c\\ d.webp").unwrap(),
@@ -139,6 +162,36 @@ mod tests {
 #[cfg(test)]
 mod behavior_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unbracketed_screenshot_drops_attach_before_the_message_is_sent() {
+        let directory = std::env::temp_dir().join(format!("kyoto-drop-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("Screenshot 2026-10-15 at 10.48.49\u{202f}AM.png");
+        std::fs::write(&path, crate::splash::PNG).unwrap();
+        let client = Client::at(PathBuf::from("/missing.sock"));
+        let text = path.to_str().unwrap().replace(' ', "\\ ");
+        for trailing_space in [false, true] {
+            let mut app = App::new(PathBuf::new(), PathBuf::new(), "first".into());
+            for c in text.chars() {
+                apply(&mut app, &client, Effect::Type(c)).await.unwrap();
+            }
+            let effect = if trailing_space {
+                Effect::Type(' ')
+            } else {
+                Effect::Submit
+            };
+            apply(&mut app, &client, effect).await.unwrap();
+            assert_eq!(pending(&app).len(), 1);
+            assert!(app.ask.is_empty());
+        }
+        let mut app = App::new(PathBuf::new(), PathBuf::new(), "first".into());
+        app.ask = "Describe this".into();
+        apply(&mut app, &client, Effect::Paste(text)).await.unwrap();
+        assert_eq!(pending(&app).len(), 1);
+        assert_eq!(app.ask, "Describe this");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[tokio::test]
     async fn dropping_images_keeps_text_and_session_drafts_and_removes_by_click() {

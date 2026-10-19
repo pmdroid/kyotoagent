@@ -401,6 +401,7 @@ struct TranscriptScreen: SwiftUI.View {
                 }
             }
         }
+        .modifier(ChatImageDrop(model: model))
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
         .background(.bar)

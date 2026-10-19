@@ -321,6 +321,9 @@ async fn apply_action(app: &mut App, client: &Client, effect: Effect) -> Result<
                 return Ok(true);
             }
             editor::insert(app, &c.to_string(), false);
+            if c.is_ascii_whitespace() && matches!(mode(app), Mode::Idle | Mode::Working) {
+                images::attach_input(app);
+            }
         }
         Effect::DeleteWord | Effect::DeleteLine => edit_delete(app, effect),
         Effect::Backspace => {
@@ -1150,13 +1153,6 @@ pub(super) fn run_pane_command(app: &mut App, pane: RightPane) {
     toggle_pane(app, pane);
 }
 
-fn pane_from_slash(ask: &str) -> Option<RightPane> {
-    match slash_command(ask) {
-        Some(SlashCommand::TogglePane(pane)) => Some(pane),
-        _ => None,
-    }
-}
-
 pub(super) async fn apply_enhance_slash(
     app: &mut App,
     client: &Client,
@@ -1244,6 +1240,9 @@ pub(super) async fn apply_closeout_slash(
 }
 
 pub(super) async fn submit(app: &mut App, client: &Client) -> Result<(), String> {
+    if matches!(mode(app), Mode::Idle | Mode::Working) && images::attach_input(app) {
+        return Ok(());
+    }
     let side_in_question = editor::question(app);
     if let Some(question) = editor::input(app)
         .trim()
@@ -1326,76 +1325,80 @@ pub(super) async fn submit(app: &mut App, client: &Client) -> Result<(), String>
         poll(app, client).await?;
         return Ok(());
     }
+    if matches!(mode(app), Mode::Idle | Mode::Working | Mode::Permission)
+        && !app.selected.is_empty()
+    {
+        let ask = app.ask.clone();
+        match slash_command(&ask) {
+            Some(SlashCommand::OpenModel) => {
+                app.ask.clear();
+                app.ask_cursor = None;
+                app.pastes.retain(|paste| paste.question);
+                open_model_picker(app, client).await;
+                return Ok(());
+            }
+            Some(SlashCommand::SetModel(id)) => {
+                app.ask.clear();
+                app.ask_cursor = None;
+                app.pastes.retain(|paste| paste.question);
+                apply_model_id(app, client, id).await;
+                return Ok(());
+            }
+            Some(SlashCommand::SetEffort(effort)) => {
+                app.ask.clear();
+                app.ask_cursor = None;
+                app.pastes.retain(|paste| paste.question);
+                apply_effort(app, client, effort).await;
+                return Ok(());
+            }
+            Some(SlashCommand::OpenEffort) => {
+                app.ask.clear();
+                app.ask_cursor = None;
+                app.pastes.retain(|paste| paste.question);
+                open_effort_picker(app, client).await;
+                return Ok(());
+            }
+            Some(SlashCommand::Compact) => {
+                app.ask.clear();
+                app.ask_cursor = None;
+                app.pastes.retain(|paste| paste.question);
+                let _ = client
+                    .request(
+                        "POST",
+                        &format!("/v1/sessions/{}/compact", app.selected),
+                        None,
+                    )
+                    .await?;
+                poll(app, client).await?;
+                return Ok(());
+            }
+            Some(SlashCommand::Yolo(flag)) => {
+                apply_yolo_slash(app, client, flag).await?;
+                return Ok(());
+            }
+            Some(SlashCommand::Fast(flag)) => {
+                apply_fast_slash(app, client, flag).await?;
+                return Ok(());
+            }
+            Some(SlashCommand::ShowCloseout(show)) => {
+                apply_closeout_slash(app, client, show).await?;
+                return Ok(());
+            }
+            Some(SlashCommand::Enhance(flag)) => {
+                apply_enhance_slash(app, client, flag).await?;
+                return Ok(());
+            }
+            Some(SlashCommand::TogglePane(pane)) => {
+                run_pane_command(app, pane);
+                return Ok(());
+            }
+            None => {}
+        }
+    }
     match mode(app) {
         Mode::Idle => {
             if app.selected.is_empty() {
                 return Ok(());
-            }
-            let ask = app.ask.clone();
-            match slash_command(&ask) {
-                Some(SlashCommand::OpenModel) => {
-                    app.ask.clear();
-                    app.ask_cursor = None;
-                    app.pastes.retain(|paste| paste.question);
-                    open_model_picker(app, client).await;
-                    return Ok(());
-                }
-                Some(SlashCommand::SetModel(id)) => {
-                    app.ask.clear();
-                    app.ask_cursor = None;
-                    app.pastes.retain(|paste| paste.question);
-                    apply_model_id(app, client, id).await;
-                    return Ok(());
-                }
-                Some(SlashCommand::SetEffort(effort)) => {
-                    app.ask.clear();
-                    app.ask_cursor = None;
-                    app.pastes.retain(|paste| paste.question);
-                    apply_effort(app, client, effort).await;
-                    return Ok(());
-                }
-                Some(SlashCommand::OpenEffort) => {
-                    app.ask.clear();
-                    app.ask_cursor = None;
-                    app.pastes.retain(|paste| paste.question);
-                    open_effort_picker(app, client).await;
-                    return Ok(());
-                }
-                Some(SlashCommand::Compact) => {
-                    app.ask.clear();
-                    app.ask_cursor = None;
-                    app.pastes.retain(|paste| paste.question);
-                    let _ = client
-                        .request(
-                            "POST",
-                            &format!("/v1/sessions/{}/compact", app.selected),
-                            None,
-                        )
-                        .await?;
-                    poll(app, client).await?;
-                    return Ok(());
-                }
-                Some(SlashCommand::Yolo(flag)) => {
-                    apply_yolo_slash(app, client, flag).await?;
-                    return Ok(());
-                }
-                Some(SlashCommand::Fast(flag)) => {
-                    apply_fast_slash(app, client, flag).await?;
-                    return Ok(());
-                }
-                Some(SlashCommand::ShowCloseout(show)) => {
-                    apply_closeout_slash(app, client, show).await?;
-                    return Ok(());
-                }
-                Some(SlashCommand::Enhance(flag)) => {
-                    apply_enhance_slash(app, client, flag).await?;
-                    return Ok(());
-                }
-                Some(SlashCommand::TogglePane(pane)) => {
-                    run_pane_command(app, pane);
-                    return Ok(());
-                }
-                None => {}
             }
             if app.ask.trim().is_empty() && images::pending(app).is_empty() {
                 if app
@@ -1427,22 +1430,6 @@ pub(super) async fn submit(app: &mut App, client: &Client) -> Result<(), String>
             poll(app, client).await?;
         }
         Mode::Working => {
-            if let Some(pane) = pane_from_slash(&app.ask) {
-                run_pane_command(app, pane);
-                return Ok(());
-            }
-            if let Some(SlashCommand::Yolo(flag)) = slash_command(&app.ask) {
-                apply_yolo_slash(app, client, flag).await?;
-                return Ok(());
-            }
-            if let Some(SlashCommand::ShowCloseout(show)) = slash_command(&app.ask) {
-                apply_closeout_slash(app, client, show).await?;
-                return Ok(());
-            }
-            if let Some(SlashCommand::Enhance(flag)) = slash_command(&app.ask) {
-                apply_enhance_slash(app, client, flag).await?;
-                return Ok(());
-            }
             if app.selected.is_empty()
                 || (app.ask.trim().is_empty() && images::pending(app).is_empty())
             {
@@ -1493,21 +1480,7 @@ pub(super) async fn submit(app: &mut App, client: &Client) -> Result<(), String>
             }
             poll(app, client).await?;
         }
-        Mode::Permission => {
-            if let Some(pane) = pane_from_slash(&app.ask) {
-                run_pane_command(app, pane);
-                return Ok(());
-            }
-            if let Some(SlashCommand::Yolo(flag)) = slash_command(&app.ask) {
-                apply_yolo_slash(app, client, flag).await?;
-            }
-            if let Some(SlashCommand::ShowCloseout(show)) = slash_command(&app.ask) {
-                apply_closeout_slash(app, client, show).await?;
-            }
-            if let Some(SlashCommand::Enhance(flag)) = slash_command(&app.ask) {
-                apply_enhance_slash(app, client, flag).await?;
-            }
-        }
+        Mode::Permission => {}
     }
     Ok(())
 }
