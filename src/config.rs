@@ -149,6 +149,8 @@ struct File {
     #[serde(default)]
     title_model: Option<String>,
     #[serde(default)]
+    closeout_review_models: Vec<String>,
+    #[serde(default)]
     yolo: Option<bool>,
     #[serde(default)]
     sandbox: bool,
@@ -167,6 +169,8 @@ struct File {
 #[derive(Clone, Debug, Deserialize)]
 struct ProjectFile {
     path: String,
+    #[serde(default)]
+    closeout_review_models: Option<Vec<String>>,
     #[serde(default)]
     closeout: Option<PathBuf>,
     #[serde(default)]
@@ -223,6 +227,7 @@ pub struct Config {
     pub listen_cert: Option<String>,
     pub listen_key: Option<String>,
     pub title_model: Option<String>,
+    pub closeout_review_models: Vec<String>,
     pub yolo: bool,
     pub sandbox: bool,
     pub enhance: bool,
@@ -244,6 +249,7 @@ pub struct Profile {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Project {
+    pub closeout_review_models: Option<Vec<String>>,
     pub closeout: Option<PathBuf>,
     pub id: String,
     pub name: String,
@@ -319,6 +325,7 @@ impl Default for Config {
             listen_cert: None,
             listen_key: None,
             title_model: None,
+            closeout_review_models: Vec::new(),
             yolo: false,
             sandbox: false,
             enhance: false,
@@ -396,7 +403,11 @@ impl Config {
                 field: "model".to_string(),
             });
         }
+        validate_review_models(&file.closeout_review_models, "closeout_review_models")?;
         for (id, project) in &file.projects {
+            if let Some(models) = &project.closeout_review_models {
+                validate_review_models(models, &format!("projects.{id}.closeout_review_models"))?;
+            }
             if !Config::is_provider_id(id) {
                 return Err(ConfigError::InvalidId { id: id.to_string() });
             }
@@ -440,6 +451,7 @@ impl Config {
             listen_key: file.listen_key,
             push: file.push,
             title_model: file.title_model,
+            closeout_review_models: file.closeout_review_models,
             yolo: file.yolo.unwrap_or(false),
             sandbox: file.sandbox,
             enhance: file.enhance.unwrap_or(false),
@@ -496,6 +508,19 @@ impl Config {
             }
         }
         self.show_closeout
+    }
+
+    pub fn closeout_review_models_for(
+        &self,
+        workspace: &str,
+        requested: Option<&str>,
+    ) -> &[String] {
+        let id = self.project_for(workspace, requested);
+        self.projects
+            .iter()
+            .find(|project| Some(&project.id) == id.as_ref())
+            .and_then(|project| project.closeout_review_models.as_deref())
+            .unwrap_or(&self.closeout_review_models)
     }
 
     pub fn closeout_for(
@@ -1158,6 +1183,17 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+fn validate_review_models(models: &[String], field: &str) -> Result<(), ConfigError> {
+    for (index, model) in models.iter().enumerate() {
+        if model.trim().is_empty() {
+            return Err(ConfigError::Missing {
+                field: format!("{field}[{index}]"),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn projects_in(
     text: &str,
     definitions: &BTreeMap<String, ProjectFile>,
@@ -1190,6 +1226,9 @@ fn projects_in(
             });
         }
         projects.push(Project {
+            closeout_review_models: definitions
+                .get(id)
+                .and_then(|project| project.closeout_review_models.clone()),
             closeout: definitions
                 .get(id)
                 .and_then(|project| project.closeout.clone()),
@@ -2373,6 +2412,61 @@ skills = []
             }
         }
     }
+    #[test]
+    fn closeout_review_preferences_follow_project_matching_and_allow_empty_overrides() {
+        let config = Config::from_toml(
+            r#"
+base_url = "x"
+model = "author"
+closeout_review_models = ["first", "second"]
+[projects.repo]
+path = "/repo"
+closeout_review_models = ["project-first", "project-second"]
+[projects.repo-sub]
+path = "/repo/sub"
+closeout_review_models = []
+[projects.inherit]
+path = "/inherit"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.closeout_review_models_for("/elsewhere", None),
+            ["first", "second"]
+        );
+        assert_eq!(
+            config.closeout_review_models_for("/inherit", None),
+            ["first", "second"]
+        );
+        assert_eq!(
+            config.closeout_review_models_for("/repo/src", None),
+            ["project-first", "project-second"]
+        );
+        assert_eq!(
+            config.closeout_review_models_for("/worktree", Some("/repo")),
+            ["project-first", "project-second"]
+        );
+        assert!(config
+            .closeout_review_models_for("/repo/sub", None)
+            .is_empty());
+        assert!(Config::from_toml("base_url = 'x'\nmodel = 'm'\n")
+            .unwrap()
+            .closeout_review_models
+            .is_empty());
+    }
+
+    #[test]
+    fn closeout_review_preferences_require_nonblank_strings() {
+        for value in ["'model'", "[1]", "['']", "['   ']"] {
+            for location in ["", "[projects.repo]\npath = '/repo'\n"] {
+                let text = format!(
+                    "base_url = 'x'\nmodel = 'm'\n{location}closeout_review_models = {value}\n"
+                );
+                assert!(Config::from_toml(&text).is_err(), "{text}");
+            }
+        }
+    }
+
     #[test]
     fn project_closeout_falls_back_only_when_repository_files_are_absent() {
         let root =

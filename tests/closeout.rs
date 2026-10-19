@@ -1207,7 +1207,7 @@ async fn get_closeout_without_a_policy_has_no_requirements() {
     let outputs = tool_outputs(&fixture.log("91bc"), "get_closeout");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&outputs[0]).unwrap(),
-        serde_json::json!({"required":[],"pending":[],"blocked":null,"bypassed":false})
+        serde_json::json!({"required":[],"pending":[],"blocked":null,"bypassed":false,"preferred_review_models":[]})
     );
 }
 
@@ -2611,7 +2611,92 @@ async fn imported_review_is_not_required_after_restoring_the_diff() {
     imported_review_candidate("empty-review", false, false, true).await;
 }
 
+#[tokio::test]
+async fn closeout_review_automatically_uses_the_first_eligible_global_preference() {
+    imported_review_preferences(
+        "preferred-global",
+        "closeout_review_models = ['missing', 'test/model', 'test/reviewer']",
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn closeout_review_project_preferences_override_the_global_list_in_worktrees() {
+    imported_review_preferences("preferred-project", "closeout_review_models = ['missing-global']\n[projects.repo]\npath = 'WORKSPACE/source'\ncloseout_review_models = ['test/reviewer']", true).await;
+}
+
+#[tokio::test]
+async fn unavailable_closeout_preferences_do_not_start_or_spend_a_review_attempt() {
+    let fixture = Fixture::configured(
+        "preferred-unavailable",
+        vec![
+            Canned::Json(tool_call_reply(vec![(
+                "write_file",
+                serde_json::json!({"path":"changed.txt","contents":"candidate"}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "run_closeout",
+                serde_json::json!({"id":"review"}),
+            )])),
+            Canned::Json(tool_call_reply(vec![(
+                "ask",
+                serde_json::json!({"text":"Choose an available reviewer?","choices":["Stop"]}),
+            )])),
+        ],
+        "closeout_review_models = ['missing', 'test/model']",
+    );
+    let workspace = fixture.add_session("91bc");
+    fs::create_dir_all(workspace.join(".agents/skills/review")).unwrap();
+    fs::write(
+        workspace.join(".agents/skills/review/SKILL.md"),
+        "Review correctness",
+    )
+    .unwrap();
+    fs::write(workspace.join(".agents/closeout.yaml"), "specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 3\n  scope: task\nitems:\n  - id: review\n    kind: review\n    gate: beforePR\n    skill: .agents/skills/review/SKILL.md\n    independence:\n      differentSession: true\n      differentModel: true\n    failOn: P1\n").unwrap();
+    fixture.ask("91bc", "Review with preferences");
+    fixture.respond("91bc", Answer::allow_once()).await;
+    fixture.wait_for_waiting_question("91bc").await;
+    assert!(fixture
+        .log("91bc")
+        .contains("no eligible preferred review model is available"));
+    let events = Session::at(&fixture.root.join("session-91bc"))
+        .events()
+        .unwrap();
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == EventKind::CloseoutStarted));
+    assert_eq!(fixture.closeout_runs("91bc"), 0);
+    fixture.runner.cancel("91bc");
+    fixture.wait_for_status("91bc", Status::Idle).await;
+}
+
+#[tokio::test]
+async fn explicit_closeout_review_model_overrides_preferences() {
+    imported_review_preferences(
+        "preferred-explicit",
+        "closeout_review_models = ['missing']",
+        false,
+    )
+    .await;
+}
+
+async fn imported_review_preferences(name: &str, config: &str, automatic: bool) {
+    imported_review_candidate_configured(name, false, false, false, config, automatic).await;
+}
+
 async fn imported_review_candidate(name: &str, committed: bool, pending: bool, empty: bool) {
+    imported_review_candidate_configured(name, committed, pending, empty, "", false).await;
+}
+
+async fn imported_review_candidate_configured(
+    name: &str,
+    committed: bool,
+    pending: bool,
+    empty: bool,
+    config: &str,
+    automatic: bool,
+) {
     let replies = vec![
         Canned::Json(tool_call_reply(vec![(
             "write_file",
@@ -2631,7 +2716,11 @@ async fn imported_review_candidate(name: &str, committed: bool, pending: bool, e
         )])),
         Canned::Json(tool_call_reply(vec![(
             "run_closeout",
-            serde_json::json!({"id":"quality/review", "model":"test/reviewer"}),
+            if automatic {
+                serde_json::json!({"id":"quality/review"})
+            } else {
+                serde_json::json!({"id":"quality/review", "model":"test/reviewer"})
+            },
         )])),
         Canned::Json(tool_call_reply(vec![(
             "write_file",
@@ -2646,8 +2735,17 @@ async fn imported_review_candidate(name: &str, committed: bool, pending: bool, e
             serde_json::json!({"text":"Verified", "proof":"review passed"}),
         )])),
     ];
-    let fixture = Fixture::new(name, replies);
+    let fixture = Fixture::configured(name, replies, config);
     let workspace = fixture.add_session("91bc");
+    if automatic && config.contains("[projects.repo]") {
+        Session::at(&fixture.root.join("session-91bc"))
+            .update(|meta| {
+                meta.requested_workspace =
+                    Some(workspace.join("source").to_string_lossy().into_owned());
+                true
+            })
+            .unwrap();
+    }
     fs::create_dir_all(workspace.join(".agents/closeout")).unwrap();
     fs::create_dir_all(workspace.join(".agents/skills")).unwrap();
     let shared_skill = fixture.root.join("shared-review");
@@ -2715,6 +2813,16 @@ async fn imported_review_candidate(name: &str, committed: bool, pending: bool, e
     assert_eq!(report["pending"], serde_json::json!(["quality/review"]));
     assert_eq!(report["required"][0]["different_model"], true);
     assert_eq!(report["required"][0]["kind"], "review");
+    if automatic {
+        assert_eq!(
+            report["preferred_review_models"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap(),
+            "test/reviewer"
+        );
+    }
     assert_eq!(
         fs::read_to_string(workspace.join("changed.txt")).unwrap(),
         if pending {

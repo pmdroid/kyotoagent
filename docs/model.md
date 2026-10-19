@@ -128,8 +128,29 @@ Closeout 0.1 imports resolve depth-first and prefix check IDs with their `as`
 namespace, such as `quality/tests`. Nested import paths start at the policy
 root. Review checks name a `SKILL.md`, an independence requirement, and a
 `failOn` severity. `run_closeout` launches a fresh reviewer session and retains
-its findings. Set its `model` argument to a different available model when
-`differentModel` is required. Kyoto evaluates the findings and independence
+its findings. Configure an ordered reviewer preference list in Kyoto's
+`config.toml`:
+
+```toml
+closeout_review_models = ["first-reviewer", "second-reviewer"]
+
+[projects.kyotoagent]
+path = "/work/kyotoagent"
+closeout_review_models = ["project-reviewer", "second-reviewer"]
+```
+
+A project's list replaces the global list, including for its isolated worktrees.
+An empty project list restores manual model selection. With a nonempty list,
+omit `run_closeout`'s `model` argument: Kyoto chooses the first model advertised
+unambiguously in the configured providers' catalogs that satisfies independence.
+Missing models and aliases of the author's model are skipped when
+`differentModel` is required. If no preference qualifies, Kyoto asks for a
+configuration change or an explicit model without starting a review.
+
+An explicit `model` overrides the preferences and must still satisfy independence.
+Without preferences, the reviewer defaults to the session model; supply another
+model when `differentModel` is required. `get_closeout` reports the effective list
+as `preferred_review_models`. Kyoto evaluates the findings and independence
 before allowing finish or PR creation.
 
 The app and TUI label each check as required or not required for the current

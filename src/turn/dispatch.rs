@@ -624,7 +624,12 @@ pub(super) async fn execute_tool(
             if let Some(error) = sync_retry(turn, closeout, cancel).await {
                 return Ok(failed(error));
             }
-            plain(closeout.report().to_string())
+            let meta = turn.session.meta()?;
+            let mut report = closeout.report();
+            report["preferred_review_models"] = serde_json::json!(turn
+                .config
+                .closeout_review_models_for(&meta.workspace, meta.requested_workspace.as_deref(),));
+            plain(report.to_string())
         }
         "run_closeout" => {
             let id = string_arg(args, "id").unwrap_or_default();

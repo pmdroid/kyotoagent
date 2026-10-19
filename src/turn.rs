@@ -334,7 +334,7 @@ pub fn tool_definitions_for(config: &Config, child: bool, profile: Option<&str>)
         ),
         Tool::new(
             "run_closeout",
-            "Run a closeout check by its id and retain its transcript with the check. Review checks start a fresh reviewer session following the configured skill. Set model to a different available model when required by independence. This does not publish an artifact. To share useful evidence, explicitly call attach_artifact with the returned file_id.",
+            "Run a closeout check by its id and retain its transcript with the check. Review checks start a fresh reviewer session following the configured skill. Omit model to use the configured preferred review models in order. An explicit model overrides the list and must satisfy independence. This does not publish an artifact. To share useful evidence, explicitly call attach_artifact with the returned file_id.",
             serde_json::json!({
                 "type": "object",
                 "properties": {

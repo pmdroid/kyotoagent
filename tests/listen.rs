@@ -129,6 +129,7 @@ async fn pairing_import_exchanges_remote_data_before_saving_the_connection() {
     let repository = server_root.join("repository");
     fs::create_dir_all(&repository).unwrap();
     config.projects.push(kyotoagent::config::Project {
+        closeout_review_models: None,
         closeout: None,
         id: "remote-repo".into(),
         name: "Remote repository".into(),

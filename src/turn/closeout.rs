@@ -88,6 +88,34 @@ pub(super) async fn run_closeout(
     execute_closeout(turn, id, reviewer_model, turn_id, cancel, closeout).await
 }
 
+fn preferred_review_model<'a>(
+    explicit: Option<&'a str>,
+    preferences: &'a [String],
+    author: &'a str,
+    independent: bool,
+    catalog: &[chat::ModelRow],
+) -> Result<&'a str, String> {
+    if let Some(model) = explicit {
+        return Ok(model);
+    }
+    if preferences.is_empty() {
+        return Ok(author);
+    }
+    let author_identity = chat::canonical_model(catalog, author);
+    preferences
+        .iter()
+        .map(|model| model.trim())
+        .find(|model| {
+            chat::canonical_model(catalog, model).is_some_and(|identity| {
+                !independent || (model != &author && Some(identity) != author_identity)
+            })
+        })
+        .ok_or_else(|| {
+            "no eligible preferred review model is available. Check closeout_review_models or supply an explicit model."
+                .into()
+        })
+}
+
 async fn execute_closeout(
     turn: &Turn,
     id: &str,
@@ -137,8 +165,26 @@ async fn execute_closeout(
     }
 
     let review = closeout.file.as_ref().unwrap().reviews.get(id).cloned();
-    let model = reviewer_model.unwrap_or(&turn.config.model);
+    let preferences = if review.is_some() {
+        let meta = turn.session.meta()?;
+        turn.config
+            .closeout_review_models_for(&meta.workspace, meta.requested_workspace.as_deref())
+    } else {
+        &[]
+    };
     let catalog = chat::model_catalog(&turn.config, turn.root.as_deref()).await;
+    let model = match preferred_review_model(
+        reviewer_model,
+        preferences,
+        &turn.config.model,
+        review
+            .as_ref()
+            .is_some_and(|review| review.independence.different_model),
+        &catalog.models,
+    ) {
+        Ok(model) => model,
+        Err(error) => return Ok(format!("Review {id}: {error}")),
+    };
     let author = chat::canonical_model(&catalog.models, &turn.config.model);
     let reviewer = chat::canonical_model(&catalog.models, model);
     let same_model = match (author, reviewer) {
@@ -743,4 +789,49 @@ pub(super) async fn guard_pull_request(
     Ok(closeout
         .required_blocker()
         .map(|reason| format!("Cannot open a pull request. {reason}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preferred_review_selection_respects_order_aliases_and_explicit_models() {
+        let catalog = chat::parse_catalog(r#"{"data":[{"id":"author","aliases":["author-alias"]},{"id":"reviewer"},{"id":"other-reviewer"}]}"#).unwrap();
+        let preferences =
+            ["missing", "author-alias", "reviewer", "other-reviewer"].map(String::from);
+        assert_eq!(
+            preferred_review_model(None, &preferences, "author", true, &catalog).unwrap(),
+            "reviewer"
+        );
+        assert_eq!(
+            preferred_review_model(None, &preferences, "author", false, &catalog).unwrap(),
+            "author-alias"
+        );
+        assert_eq!(
+            preferred_review_model(
+                Some("other-reviewer"),
+                &preferences,
+                "author",
+                true,
+                &catalog
+            )
+            .unwrap(),
+            "other-reviewer"
+        );
+        assert_eq!(
+            preferred_review_model(None, &[], "author", false, &[]).unwrap(),
+            "author"
+        );
+        assert!(preferred_review_model(None, &preferences[..2], "author", true, &catalog).is_err());
+        assert!(preferred_review_model(None, &preferences, "author", true, &[]).is_err());
+        let mut ambiguous = catalog.clone();
+        let mut duplicate = catalog[1].clone();
+        duplicate.provider = Some("another-provider".into());
+        ambiguous.push(duplicate);
+        assert_eq!(
+            preferred_review_model(None, &preferences, "author", true, &ambiguous).unwrap(),
+            "other-reviewer"
+        );
+    }
 }

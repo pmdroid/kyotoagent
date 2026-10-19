@@ -255,7 +255,7 @@ fn closeout_block(closeout: Option<&CloseoutFile>) -> String {
         return String::new();
     };
     let mut suffix = String::from(
-        "This workspace has closeout checks. After changes and before finishing, call `get_closeout` to discover the required checks and their current status. Run each pending ID in order with `run_closeout`, then call `get_closeout` again. The run_closeout tool runs matching setup steps before checks. Pass a different model to run_closeout when a review has different_model set. Further workspace edits can make passed checks stale. The turn cannot finish until every required check has passed. If blocked is non-null, stop retrying and report the blocker.\n",
+        "This workspace has closeout checks. After changes and before finishing, call `get_closeout` to discover the required checks and their current status. Run each pending ID in order with `run_closeout`, then call `get_closeout` again. The run_closeout tool runs matching setup steps before checks. When get_closeout reports a nonempty preferred_review_models list, omit model to let the host select an eligible reviewer. Otherwise pass a different model when a review has different_model set. Further workspace edits can make passed checks stale. The turn cannot finish until every required check has passed. If blocked is non-null, stop retrying and report the blocker.\n",
     );
     suffix.push_str(
         "If a required check fails, fix it and call run_closeout again. If you cannot fix it, call ask with the error and what you tried.\n\n",
