@@ -1744,7 +1744,19 @@ fn quiet_bodies(bodies: &[String]) -> Vec<Value> {
         .iter()
         .filter_map(|body| {
             let value: Value = serde_json::from_str(body).ok()?;
-            (value.get("stream") == Some(&Value::Bool(false))).then_some(value)
+            value
+                .get("messages")
+                .and_then(Value::as_array)
+                .is_some_and(|messages| {
+                    messages.first().is_some_and(|message| {
+                        message.get("role").and_then(Value::as_str) == Some("system")
+                            && message
+                                .get("content")
+                                .and_then(Value::as_str)
+                                .is_some_and(|content| content.starts_with("Rewrite the request"))
+                    })
+                })
+                .then_some(value)
         })
         .collect()
 }
@@ -1946,6 +1958,9 @@ async fn enhance_revise_rejects_empty_text_and_retry_replaces_a_failed_card() {
         "enhance-retry",
         vec![
             Canned::Status(500, "down".into()),
+            Canned::Status(500, "down".into()),
+            Canned::Status(500, "down".into()),
+            Canned::Status(500, "down".into()),
             Canned::Json(prose("   ")),
             Canned::Json(prose("A better prompt.")),
             Canned::Json(tool_call_reply(vec![(
@@ -1959,15 +1974,11 @@ async fn enhance_revise_rejects_empty_text_and_retry_replaces_a_failed_card() {
     turn_enhance_on(&fixture, &id).await;
     let (status, _) = fixture.client.message(&id, "ship it").await;
     assert_eq!(status, 200);
-    let view = fixture.client.wait_for_status(&id, "waiting").await;
+    let view = wait_for_error(&fixture, &id, "500").await;
     let card_id = enhance_cards(&view)[0]["body"]["eventId"]
         .as_str()
         .expect("event id")
         .to_string();
-    assert!(enhance_cards(&view)[0]["body"]["error"]
-        .as_str()
-        .unwrap_or("")
-        .contains("500"));
     let (status, response) = fixture.client.answer(&id, &card_id, "use").await;
     assert_eq!(status, 400, "use needs a draft: {response}");
     assert!(response.contains("use needs a draft"), "{response}");
@@ -2028,7 +2039,7 @@ async fn enhance_revise_rejects_empty_text_and_retry_replaces_a_failed_card() {
         vec!["the client wording".to_string()],
         "{log}"
     );
-    assert_eq!(quiet_bodies(&fixture._fake.bodies()).len(), 3);
+    assert_eq!(quiet_bodies(&fixture._fake.bodies()).len(), 6);
 }
 
 #[tokio::test]
@@ -3216,7 +3227,7 @@ async fn the_first_ask_stores_a_title_and_a_second_ask_leaves_it() {
     }
     let titles = title_bodies(&fixture._fake.bodies());
     assert_eq!(titles.len(), 1, "{titles:?}");
-    assert_eq!(titles[0]["stream"], false);
+    assert_eq!(titles[0]["stream"], true);
     assert!(titles[0].get("tools").is_none(), "{}", titles[0]);
     assert!(titles[0].get("reasoning_effort").is_none(), "{}", titles[0]);
     assert_eq!(

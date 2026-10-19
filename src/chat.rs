@@ -1,9 +1,10 @@
-//! The one request the agent makes: a non-streaming chat completion.
+//! The one request the agent makes: a chat completion read as a stream.
 //!
-//! [`ChatClient::complete`] posts to `{base_url}/chat/completions` and waits
-//! for the whole message. The body carries `model`, `stream: false`,
-//! `tool_choice: "auto"`, `messages`, and `tools`, and the reply is read out of
-//! `choices[0].message`:
+//! [`ChatClient::complete`] posts to `{base_url}/chat/completions` and reads
+//! the body until it finishes or goes idle. The body carries `model`,
+//! `stream: true`, `tool_choice: "auto"`, `messages`, and `tools`, and the
+//! reply is read out of `choices[0].message` when the server ignores the
+//! stream and answers with one object:
 //!
 //! ```json
 //! { "choices": [ { "message": { "role": "assistant", "content": null,
@@ -44,10 +45,8 @@ pub use catalog::*;
 #[cfg(test)]
 pub(crate) mod tests;
 
-/// How long one completion gets before the request is abandoned.
+/// How long a catalog request, or a silent completion stream, may sit before it is abandoned.
 pub const REQUEST_TIMEOUT_SECS: u64 = 120;
-
-pub const TITLE_TIMEOUT_SECS: u64 = 15;
 
 pub const TITLE_SYSTEM: &str =
     "Write a 3 to 8 word title for this coding session. Reply with the title only.";
@@ -374,7 +373,6 @@ impl Reply {
 #[derive(Serialize)]
 struct Request<'a> {
     model: &'a str,
-    /// Never a stream: the whole message is waited for.
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<&'static str>,
@@ -387,26 +385,25 @@ struct Request<'a> {
     service_tier: Option<&'a str>,
 }
 
-#[derive(Serialize)]
-struct CompactRequest<'a> {
-    model: &'a str,
-    stream: bool,
-    messages: &'a [Message],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    service_tier: Option<&'a str>,
+#[derive(Clone, Copy)]
+enum SendKind {
+    Turn,
+    Compact,
+    Rewrite,
+    Title,
 }
 
-#[derive(Serialize)]
-struct QuietRequest<'a> {
-    model: &'a str,
-    stream: bool,
-    messages: &'a [Message],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    service_tier: Option<&'a str>,
+impl SendKind {
+    fn retries(self) -> bool {
+        !matches!(self, Self::Title)
+    }
+
+    fn service_tier(self, tier: Option<&str>) -> Option<&str> {
+        match self {
+            Self::Turn | Self::Compact => tier,
+            Self::Rewrite | Self::Title => None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -715,8 +712,9 @@ impl ChatClient {
     /// `reasoning_content` (or `reasoning`) onto `thoughts` as they arrive, and
     /// the returned [`Reply`] is the assembled prose and tool calls. A server
     /// that answers with one JSON object is read the same way as a non-stream
-    /// body. This call has no timeout: a reasoning stream can run longer than
-    /// [`REQUEST_TIMEOUT_SECS`].
+    /// body. This call has no total timeout: a reasoning stream can run longer
+    /// than [`REQUEST_TIMEOUT_SECS`], and silence longer than the idle timeout
+    /// abandons it.
     pub async fn complete(&self, messages: &[Message], tools: &[Tool]) -> Result<Reply, ChatError> {
         self.complete_showing(messages, tools, None).await
     }
@@ -738,106 +736,15 @@ impl ChatClient {
         thoughts: Option<&Arc<Mutex<String>>>,
         status: Option<&RetryStatus>,
     ) -> Result<Reply, ChatError> {
-        let guard = retry::StatusGuard(status);
-        let thought_length = thoughts.map(|sink| sink.lock().unwrap().len());
-        for attempt in 0..=retry::MAX_RETRIES {
-            let result = self
-                .complete_attempt(messages, tools, thoughts, status)
-                .await;
-            let transient = match &result {
-                Err(ChatError::Status { status, body }) => retry::transient(*status, body),
-                Err(ChatError::Transport(source)) => source.is_body() || source.is_decode(),
-                _ => false,
-            };
-            if !transient || attempt == retry::MAX_RETRIES {
-                return result;
-            }
-            if let (Some(sink), Some(length)) = (thoughts, thought_length) {
-                sink.lock().unwrap().truncate(length);
-            }
-            let delay = Duration::from_secs(1 << attempt);
-            let reason = if matches!(&result, Err(ChatError::Transport(_))) {
-                "Model response interrupted."
-            } else {
-                "Provider busy."
-            };
-            guard.set(delay, reason);
-            tokio::time::sleep(delay).await;
-            guard.clear();
-        }
-        unreachable!()
-    }
-
-    async fn complete_attempt(
-        &self,
-        messages: &[Message],
-        tools: &[Tool],
-        thoughts: Option<&Arc<Mutex<String>>>,
-        status: Option<&RetryStatus>,
-    ) -> Result<Reply, ChatError> {
-        let url = self.request_url(&self.model);
-        if self.posts_responses(&self.model) {
-            let body = responses_body(
-                &self.model,
-                self.reasoning_effort.as_deref(),
-                self.service_tier.as_deref(),
-                messages,
-                tools,
-                self.codex.is_some(),
-            );
-            let token = self.bearer().await?;
-            let response = self
-                .send_with_retry(&url, &body, token.as_deref(), None, status, true)
-                .await?;
-            let response = if response.status().as_u16() == 401 {
-                let text = response.text().await.map_err(ChatError::Transport)?;
-                if let Some(refreshed) = self.refresh_on_401(token.as_deref()).await? {
-                    self.send_with_retry(&url, &body, Some(refreshed.as_str()), None, status, true)
-                        .await?
-                } else {
-                    return Err(ChatError::Status {
-                        status: 401,
-                        body: text,
-                    });
-                }
-            } else {
-                response
-            };
-            return read_completion(response, thoughts, self.stream_idle, true).await;
-        }
-        let (tool_choice, tools) = if tools.is_empty() {
-            (None, None)
-        } else {
-            (Some("auto"), Some(tools))
-        };
-        let body = Request {
-            model: &self.model,
-            stream: true,
-            tool_choice,
+        self.send(
+            SendKind::Turn,
+            &self.model,
             messages,
             tools,
-            reasoning_effort: self.reasoning_effort.as_deref(),
-            service_tier: self.service_tier.as_deref(),
-        };
-        let token = self.bearer().await?;
-        let response = self
-            .send_with_retry(&url, &body, token.as_deref(), None, status, true)
-            .await?;
-        let response = if response.status().as_u16() == 401 {
-            let text = response.text().await.map_err(ChatError::Transport)?;
-            if let Some(refreshed) = self.refresh_on_401(token.as_deref()).await? {
-                self.send_with_retry(&url, &body, Some(refreshed.as_str()), None, status, true)
-                    .await?
-            } else {
-                return Err(ChatError::Status {
-                    status: 401,
-                    body: text,
-                });
-            }
-        } else {
-            response
-        };
-        read_completion(response, thoughts, self.stream_idle, false).await
+            thoughts,
+            status,
+        )
+        .await
     }
 
     pub async fn title(&self, model: &str, ask: &str) -> Result<Reply, ChatError> {
@@ -849,120 +756,100 @@ impl ChatClient {
                 content: ask.to_string().into(),
             },
         ];
-        let url = self.request_url(model);
-        if self.posts_responses(model) {
-            let body = responses_body(
-                model,
-                self.title_reasoning_effort.as_deref(),
-                None,
-                &messages,
-                &[],
-                self.codex.is_some(),
-            );
-            return self.finish_responses(&url, &body, TITLE_TIMEOUT_SECS).await;
-        }
-        let body = QuietRequest {
-            model,
-            stream: false,
-            messages: &messages,
-            reasoning_effort: self.title_reasoning_effort.as_deref(),
-            service_tier: None,
-        };
-        let token = self.bearer().await?;
-        let (status, text) = self
-            .send_json(&url, &body, token.as_deref(), TITLE_TIMEOUT_SECS)
-            .await?;
-        let (status, text) = if status == 401 {
-            if let Some(refreshed) = self.refresh_on_401(token.as_deref()).await? {
-                self.send_json(&url, &body, Some(refreshed.as_str()), TITLE_TIMEOUT_SECS)
-                    .await?
-            } else {
-                (status, text)
-            }
-        } else {
-            (status, text)
-        };
-        if !(200..300).contains(&status) {
-            return Err(ChatError::Status { status, body: text });
-        }
-        decode_message(&text)
+        self.send(SendKind::Title, model, &messages, &[], None, None)
+            .await
     }
 
     pub async fn rewrite(&self, model: &str, messages: &[Message]) -> Result<Reply, ChatError> {
-        let url = self.request_url(model);
-        if self.posts_responses(model) {
-            let body = responses_body(model, None, None, messages, &[], self.codex.is_some());
-            return self
-                .finish_responses(&url, &body, REQUEST_TIMEOUT_SECS)
-                .await;
-        }
-        let body = QuietRequest {
-            model,
-            stream: false,
-            messages,
-            reasoning_effort: None,
-            service_tier: None,
-        };
-        let token = self.bearer().await?;
-        let (status, text) = self
-            .send_json(&url, &body, token.as_deref(), REQUEST_TIMEOUT_SECS)
-            .await?;
-        let (status, text) = if status == 401 {
-            if let Some(refreshed) = self.refresh_on_401(token.as_deref()).await? {
-                self.send_json(&url, &body, Some(refreshed.as_str()), REQUEST_TIMEOUT_SECS)
-                    .await?
-            } else {
-                (status, text)
-            }
-        } else {
-            (status, text)
-        };
-        if !(200..300).contains(&status) {
-            return Err(ChatError::Status { status, body: text });
-        }
-        decode_message(&text)
+        self.send(SendKind::Rewrite, model, messages, &[], None, None)
+            .await
     }
 
     pub async fn compact(&self, messages: &[Message]) -> Result<Reply, ChatError> {
-        let url = self.request_url(&self.model);
-        if self.posts_responses(&self.model) {
-            let body = responses_body(
-                &self.model,
-                self.reasoning_effort.as_deref(),
-                self.service_tier.as_deref(),
+        self.send(SendKind::Compact, &self.model, messages, &[], None, None)
+            .await
+    }
+
+    async fn send(
+        &self,
+        kind: SendKind,
+        model: &str,
+        messages: &[Message],
+        tools: &[Tool],
+        thoughts: Option<&Arc<Mutex<String>>>,
+        status: Option<&RetryStatus>,
+    ) -> Result<Reply, ChatError> {
+        let url = self.request_url(model);
+        let responses = self.posts_responses(model);
+        let effort = match kind {
+            SendKind::Turn | SendKind::Compact => self.reasoning_effort.as_deref(),
+            SendKind::Title => self.title_reasoning_effort.as_deref(),
+            SendKind::Rewrite => None,
+        };
+        let tier = kind.service_tier(self.service_tier.as_deref());
+        let body = if responses {
+            responses_body(model, effort, tier, messages, tools, self.codex.is_some())
+        } else {
+            let (tool_choice, tools) = if tools.is_empty() {
+                (None, None)
+            } else {
+                (Some("auto"), Some(tools))
+            };
+            serde_json::to_value(Request {
+                model,
+                stream: true,
+                tool_choice,
                 messages,
-                &[],
-                self.codex.is_some(),
-            );
-            return self
-                .finish_responses(&url, &body, REQUEST_TIMEOUT_SECS)
-                .await;
-        }
-        let body = CompactRequest {
-            model: &self.model,
-            stream: false,
-            messages,
-            reasoning_effort: self.reasoning_effort.as_deref(),
-            service_tier: self.service_tier.as_deref(),
+                tools,
+                reasoning_effort: effort,
+                service_tier: tier,
+            })
+            .map_err(ChatError::Decode)?
         };
         let token = self.bearer().await?;
-        let (status, text) = self
-            .send_json(&url, &body, token.as_deref(), REQUEST_TIMEOUT_SECS)
-            .await?;
-        let (status, text) = if status == 401 {
-            if let Some(refreshed) = self.refresh_on_401(token.as_deref()).await? {
-                self.send_json(&url, &body, Some(refreshed.as_str()), REQUEST_TIMEOUT_SECS)
-                    .await?
-            } else {
-                (status, text)
+        let mut refreshed = false;
+        let mut bearer = token.clone();
+        let mut server_attempt = 0usize;
+        let guard = retry::StatusGuard(status);
+        let thought_length = thoughts.map(|sink| sink.lock().unwrap().len());
+        loop {
+            let response = self
+                .send_with_retry(&url, &body, bearer.as_deref(), status, kind.retries())
+                .await?;
+            if response.status().as_u16() == 401 && !refreshed {
+                let text = response.text().await.map_err(ChatError::Transport)?;
+                refreshed = true;
+                if let Some(next) = self.refresh_on_401(token.as_deref()).await? {
+                    bearer = Some(next);
+                    continue;
+                }
+                return Err(ChatError::Status {
+                    status: 401,
+                    body: text,
+                });
             }
-        } else {
-            (status, text)
-        };
-        if !(200..300).contains(&status) {
-            return Err(ChatError::Status { status, body: text });
+            let result = read_completion(response, thoughts, self.stream_idle, responses).await;
+            let transient = match &result {
+                Err(error) => error_is_transient(error),
+                Ok(_) => false,
+            };
+            if !kind.retries() || !transient || server_attempt == retry::MAX_RETRIES {
+                return result;
+            }
+            server_attempt += 1;
+            if let (Some(sink), Some(length)) = (thoughts, thought_length) {
+                sink.lock().unwrap().truncate(length);
+            }
+            let delay = Duration::from_secs(1 << (server_attempt - 1));
+            let reason = if matches!(&result, Err(ChatError::Transport(_))) {
+                "Model response interrupted."
+            } else {
+                "Provider busy."
+            };
+            guard.set(delay, reason);
+            tokio::time::sleep(delay).await;
+            guard.clear();
         }
-        decode_message(&text)
     }
 
     pub async fn model_length(&self, model: &str) -> Option<u64> {
@@ -1004,47 +891,6 @@ impl ChatClient {
         } else {
             format!("{base}/chat/completions")
         }
-    }
-
-    async fn finish_responses(
-        &self,
-        url: &str,
-        body: &impl Serialize,
-        timeout_secs: u64,
-    ) -> Result<Reply, ChatError> {
-        let token = self.bearer().await?;
-        let response = self
-            .send_with_retry(
-                url,
-                body,
-                token.as_deref(),
-                Some(timeout_secs),
-                None,
-                timeout_secs != TITLE_TIMEOUT_SECS,
-            )
-            .await?;
-        let response = if response.status().as_u16() == 401 {
-            let text = response.text().await.map_err(ChatError::Transport)?;
-            if let Some(refreshed) = self.refresh_on_401(token.as_deref()).await? {
-                self.send_with_retry(
-                    url,
-                    body,
-                    Some(refreshed.as_str()),
-                    Some(timeout_secs),
-                    None,
-                    timeout_secs != TITLE_TIMEOUT_SECS,
-                )
-                .await?
-            } else {
-                return Err(ChatError::Status {
-                    status: 401,
-                    body: text,
-                });
-            }
-        } else {
-            response
-        };
-        read_completion(response, None, self.stream_idle, true).await
     }
 
     async fn bearer(&self) -> Result<Option<String>, ChatError> {
@@ -1122,7 +968,6 @@ impl ChatClient {
         url: &str,
         body: &B,
         token: Option<&str>,
-        timeout: Option<u64>,
         status: Option<&RetryStatus>,
         retry_allowed: bool,
     ) -> Result<reqwest::Response, ChatError> {
@@ -1171,11 +1016,7 @@ impl ChatClient {
                 }
             }
             guard.clear();
-            let mut request = self.http.post(url).json(body);
-            if let Some(seconds) = timeout {
-                request = request.timeout(Duration::from_secs(seconds));
-            }
-            request = self.with_auth(request, token);
+            let request = self.with_auth(self.http.post(url).json(body), token);
             let response = request.send().await.map_err(ChatError::Transport)?;
             if response.status().as_u16() != 429 {
                 return Ok(response);
@@ -1211,26 +1052,13 @@ impl ChatClient {
             attempts += 1;
         }
     }
-    async fn send_json<B: Serialize>(
-        &self,
-        url: &str,
-        body: &B,
-        token: Option<&str>,
-        timeout_secs: u64,
-    ) -> Result<(u16, String), ChatError> {
-        let response = self
-            .send_with_retry(
-                url,
-                body,
-                token,
-                Some(timeout_secs),
-                None,
-                timeout_secs != TITLE_TIMEOUT_SECS,
-            )
-            .await?;
-        let status = response.status().as_u16();
-        let text = response.text().await.map_err(ChatError::Transport)?;
-        Ok((status, text))
+}
+
+fn error_is_transient(error: &ChatError) -> bool {
+    match error {
+        ChatError::Status { status, body } => retry::transient(*status, body),
+        ChatError::Transport(source) => source.is_body() || source.is_decode(),
+        _ => false,
     }
 }
 

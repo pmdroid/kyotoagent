@@ -1196,7 +1196,7 @@ async fn a_title_completion_is_one_quiet_request() {
         .expect("the title comes back");
     let body = server.one().body_json();
     assert_eq!(body["model"], Value::from("title-fast"));
-    assert_eq!(body["stream"], Value::from(false));
+    assert_eq!(body["stream"], Value::from(true));
     assert!(body.get("tools").is_none(), "{body}");
     assert!(body.get("tool_choice").is_none(), "{body}");
     assert!(body.get("reasoning_effort").is_none(), "{body}");
