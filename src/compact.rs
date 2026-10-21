@@ -131,6 +131,7 @@ fn one_message_bytes(message: &Message) -> u64 {
         Message::Assistant {
             content,
             tool_calls,
+            ..
         } => content
             .as_ref()
             .map(|c| c.len() as u64)
@@ -268,6 +269,7 @@ pub(crate) fn handoff_state(events: &[Event]) -> String {
 }
 
 struct Pending {
+    reply: Option<crate::chat::Reply>,
     text: Option<String>,
     calls: Vec<ToolCall>,
     results: Vec<ToolResultBody>,
@@ -294,6 +296,10 @@ fn project_slice(events: &[Event], out: &mut Vec<Message>, first_user: &mut bool
                 flush_pending(out, &mut pending);
                 if let Ok(body) = event.body_as::<ModelMessageBody>() {
                     pending = Some(Pending {
+                        reply: event
+                            .body
+                            .get("reply")
+                            .and_then(|value| serde_json::from_value(value.clone()).ok()),
                         text: Some(body.text),
                         calls: Vec::new(),
                         results: Vec::new(),
@@ -303,6 +309,7 @@ fn project_slice(events: &[Event], out: &mut Vec<Message>, first_user: &mut bool
             EventKind::ToolCall => {
                 if let Ok(body) = event.body_as::<ToolCallBody>() {
                     let slot = pending.get_or_insert_with(|| Pending {
+                        reply: None,
                         text: None,
                         calls: Vec::new(),
                         results: Vec::new(),
@@ -320,6 +327,7 @@ fn project_slice(events: &[Event], out: &mut Vec<Message>, first_user: &mut bool
             EventKind::ToolResult => {
                 if let Ok(body) = event.body_as::<ToolResultBody>() {
                     let slot = pending.get_or_insert_with(|| Pending {
+                        reply: None,
                         text: None,
                         calls: Vec::new(),
                         results: Vec::new(),
@@ -350,7 +358,14 @@ fn flush_pending(out: &mut Vec<Message>, pending: &mut Option<Pending>) {
     let Some(pending) = pending.take() else {
         return;
     };
-    let mut calls = pending.calls;
+    let mut native = pending
+        .reply
+        .as_ref()
+        .and_then(|reply| reply.native.clone());
+    let mut calls = pending
+        .reply
+        .map(|reply| reply.tool_calls)
+        .unwrap_or(pending.calls);
     let results = pending.results;
     while calls.len() < results.len() {
         let name = results[calls.len()].tool.clone();
@@ -364,6 +379,7 @@ fn flush_pending(out: &mut Vec<Message>, pending: &mut Option<Pending>) {
     }
     if calls.len() > results.len() {
         calls.truncate(results.len());
+        native = None;
     }
     let content = pending.text.filter(|text| !text.is_empty());
     if content.is_none() && calls.is_empty() {
@@ -372,6 +388,7 @@ fn flush_pending(out: &mut Vec<Message>, pending: &mut Option<Pending>) {
     out.push(Message::Assistant {
         content,
         tool_calls: calls.clone(),
+        native,
     });
     let mut read_images = Vec::new();
     for (call, result) in calls.iter().zip(results) {
@@ -1020,6 +1037,7 @@ mod tests {
     #[test]
     fn tool_call_arguments_count_even_without_assistant_text() {
         let messages = vec![Message::Assistant {
+            native: None,
             content: None,
             tool_calls: vec![ToolCall {
                 id: "call".into(),
@@ -1121,6 +1139,45 @@ mod tests {
             })
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn native_provider_replay_survives_reload_but_drops_unfinished_calls() {
+        let native = serde_json::json!({"model":"gemini","protocol":"gemini","content":[{"functionCall":{"name":"read_file","args":{}},"thoughtSignature":"signed"}]});
+        let reply = crate::chat::Reply {
+            content: Some("Reading".into()),
+            tool_calls: vec![ToolCall {
+                id: "original-id".into(),
+                kind: "function".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            }],
+            native: Some(native.clone()),
+            ..Default::default()
+        };
+        let mut events = vec![
+            ask("e1", "read"),
+            event(
+                "e2",
+                EventKind::ModelMessage,
+                serde_json::json!({"text":"Reading","reply":reply}),
+            ),
+            event(
+                "e3",
+                EventKind::ToolCall,
+                serde_json::json!({"tool":"read_file","args":{}}),
+            ),
+        ];
+        let incomplete = projected_messages("sys", &events, "/w");
+        assert!(incomplete.iter().any(|message| matches!(message, Message::Assistant { native:None,tool_calls,.. } if tool_calls.is_empty())));
+        events.push(event(
+            "e4",
+            EventKind::ToolResult,
+            serde_json::json!({"tool":"read_file","output":"file"}),
+        ));
+        let messages = projected_messages("sys", &events, "/w");
+        assert!(messages.iter().any(|message| matches!(message, Message::Assistant { native:Some(value),tool_calls,.. } if value == &native && tool_calls[0].id == "original-id")));
+        assert!(messages.iter().any(|message| matches!(message, Message::Tool { tool_call_id,.. } if tool_call_id == "original-id")));
     }
 
     #[test]

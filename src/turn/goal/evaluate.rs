@@ -14,6 +14,7 @@ pub(super) fn context(messages: &[Message]) -> String {
             Message::Assistant {
                 content,
                 tool_calls,
+                ..
             } => (
                 "assistant",
                 format!(

@@ -36,6 +36,8 @@ use crate::auth::{self, AuthClient, AuthError, CodexAuth};
 use crate::config::Config;
 
 mod catalog;
+mod opencode;
+mod protocols;
 mod retry;
 pub use retry::RetryStatus;
 
@@ -69,6 +71,8 @@ pub enum Message {
         content: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<ToolCall>,
+        #[serde(skip)]
+        native: Option<Value>,
     },
     /// What a tool returned, tied to the call that asked for it. The id is
     /// echoed exactly as the model spelled it, in the `tool_call_id` the
@@ -209,6 +213,7 @@ impl Message {
         Message::Assistant {
             content: reply.content.clone(),
             tool_calls: reply.tool_calls.clone(),
+            native: reply.native.clone(),
         }
     }
 
@@ -344,6 +349,8 @@ pub struct Reply {
     pub prompt_tokens: Option<u64>,
     #[serde(default, skip)]
     pub completion_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<Value>,
 }
 
 fn validate_tool_calls(calls: &[ToolCall]) -> Result<(), ChatError> {
@@ -527,6 +534,7 @@ pub struct ChatClient {
     grok: Option<GrokSession>,
     codex: Option<CodexSession>,
     opencode: Option<OpenCodeSession>,
+    native: Option<opencode::Client>,
     stream_idle: Duration,
     cooldown: Arc<Mutex<Option<tokio::time::Instant>>>,
 }
@@ -604,7 +612,10 @@ impl ChatClient {
         let http = reqwest::Client::builder()
             .build()
             .map_err(ChatError::Transport)?;
-        let oauth = grok.is_some() || codex.is_some() || opencode.is_some();
+        let oauth = grok.is_some()
+            || codex.is_some()
+            || opencode.is_some()
+            || config.opencode_native().is_some();
         let api_key = if oauth {
             None
         } else {
@@ -645,6 +656,7 @@ impl ChatClient {
             grok,
             codex,
             opencode,
+            native: opencode::Client::new(config, root)?,
             stream_idle: Duration::from_secs(REQUEST_TIMEOUT_SECS),
             cooldown,
         })
@@ -660,7 +672,17 @@ impl ChatClient {
         &self.model
     }
 
+    pub fn with_session(mut self, session: &str) -> Self {
+        if let Some(native) = &mut self.native {
+            native.set_session(session);
+        }
+        self
+    }
+
     pub async fn catalog(&self) -> Result<Vec<ModelRow>, ChatError> {
+        if let Some(native) = &self.native {
+            return native.catalog().await;
+        }
         let token = self.bearer().await?;
         let openrouter = reqwest::Url::parse(&self.base_url).ok().is_some_and(|url| {
             matches!(url.host_str(), Some("openrouter.ai" | "www.openrouter.ai"))
@@ -775,6 +797,18 @@ impl ChatClient {
         thoughts: Option<&Arc<Mutex<String>>>,
         status: Option<&RetryStatus>,
     ) -> Result<Reply, ChatError> {
+        if let Some(native) = &self.native {
+            return native
+                .complete(
+                    &self.model,
+                    messages,
+                    tools,
+                    self.reasoning_effort.as_deref(),
+                    thoughts,
+                    REQUEST_TIMEOUT_SECS,
+                )
+                .await;
+        }
         let url = self.request_url(&self.model);
         if self.posts_responses(&self.model) {
             let body = responses_body(
@@ -849,6 +883,18 @@ impl ChatClient {
                 content: ask.to_string().into(),
             },
         ];
+        if let Some(native) = &self.native {
+            return native
+                .complete(
+                    model,
+                    &messages,
+                    &[],
+                    self.title_reasoning_effort.as_deref(),
+                    None,
+                    TITLE_TIMEOUT_SECS,
+                )
+                .await;
+        }
         let url = self.request_url(model);
         if self.posts_responses(model) {
             let body = responses_body(
@@ -889,6 +935,11 @@ impl ChatClient {
     }
 
     pub async fn rewrite(&self, model: &str, messages: &[Message]) -> Result<Reply, ChatError> {
+        if let Some(native) = &self.native {
+            return native
+                .complete(model, messages, &[], None, None, REQUEST_TIMEOUT_SECS)
+                .await;
+        }
         let url = self.request_url(model);
         if self.posts_responses(model) {
             let body = responses_body(model, None, None, messages, &[], self.codex.is_some());
@@ -924,6 +975,18 @@ impl ChatClient {
     }
 
     pub async fn compact(&self, messages: &[Message]) -> Result<Reply, ChatError> {
+        if let Some(native) = &self.native {
+            return native
+                .complete(
+                    &self.model,
+                    messages,
+                    &[],
+                    self.reasoning_effort.as_deref(),
+                    None,
+                    REQUEST_TIMEOUT_SECS,
+                )
+                .await;
+        }
         let url = self.request_url(&self.model);
         if self.posts_responses(&self.model) {
             let body = responses_body(
@@ -1252,6 +1315,13 @@ fn decode_message(text: &str) -> Result<Reply, ChatError> {
         });
     }
     let mut reply = choice.message;
+    let raw: Value = serde_json::from_str(text).map_err(ChatError::Decode)?;
+    if let Some(reasoning) = raw
+        .pointer("/choices/0/message/reasoning_content")
+        .or_else(|| raw.pointer("/choices/0/message/reasoning"))
+    {
+        reply.native = Some(serde_json::json!({"reasoning_content":reasoning}));
+    }
     validate_tool_calls(&reply.tool_calls)?;
     reply.prompt_tokens = tokens;
     reply.completion_tokens = completion_tokens;
@@ -1354,6 +1424,7 @@ fn responses_body(
             Message::Assistant {
                 content,
                 tool_calls,
+                ..
             } => {
                 if let Some(text) = content.as_deref().filter(|text| !text.is_empty()) {
                     input.push(serde_json::json!({
@@ -1484,6 +1555,7 @@ fn decode_response_value(value: &Value) -> Result<Reply, ChatError> {
         },
         tool_calls,
         prompt_tokens,
+        native: Some(serde_json::json!({"output":output})),
         completion_tokens: value
             .get("usage")
             .and_then(|usage| {
@@ -1532,6 +1604,8 @@ fn first_byte(buf: &[u8]) -> Option<u8> {
 struct Partial {
     responses: bool,
     response_output: std::collections::BTreeMap<usize, Value>,
+    native: Option<Value>,
+    reasoning: String,
     content: String,
     calls: Vec<ToolCall>,
     prompt_tokens: Option<u64>,
@@ -1575,6 +1649,10 @@ impl Partial {
             tool_calls,
             prompt_tokens: self.prompt_tokens,
             completion_tokens: self.completion_tokens,
+            native: self.native.or_else(|| {
+                (!self.reasoning.is_empty())
+                    .then(|| serde_json::json!({"reasoning_content":self.reasoning}))
+            }),
         })
     }
 }
@@ -1664,6 +1742,7 @@ fn apply_sse_line(
         return Ok(());
     };
     if let Some(piece) = delta.reasoning_content.or(delta.reasoning) {
+        partial.reasoning.push_str(&piece);
         if !piece.is_empty() {
             if let Some(sink) = thoughts {
                 sink.lock()
@@ -1729,6 +1808,7 @@ fn apply_response_event(
             partial.calls = reply.tool_calls;
             partial.prompt_tokens = reply.prompt_tokens;
             partial.completion_tokens = reply.completion_tokens;
+            partial.native = reply.native;
             partial.saw = true;
             partial.done = true;
         }
@@ -1953,7 +2033,7 @@ fn opencode_session(
     config: &Config,
     root: Option<&Path>,
 ) -> Result<Option<OpenCodeSession>, ChatError> {
-    if !config.is_opencode() {
+    if !config.is_opencode() || config.opencode_native().is_some() {
         return Ok(None);
     }
     if let Some(name) = config

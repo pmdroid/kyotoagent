@@ -251,8 +251,8 @@ impl Runner {
             .as_ref()
             .and_then(|path| path.parent())
             .map(PathBuf::from);
-        let client = ChatClient::in_root(&config, root.as_deref())?;
         let meta = state.session.meta()?;
+        let client = ChatClient::in_root(&config, root.as_deref())?.with_session(&meta.id);
         let model = config.title_model().unwrap_or(&meta.model).to_string();
         let workspace = state.tools.workspace().to_path_buf();
         let agents = crate::agents_doc::load(&workspace);

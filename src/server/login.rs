@@ -20,6 +20,7 @@ pub(super) struct Logins {
     jobs: Mutex<BTreeMap<String, Arc<Job>>>,
     grok: AuthClient,
     codex: CodexAuth,
+    pub(super) opencode: auth::OpenCodeAuth,
 }
 
 struct Job {
@@ -56,6 +57,9 @@ pub(super) async fn providers(State(state): State<AppState>) -> Json<Vec<Provide
         .collect();
     ids.entry("grok".into()).or_default();
     ids.entry("codex".into()).or_default();
+    for id in crate::config::OPENCODE_NATIVE {
+        ids.entry(id.into()).or_default();
+    }
     if config.provider.is_none() {
         ids.insert("default".into(), None);
     }
@@ -67,7 +71,8 @@ pub(super) async fn providers(State(state): State<AppState>) -> Json<Vec<Provide
                     || provider.is_some_and(|provider| {
                         provider.kind.as_deref() == Some(crate::config::CODEX_KIND)
                     });
-                let device_login = id == "grok" || codex;
+                let native = crate::config::OPENCODE_NATIVE.contains(&id.as_str());
+                let device_login = id == "grok" || codex || native;
                 let env = provider
                     .and_then(|provider| provider.api_key_env.as_deref())
                     .or_else(|| {
@@ -87,6 +92,9 @@ pub(super) async fn providers(State(state): State<AppState>) -> Json<Vec<Provide
                 let authenticated = env
                     .and_then(|name| std::env::var(name).ok())
                     .is_some_and(|value| !value.trim().is_empty())
+                    || (native
+                        && auth::opencode::load(&auth::opencode::token_path(&state.root, &id))
+                            .is_ok())
                     || auth::load_opencode_key(&key).is_ok()
                     || (id == "grok" && auth::load(&state.root.join(auth::AUTH_FILE)).is_ok())
                     || (codex && auth::load_codex(&state.root.join(auth::CODEX_AUTH_FILE)).is_ok())
@@ -136,7 +144,10 @@ pub(super) async fn create_provider(
             "Use up to 64 lowercase letters, digits, and dashes for the provider name.",
         ));
     }
-    if matches!(id, "default" | "grok" | "codex" | "opencode") {
+    if matches!(
+        id,
+        "default" | "grok" | "codex" | "opencode" | "opencode-go" | "opencode-zen"
+    ) {
         return Err(ApiError::bad_request("Choose a different provider name."));
     }
     let base_url = input.base_url.trim();
@@ -207,7 +218,10 @@ pub(super) async fn save_key(
     let top_level = id == "default" && provider.is_none() && config.provider.is_none();
     if !Config::is_provider_id(&id)
         || !(provider.is_some() || top_level)
-        || matches!(id.as_str(), "grok" | "codex")
+        || matches!(
+            id.as_str(),
+            "grok" | "codex" | "opencode-go" | "opencode-zen"
+        )
         || provider
             .is_some_and(|provider| provider.kind.as_deref() == Some(crate::config::CODEX_KIND))
     {
@@ -264,6 +278,7 @@ impl Logins {
             jobs: Mutex::new(BTreeMap::new()),
             grok,
             codex,
+            opencode: auth::OpenCodeAuth::default(),
         }
     }
 }
@@ -325,7 +340,10 @@ pub(super) async fn start(
     } else {
         provider
     };
-    if !matches!(provider.as_str(), "grok" | "codex") {
+    if !matches!(
+        provider.as_str(),
+        "grok" | "codex" | "opencode-go" | "opencode-zen"
+    ) {
         return Err(ApiError::bad_request("unknown login provider"));
     }
     let progress = Progress {
@@ -364,6 +382,7 @@ pub(super) async fn start(
     let root = state.root.clone();
     let codex = state.logins.codex.clone();
     let grok = state.logins.grok.clone();
+    let opencode = state.logins.opencode.clone();
     let task = tokio::spawn(async move {
         let config = root.join(crate::config::CONFIG_FILE);
         let mut out = Challenge {
@@ -375,6 +394,16 @@ pub(super) async fn start(
             match provider.as_str() {
                 "codex" => {
                     auth::login_codex(&codex, &config, &root.join(auth::CODEX_AUTH_FILE), &mut out)
+                        .await
+                }
+                "opencode-go" | "opencode-zen" => {
+                    opencode
+                        .login(
+                            &config,
+                            &auth::opencode::token_path(&root, &provider),
+                            &provider,
+                            &mut out,
+                        )
                         .await
                 }
                 _ => auth::login(&grok, &config, &root.join(auth::AUTH_FILE), &mut out).await,

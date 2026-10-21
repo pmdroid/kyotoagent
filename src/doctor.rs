@@ -129,6 +129,26 @@ async fn check_provider_auth(
             Err(error) => write_auth(out, false, config, &one_line(&error.to_string())),
         };
     }
+    if let Some(provider) = config.opencode_native() {
+        let Some(root) = root else {
+            return write_auth(
+                out,
+                false,
+                config,
+                "Open Providers in Kyoto Agent to sign in.",
+            );
+        };
+        let path = auth::opencode::token_path(root, config.provider.as_deref().unwrap_or(provider));
+        return match auth::OpenCodeAuth::default().access(&path, None).await {
+            Ok(_) => write_auth(out, true, config, &path.display().to_string()),
+            Err(_) => write_auth(
+                out,
+                false,
+                config,
+                "Open Providers in Kyoto Agent to reconnect OpenCode.",
+            ),
+        };
+    }
     if config.provider.as_deref() == Some(auth::GROK_PROVIDER) && !config.is_opencode() {
         let Some(root) = root else {
             return write_auth(

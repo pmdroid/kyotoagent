@@ -148,7 +148,7 @@ impl Runner {
         }
         let config = self.config_for_session(&state.session)?;
         let root = self.config_path.as_ref().and_then(|path| path.parent());
-        let client = ChatClient::in_root(&config, root)?;
+        let client = ChatClient::in_root(&config, root)?.with_session(session_id);
         let model = config.model.clone();
         let snapshot = messages(&events, question);
         let id = append(

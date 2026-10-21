@@ -30,9 +30,8 @@ use crate::chat::{self, ChatClient, ChatError, Message, Reply, Tool, ToolCall};
 use crate::closeout::CloseoutState;
 use crate::config::Config;
 use crate::events::{
-    now, parse_todo_items, AskBody, CompactBody, Event, EventKind, ModelMessageBody,
-    PermissionAnswerBody, ProofBody, ProofFailure, QuestionAnswerBody, ResultBody, TodosBody,
-    ToolCallBody, ToolResultBody,
+    now, parse_todo_items, AskBody, CompactBody, Event, EventKind, PermissionAnswerBody, ProofBody,
+    ProofFailure, QuestionAnswerBody, ResultBody, TodosBody, ToolCallBody, ToolResultBody,
 };
 use crate::hooks;
 use crate::permit::{Answer, AnswerError, GateError};
@@ -1466,6 +1465,10 @@ impl Runner {
         let compact_percent = config.compact_percent;
         let workspace = state.tools.workspace().to_path_buf();
         let meta = state.session.meta().ok();
+        let client = match &meta {
+            Some(meta) => client.with_session(&meta.id),
+            None => client,
+        };
         let profile = meta.as_ref().and_then(|meta| meta.profile.clone());
         let allowance = config.skill_allowance(profile.as_deref());
         let skills = skills::keep_allowed(skills::index(&workspace), allowance.as_deref());
@@ -1578,7 +1581,7 @@ impl Runner {
             .ok_or(TurnError::NoSession)?;
         let config = self.config_for_session(&state.session)?;
         let root = self.config_path.as_ref().and_then(|path| path.parent());
-        let client = ChatClient::in_root(&config, root)?;
+        let client = ChatClient::in_root(&config, root)?.with_session(session_id);
         let runner = self.me.upgrade().expect("the runner is still held");
         let done = Arc::clone(&state);
         let turn = state.turn.lock().expect("the turn slot is not poisoned");

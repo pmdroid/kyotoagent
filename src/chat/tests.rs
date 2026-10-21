@@ -1491,6 +1491,7 @@ fn a_responses_reply() -> String {
 fn codex_messages() -> Vec<Message> {
     let mut messages = a_conversation();
     messages.push(Message::Assistant {
+        native: None,
         content: None,
         tool_calls: vec![ToolCall {
             id: "call-0".into(),

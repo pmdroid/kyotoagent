@@ -46,6 +46,15 @@ pub const DEFAULT_TITLE_MODEL: &str = "google/gemini-3.8-flash";
 pub const CODEX_KIND: &str = "codex";
 pub const CODEX_RESPONSES_ROOT: &str = "https://chatgpt.com/backend-api/codex";
 pub const OPENCODE_KIND: &str = "opencode";
+pub const OPENCODE_NATIVE: [&str; 2] = ["opencode-go", "opencode-zen"];
+
+pub fn opencode_native_root(provider: &str) -> &'static str {
+    if provider == "opencode-go" {
+        "https://opencode.ai/inference/go"
+    } else {
+        "https://opencode.ai/inference"
+    }
+}
 pub const OPENCODE_DEFAULT_MODEL: &str = "kimi-k2.7-code";
 
 pub fn opencode_zen_root() -> String {
@@ -367,6 +376,13 @@ impl Config {
                     && provider.kind.as_deref() == Some(OPENCODE_KIND)
                 {
                     opencode_zen_root()
+                } else if provider.base_url.is_empty()
+                    && provider
+                        .kind
+                        .as_deref()
+                        .is_some_and(|kind| OPENCODE_NATIVE.contains(&kind))
+                {
+                    opencode_native_root(provider.kind.as_deref().unwrap()).into()
                 } else if provider.base_url.is_empty() {
                     return Err(ConfigError::Missing {
                         field: "base_url".to_string(),
@@ -732,6 +748,12 @@ impl Config {
             CODEX_RESPONSES_ROOT.into()
         } else if provider.kind.as_deref() == Some(OPENCODE_KIND) {
             opencode_zen_root()
+        } else if let Some(kind) = provider
+            .kind
+            .as_deref()
+            .filter(|kind| OPENCODE_NATIVE.contains(kind))
+        {
+            opencode_native_root(kind).into()
         } else {
             return Err(ConfigError::Missing {
                 field: "base_url".into(),
@@ -767,6 +789,22 @@ impl Config {
         api_key_env: Option<&str>,
     ) -> Result<Config, ConfigError> {
         Config::insert_provider(path, id, None, base_url, model, api_key_env)
+    }
+
+    pub fn add_opencode_native(path: &Path, id: &str) -> Result<Config, ConfigError> {
+        if !OPENCODE_NATIVE.contains(&id) {
+            return Err(ConfigError::InvalidId { id: id.into() });
+        }
+        let model = Self::load(path)
+            .ok()
+            .and_then(|config| {
+                config
+                    .providers
+                    .get(id)
+                    .map(|provider| provider.model.clone())
+            })
+            .unwrap_or_else(|| OPENCODE_DEFAULT_MODEL.into());
+        Self::insert_provider(path, id, Some(id), opencode_native_root(id), &model, None)
     }
 
     pub fn add_opencode(
@@ -943,12 +981,22 @@ impl Config {
         self.selected_kind() == Some(CODEX_KIND)
     }
 
+    pub fn opencode_native(&self) -> Option<&str> {
+        self.selected_kind()
+            .filter(|kind| OPENCODE_NATIVE.contains(kind))
+    }
+
     pub fn is_opencode(&self) -> bool {
-        self.selected_kind() == Some(OPENCODE_KIND)
+        self.selected_kind() == Some(OPENCODE_KIND) || self.opencode_native().is_some()
     }
 
     pub fn models_url(&self) -> String {
-        format!("{}/models", self.base_url.trim_end_matches('/'))
+        let base = self.base_url.trim_end_matches('/');
+        if self.opencode_native().is_some() {
+            format!("{base}/v1/models")
+        } else {
+            format!("{base}/models")
+        }
     }
 
     pub fn takes_effort(&self) -> bool {
