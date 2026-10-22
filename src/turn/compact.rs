@@ -432,7 +432,7 @@ mod tests {
         session
             .append(
                 &Event::new("e4", &now(), "t2", EventKind::ModelMessage)
-                    .with_body(&ModelMessageBody {
+                    .with_body(&crate::events::ModelMessageBody {
                         text: "work is in progress".into(),
                     })
                     .unwrap(),
@@ -497,7 +497,7 @@ mod tests {
         session
             .append(
                 &Event::new("e2", &now(), "t1", EventKind::ModelMessage)
-                    .with_body(&ModelMessageBody {
+                    .with_body(&crate::events::ModelMessageBody {
                         text: "started".into(),
                     })
                     .unwrap(),

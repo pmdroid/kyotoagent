@@ -291,6 +291,13 @@ impl Server {
         self
     }
 
+    pub fn with_opencode_login(mut self, client: crate::auth::OpenCodeAuth) -> Self {
+        Arc::get_mut(&mut self.logins)
+            .expect("unshared login clients")
+            .opencode = client;
+        self
+    }
+
     pub fn https_addr(&self) -> Option<SocketAddr> {
         *self.https.addr.lock().expect("https addr")
     }

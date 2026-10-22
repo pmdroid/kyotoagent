@@ -53,8 +53,17 @@ so the secret stays in the environment and the file stays safe to read.
 ## Subscription providers
 
 Start `kyotoagent serve`, open `kyotoagent`, then press Ctrl-K and choose
-**Providers**. Select Grok or Codex and approve the device code at the URL shown.
+**Providers**. Select Grok, Codex, **OpenCode Go**, or **OpenCode Zen** and approve
+the device code at the URL shown.
 The selected server saves the credentials and uses that provider for new turns.
+
+For OpenCode, choose your workspace in the browser. Go uses your subscription;
+Zen uses pay-as-you-go credits. Kyoto stores their workspace-scoped credentials
+separately, refreshes them automatically, and leaves existing API-key providers
+unchanged. Choose a model from Kyoto's model picker after signing in. The picker
+loads OpenCode's live model lists, model metadata, and workspace configuration.
+Kyoto routes coding models through Chat Completions, Responses, Anthropic
+Messages, or Gemini according to their advertised API.
 
 ## Managing providers
 

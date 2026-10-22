@@ -75,6 +75,20 @@ async fn grok_token(State(state): State<Arc<OAuth>>) -> (StatusCode, Json<Value>
     }
 }
 
+async fn opencode_code() -> Json<Value> {
+    Json(
+        json!({"device_code":"private-opencode-device", "user_code":"OPEN-CODE", "verification_uri_complete":"https://opencode.ai/console/activate", "expires_in":600, "interval":0}),
+    )
+}
+
+async fn opencode_token(State(state): State<Arc<OAuth>>, Json(body): Json<Value>) -> Json<Value> {
+    assert_eq!(body["client_id"], "kyotoagent");
+    state.grant.acquire().await.unwrap().forget();
+    Json(
+        json!({"access_token":"private-opencode-access","refresh_token":"private-opencode-refresh","org_id":"workspace","expires_in":3600}),
+    )
+}
+
 async fn models(State(state): State<Arc<OAuth>>, headers: axum::http::HeaderMap) -> Json<Value> {
     state.keys.lock().unwrap().push(
         headers
@@ -134,6 +148,8 @@ impl Fixture {
             .route("/api/accounts/deviceauth/usercode", post(user_code))
             .route("/api/accounts/deviceauth/token", post(grant))
             .route("/oauth/token", post(exchange))
+            .route("/auth/device/code", post(opencode_code))
+            .route("/auth/device/token", post(opencode_token))
             .route("/grok/device", post(grok_code))
             .route("/grok/token", post(grok_token))
             .route("/v1/models", get(models))
@@ -147,14 +163,19 @@ impl Fixture {
         let text = "base_url = \"http://127.0.0.1:1/v1\"\nmodel = \"remote-model\"\nlisten = \"127.0.0.1:0\"\n";
         fs::write(root.join("config.toml"), text).unwrap();
         let config = Config::from_toml(text).unwrap();
-        let server = Arc::new(Server::new(&root, &config).unwrap().with_login_clients(
-            auth::AuthClient::at(
-                &format!("{issuer}/grok/device"),
-                &format!("{issuer}/grok/token"),
-                "test",
-            ),
-            auth::CodexAuth::at(&issuer),
-        ));
+        let server = Arc::new(
+            Server::new(&root, &config)
+                .unwrap()
+                .with_login_clients(
+                    auth::AuthClient::at(
+                        &format!("{issuer}/grok/device"),
+                        &format!("{issuer}/grok/token"),
+                        "test",
+                    ),
+                    auth::CodexAuth::at(&issuer),
+                )
+                .with_opencode_login(auth::OpenCodeAuth::at(&issuer)),
+        );
         let running = Arc::clone(&server);
         let server_task = tokio::spawn(async move {
             running.serve().await.unwrap();
@@ -765,4 +786,68 @@ async fn provider_popup_saves_masked_key_on_remote_and_reopens_device_job() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!fixture.root.join(auth::CODEX_AUTH_FILE).exists());
     assert_eq!(app.ask, "unsent chat draft");
+}
+
+#[tokio::test]
+async fn both_native_opencode_providers_offer_remote_device_login_and_cancellation() {
+    let fixture = Fixture::new("opencode").await;
+    let (status, body) = fixture
+        .client
+        .request("GET", "/v1/providers", None)
+        .await
+        .unwrap();
+    assert_eq!(status, 200);
+    let providers: Value = serde_json::from_str(&body).unwrap();
+    for provider in ["opencode-go", "opencode-zen"] {
+        let row = providers
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == provider)
+            .unwrap();
+        assert_eq!(row["device_login"], true);
+        assert_eq!(row["authenticated"], false);
+        let (status, body) = fixture
+            .client
+            .request("POST", &format!("/v1/login/{provider}"), None)
+            .await
+            .unwrap();
+        assert_eq!(status, 202);
+        let progress: Value = serde_json::from_str(&body).unwrap();
+        let path = format!("/v1/login/{}", progress["id"].as_str().unwrap());
+        let pending = wait_for(&fixture.client, &path, "pending").await;
+        assert_eq!(pending["user_code"], "OPEN-CODE");
+        assert!(!pending.to_string().contains("private-opencode"));
+        fixture.oauth.grant.add_permits(1);
+        wait_for(&fixture.client, &path, "complete").await;
+        let tokens =
+            auth::opencode::load(&auth::opencode::token_path(&fixture.root, provider)).unwrap();
+        assert_eq!(tokens.org_id, "workspace");
+        assert_eq!(
+            Config::load(&fixture.root.join("config.toml"))
+                .unwrap()
+                .provider
+                .as_deref(),
+            Some(provider)
+        );
+    }
+    let saved = fs::read(auth::opencode::token_path(&fixture.root, "opencode-go")).unwrap();
+    let (_, body) = fixture
+        .client
+        .request("POST", "/v1/login/opencode-go", None)
+        .await
+        .unwrap();
+    let progress: Value = serde_json::from_str(&body).unwrap();
+    let path = format!("/v1/login/{}", progress["id"].as_str().unwrap());
+    wait_for(&fixture.client, &path, "pending").await;
+    let (status, body) = fixture.client.request("DELETE", &path, None).await.unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["status"],
+        "cancelled"
+    );
+    assert_eq!(
+        fs::read(auth::opencode::token_path(&fixture.root, "opencode-go")).unwrap(),
+        saved
+    );
 }

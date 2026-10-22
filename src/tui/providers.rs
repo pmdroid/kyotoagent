@@ -128,7 +128,7 @@ pub(super) async fn advance(app: &mut App, client: &Client) {
                     app.poll_revision = app.poll_revision.wrapping_add(1);
                     app.notice = Some(format!(
                         "Signed in to {} on {}",
-                        progress.provider,
+                        provider_label(&progress.provider),
                         app.server_name()
                     ));
                 }
@@ -349,6 +349,16 @@ pub(super) fn handle(app: &mut App, client: &Client, effect: &Effect) -> bool {
     true
 }
 
+fn provider_label(id: &str) -> &str {
+    match id {
+        "codex" => "OpenAI",
+        "grok" => "SpaceXAI",
+        "opencode-go" => "OpenCode Go",
+        "opencode-zen" => "OpenCode Zen",
+        _ => id,
+    }
+}
+
 pub(super) fn overlay(app: &App) -> Option<Overlay> {
     let popup = app.provider_popup.as_ref()?;
     let server = app.server_name();
@@ -369,7 +379,7 @@ pub(super) fn overlay(app: &App) -> Option<Overlay> {
                 .chain(rows.iter().map(|provider| {
                     format!(
                         "{}  {}{}",
-                        provider.id,
+                        provider_label(&provider.id),
                         if provider.device_login {
                             "device login"
                         } else {
@@ -422,7 +432,7 @@ pub(super) fn overlay(app: &App) -> Option<Overlay> {
         Popup::Key { provider, value } => Overlay::Question {
             text: format!(
                 "{} on {server}\n\nEnter an API key • Enter save • Esc close{}",
-                provider.id,
+                provider_label(&provider.id),
                 if provider.environment_key {
                     "\nThe server's configured environment key takes precedence."
                 } else {
@@ -435,7 +445,7 @@ pub(super) fn overlay(app: &App) -> Option<Overlay> {
         Popup::Device(progress) => Overlay::Text {
             text: format!(
                 "{} on {server}\n\n{}\n{}\n{}\n{}",
-                progress.provider,
+                provider_label(&progress.provider),
                 progress.status,
                 progress.verification_url.as_deref().unwrap_or(""),
                 progress.user_code.as_deref().unwrap_or(""),
@@ -484,6 +494,63 @@ mod tests {
             authenticated: false,
             environment_key: false,
             login: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_names_are_consistent_through_sign_in_without_changing_ids() {
+        for (id, label) in [
+            ("codex", "OpenAI"),
+            ("grok", "SpaceXAI"),
+            ("opencode-go", "OpenCode Go"),
+            ("opencode-zen", "OpenCode Zen"),
+            ("office", "office"),
+        ] {
+            let mut app = app();
+            let mut row = provider();
+            row.id = id.into();
+            app.provider_popup = Some(Popup::List {
+                rows: vec![row],
+                highlight: 1,
+            });
+            let Some(Overlay::Question { choices, .. }) = overlay(&app) else {
+                panic!("provider list is visible");
+            };
+            assert!(choices.iter().any(|choice| choice.label.contains(label)));
+            let client = Client::at(PathBuf::from("/nonexistent-socket"));
+            handle(&mut app, &client, &Effect::Submit);
+            assert!(
+                matches!(&app.provider_popup, Some(Popup::Key { provider, .. }) if provider.id == id)
+            );
+            let Some(Overlay::Question { text, .. }) = overlay(&app) else {
+                panic!("key prompt is visible");
+            };
+            assert!(text.starts_with(&format!("{label} on Local")));
+            let progress = Progress {
+                id: "login".into(),
+                provider: id.into(),
+                status: "complete".into(),
+                verification_url: None,
+                user_code: None,
+                error: None,
+            };
+            app.provider_popup = Some(Popup::Device(progress.clone()));
+            let Some(Overlay::Text { text }) = overlay(&app) else {
+                panic!("device progress is visible");
+            };
+            assert!(text.starts_with(&format!("{label} on Local")));
+            app.provider_job = Some(Job {
+                server: None,
+                task: tokio::spawn(async move { Ok(Response::Device(progress)) }),
+            });
+            while !app.provider_job.as_ref().unwrap().task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+            advance(&mut app, &client).await;
+            assert_eq!(app.notice, Some(format!("Signed in to {label} on Local")));
+            assert!(
+                matches!(&app.provider_popup, Some(Popup::Device(progress)) if progress.provider == id)
+            );
         }
     }
 

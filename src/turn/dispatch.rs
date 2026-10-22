@@ -933,6 +933,10 @@ pub(super) fn maybe_title(turn: &Turn) {
         let Ok(client) = ChatClient::in_root(&config, root.as_deref()) else {
             return;
         };
+        let Ok(meta) = session.meta() else {
+            return;
+        };
+        let client = client.with_session(&meta.id);
         let Ok(reply) = client.title(&model, &ask).await else {
             return;
         };
@@ -1129,9 +1133,7 @@ pub(super) fn append_model_message(
         session,
         turn_id,
         EventKind::ModelMessage,
-        &ModelMessageBody {
-            text: reply.text().to_string(),
-        },
+        &serde_json::json!({"text": reply.text(), "reply": reply.native.as_ref().filter(|value| value.get("protocol").is_some()).map(|_| reply)}),
     )
 }
 

@@ -10,6 +10,9 @@ use serde_json::Value;
 use crate::config::{Config, ConfigError};
 use crate::events::format_millis;
 
+pub mod opencode;
+pub use opencode::OpenCodeAuth;
+
 pub const AUTH_FILE: &str = "auth.json";
 pub const DEFAULT_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 pub const DEFAULT_SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
