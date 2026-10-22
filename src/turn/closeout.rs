@@ -136,6 +136,26 @@ async fn execute_closeout(
         return exhausted_closeout(turn, id, turn_id, cancel, closeout).await;
     }
 
+    if closeout.file.as_ref().unwrap().evidence.contains_key(id) {
+        let requirement = closeout.file.as_ref().unwrap().evidence[id].clone();
+        let attached = closeout.item_mut(id).evidence_count;
+        return Ok(format!(
+            "Check {id} needs {} published {} artifact{}. {} attached. Publish each changed screen with attach_artifact. Hint: {}",
+            requirement.minimum,
+            requirement
+                .media
+                .iter()
+                .map(|media| match media {
+                    crate::closeout::EvidenceMedia::Image => "image",
+                    crate::closeout::EvidenceMedia::Video => "video",
+                })
+                .collect::<Vec<_>>()
+                .join(" or "),
+            if requirement.minimum == 1 { "" } else { "s" },
+            attached,
+            requirement.hint
+        ));
+    }
     let review = closeout.file.as_ref().unwrap().reviews.get(id).cloned();
     let model = reviewer_model.unwrap_or(&turn.config.model);
     let catalog = chat::model_catalog(&turn.config, turn.root.as_deref()).await;

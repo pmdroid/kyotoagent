@@ -126,8 +126,9 @@ closeout = "/shared/closeout.yaml"
 
 Closeout 0.1 imports resolve depth-first and prefix check IDs with their `as`
 namespace, such as `quality/tests`. Nested import paths start at the policy
-root. Review checks name a `SKILL.md`, an independence requirement, and a
-`failOn` severity. `run_closeout` launches a fresh reviewer session and retains
+root. An item, setup step, or field Kyoto does not understand is skipped.
+Known checks still load, so a newer policy does not stop startup. Review
+checks name a `SKILL.md`, an independence requirement, and a `failOn` severity. `run_closeout` launches a fresh reviewer session and retains
 its findings. Set its `model` argument to a different available model when
 `differentModel` is required. Kyoto evaluates the findings and independence
 before allowing finish or PR creation.
