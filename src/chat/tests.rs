@@ -581,6 +581,9 @@ fn sse_reasoning_then_content_assembles_the_reply_and_stops_at_done() {
             "function": { "arguments": "README.md\"}" }
         }] } }]
     })));
+    text.push_str(&sse_line(
+        serde_json::json!({"choices": null, "usage": {"prompt_tokens": 11, "completion_tokens": 4}}),
+    ));
     text.push_str("data: [DONE]\n\n");
     text.push_str(&sse_line(serde_json::json!({
         "choices": [{ "delta": { "content": "nope" } }]
@@ -589,6 +592,7 @@ fn sse_reasoning_then_content_assembles_the_reply_and_stops_at_done() {
     assert_eq!(thoughts, "think more");
     assert_eq!(reply.text(), "Hello");
     assert_eq!(reply.prompt_tokens, Some(11));
+    assert_eq!(reply.completion_tokens, Some(4));
     assert_eq!(reply.tool_calls.len(), 1);
     assert_eq!(reply.tool_calls[0].id, "call_1");
     assert_eq!(reply.tool_calls[0].kind, "function");

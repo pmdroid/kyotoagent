@@ -1876,10 +1876,18 @@ fn assign_piece(slot: &mut String, next: &str) {
 
 #[derive(Deserialize)]
 struct StreamChunk {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_vec")]
     choices: Vec<StreamChoice>,
     #[serde(default)]
     usage: Option<WireUsage>,
+}
+
+fn null_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Deserialize)]
