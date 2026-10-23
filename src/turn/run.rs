@@ -466,6 +466,7 @@ pub(super) async fn run_turn(
                                     check: archived_check.or(check),
                                 },
                             )?;
+                            closeout.accept_evidence(&file.media_type);
                             let output = serde_json::to_string(&file)?;
                             proof_files.push(file);
                             output

@@ -44,6 +44,7 @@ pub enum CloseoutKind {
     Review,
     Ci,
     ReviewThreads,
+    Evidence,
 }
 
 impl CloseoutKind {
@@ -57,11 +58,15 @@ impl CloseoutKind {
             CloseoutKind::Review => "review",
             CloseoutKind::Ci => "ci",
             CloseoutKind::ReviewThreads => "reviewThreads",
+            CloseoutKind::Evidence => "evidence",
         }
     }
 
     pub fn is_supported(self) -> bool {
-        matches!(self, CloseoutKind::Command | CloseoutKind::Review)
+        matches!(
+            self,
+            CloseoutKind::Command | CloseoutKind::Review | CloseoutKind::Evidence
+        )
     }
 }
 
@@ -72,6 +77,7 @@ pub struct CloseoutFile {
     pub setup: Vec<CloseoutItem>,
     pub executions: HashMap<String, CloseoutExecution>,
     pub reviews: HashMap<String, CloseoutReview>,
+    pub evidence: HashMap<String, CloseoutEvidence>,
     pub items: Vec<CloseoutItem>,
     pub max_failures: u32,
     pub retry: Option<RetryPolicy>,
@@ -125,6 +131,7 @@ pub fn exhausted_question(id: &str, failures: u32) -> String {
 pub struct ItemState {
     pub attempts: u32,
     pub failures: u32,
+    pub evidence_count: u32,
     pub passed: bool,
     pub last_failure: Option<(i32, String)>,
     pub(crate) retry_budget: Option<RetryBudget>,
@@ -196,6 +203,7 @@ impl CloseoutState {
                     for state in self.items.values_mut() {
                         state.passed = false;
                         state.failures = 0;
+                        state.evidence_count = 0;
                     }
                 }
                 EventKind::CloseoutChanged => {
@@ -281,6 +289,34 @@ impl CloseoutState {
             },
             |budget| budget.exhausted,
         )
+    }
+
+    pub fn accept_evidence(&mut self, media_type: &str) -> bool {
+        let Some(file) = self.file.clone() else {
+            return false;
+        };
+        let mut accepted = false;
+        for item in &file.items {
+            let Some(requirement) = file.evidence.get(&item.id) else {
+                continue;
+            };
+            if !self.is_required(item)
+                || !requirement
+                    .media
+                    .iter()
+                    .any(|media| media.matches(media_type))
+            {
+                continue;
+            }
+            let state = self.item_mut(&item.id);
+            state.evidence_count += 1;
+            if state.evidence_count >= requirement.minimum {
+                state.passed = true;
+                state.last_failure = None;
+            }
+            accepted = true;
+        }
+        accepted
     }
 
     pub fn cannot_finish(&self) -> Option<String> {
@@ -400,6 +436,8 @@ impl CloseoutState {
                     "max_failed_attempts_per_finding": file.retry.as_ref().filter(|_| self.progress_review(&item.id)).map(|retry| retry.max_failed_attempts_per_item),
                     "retry_scope": file.retry.as_ref().map(|retry| retry.scope),
                     "different_model": file.reviews.get(&item.id).is_some_and(|review| review.independence.different_model),
+                    "evidence_minimum": file.evidence.get(&item.id).map(|evidence| evidence.minimum),
+                    "evidence_attached": file.evidence.get(&item.id).map(|_| state.evidence_count),
                 }));
             }
         }
@@ -428,6 +466,7 @@ impl CloseoutState {
                 .is_some_and(|file| file.setup.iter().any(|step| step.id == *id))
             {
                 state.passed = false;
+                state.evidence_count = 0;
             }
         }
         for item in &mut self.proof_items {
@@ -765,18 +804,27 @@ struct LegacyFile {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct PublicFile {
     #[serde(rename = "specVersion")]
     spec_version: String,
     description: Option<String>,
-    #[serde(default)]
-    items: Vec<PublicItem>,
+    #[serde(default, deserialize_with = "known_items")]
+    items: Vec<Option<PublicItem>>,
     #[serde(default)]
     imports: Vec<CloseoutImport>,
     setup: Option<Vec<SetupStep>>,
     #[serde(default, deserialize_with = "present_retry")]
     retry: Option<RetryPolicy>,
+}
+
+fn known_items<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<Option<PublicItem>>, D::Error> {
+    let values = Vec::<serde_yaml::Value>::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .map(|value| serde_yaml::from_value(value).ok())
+        .collect())
 }
 
 fn present_retry<'de, D: serde::Deserializer<'de>>(
@@ -811,6 +859,30 @@ pub struct ReviewIndependence {
     pub different_session: bool,
     #[serde(rename = "differentModel")]
     pub different_model: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceMedia {
+    Image,
+    Video,
+}
+
+impl EvidenceMedia {
+    pub fn matches(self, media_type: &str) -> bool {
+        match self {
+            Self::Image => media_type.starts_with("image/"),
+            Self::Video => media_type.starts_with("video/"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloseoutEvidence {
+    pub media: Vec<EvidenceMedia>,
+    pub minimum: u32,
+    pub hint: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
@@ -896,10 +968,10 @@ impl CloseoutReview {
 enum PublicItem {
     Command(PublicCommand),
     Review(PublicReview),
+    Evidence(PublicEvidence),
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct PublicReview {
     id: String,
     kind: CloseoutKind,
@@ -912,7 +984,6 @@ struct PublicReview {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct PublicCommand {
     id: String,
     kind: CloseoutKind,
@@ -924,7 +995,17 @@ struct PublicCommand {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+struct PublicEvidence {
+    id: String,
+    kind: CloseoutKind,
+    gate: String,
+    paths: Vec<String>,
+    media: Vec<EvidenceMedia>,
+    minimum: u32,
+    hint: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct SetupStep {
     id: String,
     exec: Vec<String>,
@@ -1044,6 +1125,9 @@ impl CloseoutFile {
                 if let Some(review) = child.reviews.remove(&item.id) {
                     self.reviews.insert(id.clone(), review);
                 }
+                if let Some(requirement) = child.evidence.remove(&item.id) {
+                    self.evidence.insert(id.clone(), requirement);
+                }
                 item.id = id;
                 if item.kind == CloseoutKind::Command {
                     item.hint = format!("Run {}", item.id);
@@ -1065,6 +1149,7 @@ impl CloseoutFile {
 
     fn from_raw(raw: RawFile) -> Result<CloseoutFile, CloseoutError> {
         let mut reviews = HashMap::new();
+        let mut evidence = HashMap::new();
         let mut imports = Vec::new();
         let mut retry = None;
         let mut executions = HashMap::new();
@@ -1126,23 +1211,72 @@ impl CloseoutFile {
                 }
                 imports = raw.imports;
                 let mut items = Vec::new();
-                for item in raw.items {
+                for item in raw.items.into_iter().flatten() {
                     let item = match item {
+                        PublicItem::Evidence(item) => {
+                            let paths = Some(item.paths.clone());
+                            if validate_execution(
+                                &item.id,
+                                std::slice::from_ref(&item.hint),
+                                1,
+                                &paths,
+                            )
+                            .is_err()
+                            {
+                                continue;
+                            }
+                            let mut seen = Vec::new();
+                            let media_ok = !item.media.is_empty()
+                                && item.media.len() <= 8
+                                && item.media.iter().all(|media| {
+                                    if seen.contains(media) {
+                                        false
+                                    } else {
+                                        seen.push(*media);
+                                        true
+                                    }
+                                });
+                            if item.kind != CloseoutKind::Evidence
+                                || item.gate != "beforePR"
+                                || !media_ok
+                                || !(1..=100).contains(&item.minimum)
+                                || item.hint.len() > 500
+                            {
+                                continue;
+                            }
+                            evidence.insert(
+                                item.id.clone(),
+                                CloseoutEvidence {
+                                    media: item.media,
+                                    minimum: item.minimum,
+                                    hint: item.hint.clone(),
+                                },
+                            );
+                            items.push(CloseoutItem {
+                                id: item.id,
+                                kind: CloseoutKind::Evidence,
+                                run: String::new(),
+                                hint: item.hint,
+                                paths: item.paths,
+                            });
+                            continue;
+                        }
                         PublicItem::Command(item) => item,
                         PublicItem::Review(item) => {
-                            validate_execution(
+                            if validate_execution(
                                 &item.id,
                                 std::slice::from_ref(&item.skill),
                                 1,
                                 &item.paths,
-                            )?;
-                            if item.kind != CloseoutKind::Review
+                            )
+                            .is_err()
+                                || item.kind != CloseoutKind::Review
                                 || item.gate != "beforePR"
                                 || !is_valid_import_path(&item.skill)
                                 || item.skill.len() > 256
                                 || !item.skill.ends_with("/SKILL.md")
                             {
-                                return Err(CloseoutError::BadDefinition { message: format!("{} needs kind review, gate beforePR and a skill path ending in /SKILL.md", item.id) });
+                                continue;
                             }
                             reviews.insert(
                                 item.id.clone(),
@@ -1163,11 +1297,11 @@ impl CloseoutFile {
                             continue;
                         }
                     };
-                    validate_execution(&item.id, &item.exec, item.timeout, &item.paths)?;
-                    if item.kind != CloseoutKind::Command || item.gate != "beforePR" {
-                        return Err(CloseoutError::BadDefinition {
-                            message: format!("{} needs kind command and gate beforePR", item.id),
-                        });
+                    if validate_execution(&item.id, &item.exec, item.timeout, &item.paths).is_err()
+                        || item.kind != CloseoutKind::Command
+                        || item.gate != "beforePR"
+                    {
+                        continue;
                     }
                     executions.insert(
                         item.id.clone(),
@@ -1201,6 +1335,7 @@ impl CloseoutFile {
             }
             if !item.kind.is_supported()
                 || (item.kind == CloseoutKind::Review && !reviews.contains_key(&item.id))
+                || (item.kind == CloseoutKind::Evidence && !evidence.contains_key(&item.id))
             {
                 return Err(CloseoutError::UnsupportedKind {
                     id: item.id.clone(),
@@ -1215,13 +1350,15 @@ impl CloseoutFile {
         }
         let mut steps = Vec::new();
         if let Some(setup) = setup {
-            if setup.is_empty() || setup.len() > 32 {
+            if setup.len() > 32 {
                 return Err(CloseoutError::BadDefinition {
                     message: "setup needs between 1 and 32 steps".into(),
                 });
             }
             for step in setup {
-                validate_execution(&step.id, &step.exec, step.timeout, &step.paths)?;
+                if validate_execution(&step.id, &step.exec, step.timeout, &step.paths).is_err() {
+                    continue;
+                }
                 if !ids.insert(step.id.clone()) {
                     return Err(CloseoutError::DuplicateId { id: step.id });
                 }
@@ -1247,6 +1384,7 @@ impl CloseoutFile {
             setup: steps,
             executions,
             reviews,
+            evidence,
             max_failures,
             retry,
             policy_digest: String::new(),
@@ -1478,13 +1616,17 @@ mod tests {
             "maxFailedAttemptsPerItem: 5",
             "scope: task",
             "maxFailedAttemptsPerItem: 5\n  scope: session",
-            "maxFailedAttemptsPerItem: 5\n  scope: task\n  extra: true",
         ] {
             assert!(serde_yaml::from_str::<CloseoutFile>(&format!(
                 "specVersion: '0.1'\nretry:\n  {retry}\n"
             ))
             .is_err());
         }
+        let ignored: CloseoutFile = serde_yaml::from_str(
+            "specVersion: '0.1'\nretry:\n  maxFailedAttemptsPerItem: 5\n  scope: task\n  extra: true\n",
+        )
+        .unwrap();
+        assert_eq!(ignored.max_failures, 5);
         let file: CloseoutFile = serde_yaml::from_str("specVersion: '0.1'\n").unwrap();
         assert_eq!(file.max_failures, u32::MAX);
         assert!(serde_yaml::from_str::<CloseoutFile>("specVersion: '0.1'\nretry: null\n").is_err());
@@ -1738,6 +1880,25 @@ mod tests {
             evidence: "Observed behavior".into(),
         };
         assert!(!review.accepts("candidate", "writer", "reviewer", "reader", &[finding]));
+    }
+
+    #[test]
+    fn evidence_items_parse_and_pass_from_matching_published_media() {
+        let dir = temp_dir("evidence");
+        write_file(&dir, "specVersion: '0.1'\nitems:\n  - id: visual-proof\n    kind: evidence\n    gate: beforePR\n    paths: ['src/web/**']\n    media: [image, video]\n    minimum: 1\n    hint: Screenshot each changed screen.\n");
+        let file = read(&dir).unwrap().unwrap();
+        assert_eq!(file.items[0].kind, CloseoutKind::Evidence);
+        assert_eq!(file.evidence["visual-proof"].minimum, 1);
+        let mut state = CloseoutState::with_file(&dir, Some(file));
+        state.record_write("src/web/app.tsx");
+        assert!(state.cannot_finish().unwrap().contains("visual-proof"));
+        assert!(!state.accept_evidence("text/markdown"));
+        assert!(state.cannot_finish().is_some());
+        assert!(state.accept_evidence("image/png"));
+        assert!(state.cannot_finish().is_none());
+        state.record_write("src/web/app.tsx");
+        assert!(state.cannot_finish().is_some());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -2246,6 +2407,20 @@ mod tests {
         );
         CloseoutState::new(&dir).expect_err("an unsupported kind fails closed");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unknown_public_item_is_skipped() {
+        let dir = temp_dir("future");
+        write_file(
+            &dir,
+            "specVersion: '0.1'\nfuture: true\nitems:\n  - id: later\n    kind: forecast\n    gate: beforePR\n    horizon: next\n  - id: broken\n    kind: command\n    gate: beforePR\n    exec: []\n    timeoutSeconds: 5\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: [echo, ok]\n    timeoutSeconds: 5\n    note: extra\n",
+        );
+        let file = read(&dir).unwrap().unwrap();
+        assert_eq!(file.items.len(), 1);
+        assert_eq!(file.items[0].id, "test");
+        assert!(CloseoutState::new(&dir).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

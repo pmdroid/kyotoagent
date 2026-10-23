@@ -394,6 +394,25 @@ async fn a_duplicate_closeout_id_fails_parse() {
 }
 
 #[tokio::test]
+async fn an_unknown_public_item_does_not_fail_closeout() {
+    let models = FakeModels::listing("grok-4.6", 256000);
+    let (home, cwd) = temp_home("future");
+    write_grok_config(&home, &models.base_url());
+    write_auth(&home);
+    write_closeout(
+        &cwd,
+        "specVersion: '0.1'\nitems:\n  - id: later\n    kind: forecast\n    gate: beforePR\n  - id: test\n    kind: command\n    gate: beforePR\n    exec: [echo, ok]\n    timeoutSeconds: 5\n",
+    );
+    let serve = start_serve(&home).await;
+
+    let (ok, text) = doctor(&home, &cwd, None).await;
+    assert!(ok, "{text}");
+    assert!(line(&text, "closeout").contains("1 item"), "{text}");
+    serve.abort();
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[tokio::test]
 async fn a_visual_kind_fails_closeout() {
     let models = FakeModels::listing("grok-4.6", 256000);
     let (home, cwd) = temp_home("visual");

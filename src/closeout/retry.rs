@@ -6,7 +6,7 @@ use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub struct RetryPolicy {
     pub max_failed_attempts_per_item: u32,
     pub scope: RetryScope,
@@ -121,6 +121,8 @@ impl CloseoutFile {
         let requirement = |item: &super::CloseoutItem| {
             let mut value = if let Some(review) = self.reviews.get(&item.id) {
                 serde_json::json!({"id":item.id,"kind":"review","gate":"beforePR","skill":review.policy_skill,"independence":{"differentSession":review.independence.different_session,"differentModel":review.independence.different_model},"failOn":format!("{:?}",review.fail_on)})
+            } else if let Some(evidence) = self.evidence.get(&item.id) {
+                serde_json::json!({"id":item.id,"kind":"evidence","gate":"beforePR","media":evidence.media.iter().map(|media| match media { super::EvidenceMedia::Image => "image", super::EvidenceMedia::Video => "video" }).collect::<Vec<_>>(),"minimum":evidence.minimum,"hint":evidence.hint})
             } else {
                 let (argv, timeout) = self.execution(item);
                 serde_json::json!({"id":item.id,"kind":item.kind.label(),"gate":"beforePR","exec":argv,"timeoutSeconds":timeout})
