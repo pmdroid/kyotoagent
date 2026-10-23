@@ -38,7 +38,7 @@ pub fn reports(session: &Session) -> Vec<ChildReport> {
     let Ok(meta) = session.meta() else {
         return Vec::new();
     };
-    let Ok(events) = session.events() else {
+    let Ok(events) = session.shared_events() else {
         return Vec::new();
     };
     events
@@ -346,12 +346,12 @@ pub fn new_id(root: &Path) -> String {
 }
 
 fn latest_finish(session: &Session) -> (String, String) {
-    let Ok(events) = session.events() else {
+    let Ok(events) = session.shared_events() else {
         return (String::new(), String::new());
     };
     let mut result = String::new();
     let mut proof = String::new();
-    for event in events {
+    for event in events.iter() {
         match event.kind {
             EventKind::Result => {
                 if let Ok(body) = event.body_as::<ResultBody>() {

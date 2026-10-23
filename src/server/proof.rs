@@ -16,7 +16,7 @@ pub(super) async fn history(
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<Vec<ProofVersion>>, ApiError> {
     let session = session(&state.root, &id)?;
-    let events = session.events().map_err(ApiError::server)?;
+    let events = session.shared_events().map_err(ApiError::server)?;
     Ok(Json(
         crate::proof::versions(&events).map_err(ApiError::server)?,
     ))
@@ -27,7 +27,7 @@ pub(super) async fn artifacts(
     AxumPath(id): AxumPath<String>,
 ) -> Result<Json<Vec<ProofVersion>>, ApiError> {
     let session = session(&state.root, &id)?;
-    let events = session.events().map_err(ApiError::server)?;
+    let events = session.shared_events().map_err(ApiError::server)?;
     Ok(Json(
         crate::proof::artifact_history(&events).map_err(ApiError::server)?,
     ))
@@ -38,7 +38,7 @@ pub(super) async fn download(
     AxumPath((id, file_id)): AxumPath<(String, String)>,
 ) -> Result<Response, ApiError> {
     let session = session(&state.root, &id)?;
-    let events = session.events().map_err(ApiError::server)?;
+    let events = session.shared_events().map_err(ApiError::server)?;
     let file: ProofFile = crate::proof::downloadable_files(&events)
         .map_err(ApiError::server)?
         .into_iter()

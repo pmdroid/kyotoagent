@@ -13,7 +13,7 @@ pub(super) async fn run_turn(
     let system_prompt = turn.system_prompt();
     let text = turn.text.as_str();
     let workspace = tools.workspace().to_path_buf();
-    let prior_events = session.events()?;
+    let prior_events = session.shared_events()?;
 
     // The ask opens the turn: a user_ask event and the working status.
     let ask = Event::new(
@@ -118,6 +118,7 @@ pub(super) async fn run_turn(
         }
     }
 
+    drop(prior_events);
     let initial_events = session.event_snapshot()?.1;
     let mut transcript = crate::compact::projected_messages_with_goal(
         &system_prompt,
@@ -129,6 +130,7 @@ pub(super) async fn run_turn(
         active_start: transcript.len() - 1,
         compact_id: crate::compact::latest_compact(&initial_events).map(|event| event.id.clone()),
     };
+    drop(initial_events);
     let profile = turn.session.meta().ok().and_then(|meta| meta.profile);
     let mut tool_defs = tool_definitions_for(&turn.config, turn.child, profile.as_deref());
     if session.meta()?.closeout_reviewer {
@@ -395,7 +397,7 @@ pub(super) async fn run_turn(
                         let candidate =
                             serde_json::from_value::<crate::events::ArtifactCheck>(value.clone());
                         let check = candidate.ok().filter(|check| {
-                            session.events().ok().is_some_and(|events| {
+                            session.shared_events().ok().is_some_and(|events| {
                                 events.iter().any(|event| {
                                     event.kind == EventKind::CloseoutRun
                                         && event.body["id"] == check.id
@@ -428,7 +430,7 @@ pub(super) async fn run_turn(
                 .await?
                 {
                     Ok(Some(file)) => {
-                        let archived_check = session.events()?.iter().find_map(|event| {
+                        let archived_check = session.shared_events()?.iter().find_map(|event| {
                             if event.kind != EventKind::CloseoutRun {
                                 return None;
                             }
@@ -626,7 +628,7 @@ pub(super) async fn run_turn(
     // every command that did not succeed. The note is the one from `finish`;
     // cancel and model-error turns leave it empty.
     for event in session
-        .events()?
+        .shared_events()?
         .iter()
         .filter(|event| event.turn_id == turn_id && event.kind == EventKind::Artifact)
     {
@@ -772,7 +774,7 @@ fn artifact_file(
     } else {
         let events = tools
             .session()
-            .events()
+            .shared_events()
             .map_err(|error| error.to_string())?;
         Some(crate::proof::downloadable_files(&events).map_err(|error| error.to_string())?
             .into_iter().find(|file| Some(file.id.as_str()) == file_id.as_deref())

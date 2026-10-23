@@ -731,7 +731,7 @@ enum TurnStart {
 }
 
 fn idle_after_turn_error(session: &Session, turn_id: &str, flight: &Flight, error: &TurnError) {
-    let already = session.events().ok().is_some_and(|events| {
+    let already = session.shared_events().ok().is_some_and(|events| {
         events
             .iter()
             .any(|event| event.turn_id == turn_id && event.kind == EventKind::Result)
@@ -763,19 +763,19 @@ impl Flight {
 
     fn begin_thinking(&self) {
         *self.action.lock().unwrap() = None;
-        self.thoughts
+        *self
+            .thoughts
             .lock()
-            .expect("the thoughts buffer is not poisoned")
-            .clear();
+            .expect("the thoughts buffer is not poisoned") = String::new();
         *self.phase.lock().expect("the phase is not poisoned") = Some(Phase::Thinking);
     }
 
     fn begin_tools(&self) {
         *self.phase.lock().expect("the phase is not poisoned") = Some(Phase::Tool);
-        self.thoughts
+        *self
+            .thoughts
             .lock()
-            .expect("the thoughts buffer is not poisoned")
-            .clear();
+            .expect("the thoughts buffer is not poisoned") = String::new();
     }
 
     fn tool_action(&self, tool: &str) {
@@ -804,10 +804,10 @@ impl Flight {
         *self.action.lock().unwrap() = None;
         *self.retry_status.lock().unwrap() = None;
         *self.phase.lock().expect("the phase is not poisoned") = None;
-        self.thoughts
+        *self
+            .thoughts
             .lock()
-            .expect("the thoughts buffer is not poisoned")
-            .clear();
+            .expect("the thoughts buffer is not poisoned") = String::new();
     }
 
     fn snapshot(&self) -> (Option<Phase>, Option<String>) {
@@ -1041,7 +1041,7 @@ impl Runner {
                 continue;
             }
             if meta.status == Status::Working {
-                let events = session.events()?;
+                let events = session.shared_events()?;
                 if enhance::rewrite_in_flight(&events) {
                     session.update(|meta| {
                         meta.status = Status::Idle;
@@ -1111,7 +1111,7 @@ impl Runner {
             if yolo_open {
                 let _ = self.answer(&session_id, Answer::allow_once());
             }
-            if let Ok(events) = session.events() {
+            if let Ok(events) = session.shared_events() {
                 let mut queued = VecDeque::new();
                 let mut removed = std::collections::HashSet::new();
                 for event in events.iter().rev() {
@@ -1146,6 +1146,9 @@ impl Runner {
             goal::recover(&session, interrupted_tasks)?;
             if !meta.archived {
                 state.tools.schedules().arm_pending();
+            }
+            if meta.archived {
+                session.release_events();
             }
         }
         let parents: Vec<_> = self
@@ -1674,6 +1677,8 @@ impl Runner {
         {
             state.tools.schedules().abort_live();
             state.tools.tasks().cancel_all();
+            state.session.release_events();
+            *state.view_cache.lock().unwrap() = ViewCache::default();
             state.retiring.store(false, Ordering::Release);
         }
     }

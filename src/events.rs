@@ -209,7 +209,7 @@ impl Event {
     /// The body as the type its kind uses, or an error naming the event that
     /// did not fit.
     pub fn body_as<B: for<'de> Deserialize<'de>>(&self) -> Result<B, serde_json::Error> {
-        serde_json::from_value(self.body.clone())
+        B::deserialize(&self.body)
     }
 }
 

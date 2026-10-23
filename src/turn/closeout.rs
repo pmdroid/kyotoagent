@@ -16,7 +16,7 @@ impl Runner {
             return Err(TurnError::Busy);
         }
         let mut closeout = CloseoutState::default();
-        closeout.replay(&state.session.events()?);
+        closeout.replay(&state.session.shared_events()?);
         let turn_id = next_turn_id(&state.session);
         let text = if closeout.bypassed {
             append_with_body(

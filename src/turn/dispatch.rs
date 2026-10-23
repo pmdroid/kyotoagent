@@ -776,9 +776,9 @@ pub(super) async fn execute_tool(
 /// interrupted while waiting has this permission in its log and a `waiting`
 /// status in its meta.
 pub(super) fn open_permission_id(session: &Session) -> Option<String> {
-    let events = session.events().ok()?;
+    let events = session.shared_events().ok()?;
     let mut open = None;
-    for event in &events {
+    for event in events.iter() {
         match event.kind {
             EventKind::Permission => open = Some(event.id.clone()),
             EventKind::PermissionAnswer => open = None,
@@ -789,9 +789,9 @@ pub(super) fn open_permission_id(session: &Session) -> Option<String> {
 }
 
 pub(super) fn open_question_id(session: &Session) -> Option<String> {
-    let events = session.events().ok()?;
+    let events = session.shared_events().ok()?;
     let mut open = None;
-    for event in &events {
+    for event in events.iter() {
         match event.kind {
             EventKind::Question => open = Some(event.id.clone()),
             EventKind::QuestionAnswer => open = None,
@@ -809,7 +809,7 @@ pub(super) fn settle_recovered_cancel(state: &SessionState) -> Result<(), Sessio
         settle_held_question(session, "Cancelled.")?;
     }
     let turn_id = session
-        .events()?
+        .shared_events()?
         .last()
         .map(|event| event.turn_id.clone())
         .unwrap_or_else(|| next_turn_id(session));
@@ -833,7 +833,7 @@ pub(super) fn settle_recovered_cancel(state: &SessionState) -> Result<(), Sessio
 }
 
 pub(super) fn settle_held_question(session: &Session, text: &str) -> Result<(), SessionError> {
-    let events = session.events()?;
+    let events = session.shared_events()?;
     let question = events
         .iter()
         .rev()
@@ -869,7 +869,7 @@ pub(super) fn settle_held_question(session: &Session, text: &str) -> Result<(), 
 /// the permission it settles, and the session goes back to idle, because the
 /// turn that asked is gone and a new ask starts a new turn.
 pub(super) fn settle_held_answer(session: &Session, answer: &Answer) -> Result<(), SessionError> {
-    let events = session.events()?;
+    let events = session.shared_events()?;
     let turn_id = events
         .iter()
         .rev()
@@ -913,7 +913,7 @@ pub(super) fn maybe_title(turn: &Turn) {
     };
     let asks = turn
         .session
-        .events()
+        .shared_events()
         .map(|events| {
             events
                 .iter()
@@ -958,7 +958,7 @@ pub(super) fn maybe_title(turn: &Turn) {
 /// log, so ids stay `t1`, `t2`, and so on across a reload.
 pub(super) fn next_turn_id(session: &Session) -> String {
     let asks = session
-        .events()
+        .shared_events()
         .map(|events| {
             events
                 .iter()
@@ -1241,7 +1241,7 @@ pub(super) fn append_recovered_proof(
     turn_id: &str,
     note: &str,
 ) -> Result<(), SessionError> {
-    let events = session.events()?;
+    let events = session.shared_events()?;
     if events
         .iter()
         .any(|event| event.turn_id == turn_id && event.kind == EventKind::Proof)

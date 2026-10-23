@@ -133,10 +133,13 @@ impl Tasks {
                 tail,
             });
         }
-        let events = self.session.events().map_err(|error| error.to_string())?;
+        let events = self
+            .session
+            .shared_events()
+            .map_err(|error| error.to_string())?;
         let mut started: Option<TaskStartBody> = None;
         let mut done: Option<TaskDoneBody> = None;
-        for event in &events {
+        for event in events.iter() {
             match event.kind {
                 EventKind::TaskStart => {
                     if let Ok(body) = event.body_as::<TaskStartBody>() {
@@ -178,10 +181,10 @@ impl Tasks {
     }
 
     pub fn open_id_on_turn(&self, turn_id: &str) -> Result<Option<String>, SessionError> {
-        let events = self.session.events()?;
+        let events = self.session.shared_events()?;
         let mut started = Vec::new();
         let mut done = HashSet::new();
-        for event in &events {
+        for event in events.iter() {
             match event.kind {
                 EventKind::TaskStart if event.turn_id == turn_id => {
                     if let Ok(body) = event.body_as::<TaskStartBody>() {
@@ -349,10 +352,10 @@ impl Tasks {
     }
 
     pub fn settle_orphans(&self) -> Result<Vec<TaskDoneBody>, ToolError> {
-        let events = self.session.events()?;
+        let events = self.session.shared_events()?;
         let mut open: HashMap<String, TaskStartBody> = HashMap::new();
         let mut turn_of: HashMap<String, String> = HashMap::new();
-        for event in &events {
+        for event in events.iter() {
             match event.kind {
                 EventKind::TaskStart => {
                     if let Ok(body) = event.body_as::<TaskStartBody>() {
@@ -412,9 +415,9 @@ impl Tasks {
     }
 
     fn new_id(&self) -> Result<String, ToolError> {
-        let events = self.session.events()?;
+        let events = self.session.shared_events()?;
         let mut taken = Vec::new();
-        for event in &events {
+        for event in events.iter() {
             if event.kind == EventKind::TaskStart {
                 if let Ok(body) = event.body_as::<TaskStartBody>() {
                     taken.push(body.id);
