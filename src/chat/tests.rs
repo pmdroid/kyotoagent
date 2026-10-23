@@ -1,5 +1,49 @@
 use super::*;
 
+#[tokio::test]
+async fn response_limits_cover_json_streams_and_error_bodies() {
+    let body = a_text_reply();
+    let server = FakeServer::start(vec![Canned::Json(body.clone())]);
+    let response = reqwest::Client::new()
+        .get(server.base_url())
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        read_completion_bounded(response, None, Duration::from_secs(2), false, body.len())
+            .await
+            .is_ok()
+    );
+    for reply in [
+        Canned::Json(body),
+        Canned::Pace {
+            gap: Duration::from_millis(1),
+            parts: vec![": keepalive\n\n".repeat(8); 8],
+        },
+    ] {
+        let server = FakeServer::start(vec![reply]);
+        let response = reqwest::Client::new()
+            .get(server.base_url())
+            .send()
+            .await
+            .unwrap();
+        let error = read_completion_bounded(response, None, Duration::from_secs(2), false, 128)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("128 byte limit"), "{error}");
+    }
+    let server = FakeServer::start(vec![Canned::Status(500, "x".repeat(65537))]);
+    let response = reqwest::Client::new()
+        .get(server.base_url())
+        .send()
+        .await
+        .unwrap();
+    let error = read_completion_bounded(response, None, Duration::from_secs(2), false, 128)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("65536 byte limit"), "{error}");
+}
+
 #[test]
 fn image_messages_use_chat_and_responses_image_parts() {
     let image =
