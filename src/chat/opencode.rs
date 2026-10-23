@@ -137,7 +137,7 @@ impl Client {
             .send(url, None, &BTreeMap::new(), REQUEST_TIMEOUT_SECS)
             .await?;
         let status = response.status().as_u16();
-        let text = response.text().await.map_err(ChatError::Transport)?;
+        let text = read_response_text(response, MAX_RESPONSE_BYTES).await?;
         if !(200..300).contains(&status) {
             return Err(ChatError::Status { status, body: text });
         }
@@ -165,7 +165,7 @@ impl Client {
                 .await
                 .map_err(ChatError::Transport)?;
             let status = response.status().as_u16();
-            let text = response.text().await.map_err(ChatError::Transport)?;
+            let text = read_response_text(response, MAX_RESPONSE_BYTES).await?;
             if !(200..300).contains(&status) {
                 return Err(ChatError::Status { status, body: text });
             }

@@ -214,10 +214,10 @@ impl Runner {
     pub(super) fn enhance_open(&self, state: &SessionState) -> bool {
         state
             .session
-            .events()
+            .shared_events()
             .ok()
             .as_deref()
-            .and_then(open_enhance)
+            .and_then(|events| open_enhance(events))
             .is_some()
     }
 
@@ -256,7 +256,7 @@ impl Runner {
         let model = config.title_model().unwrap_or(&meta.model).to_string();
         let workspace = state.tools.workspace().to_path_buf();
         let agents = crate::agents_doc::load(&workspace);
-        let events = state.session.events()?;
+        let events = state.session.shared_events()?;
         let recent = recent_asks(&events);
         let turn_id = next_turn_id(&state.session);
         let request_id = if prior_card.is_none() {
@@ -348,7 +348,7 @@ impl Runner {
         let choice = parse_choice(choice).ok_or(EnhanceError::Choice)?;
         let events = state
             .session
-            .events()
+            .shared_events()
             .map_err(|source| EnhanceError::Failed(source.to_string()))?;
         let open = open_enhance(&events).ok_or(EnhanceError::Settled)?;
         if open.id != event_id {
@@ -423,7 +423,7 @@ impl Runner {
         state.enhance.cancel_and_wait().await;
         let events = state
             .session
-            .events()
+            .shared_events()
             .map_err(|source| EnhanceError::Failed(source.to_string()))?;
         let open = open_enhance(&events).ok_or(EnhanceError::Settled)?;
         if open.id != event_id {
@@ -455,7 +455,7 @@ fn note_answer(
 
 fn card_still(card_id: Option<&str>, session: &crate::session::Session) -> bool {
     let open = session
-        .events()
+        .shared_events()
         .ok()
         .and_then(|events| open_enhance(&events).map(|event| event.id.clone()));
     match card_id {
@@ -466,10 +466,10 @@ fn card_still(card_id: Option<&str>, session: &crate::session::Session) -> bool 
 
 fn settle_after_stop(session: &crate::session::Session) {
     let open = session
-        .events()
+        .shared_events()
         .ok()
         .as_deref()
-        .and_then(open_enhance)
+        .and_then(|events| open_enhance(events))
         .is_some();
     let status = if open { Status::Waiting } else { Status::Idle };
     let _ = set_status(session, status);

@@ -22,7 +22,7 @@ pub(super) fn spawn_compact(
         let result = run_compact(&session, &client, &config, &mut cancel).await;
         if let Err(error) = result {
             let turn_id = session
-                .events()
+                .shared_events()
                 .ok()
                 .and_then(|events| {
                     events
@@ -72,7 +72,7 @@ pub(super) async fn run_compact(
     if *cancel.borrow() {
         return Ok(());
     }
-    let history = session.events()?;
+    let history = session.shared_events()?;
     if !history.iter().any(|event| {
         matches!(
             event.kind,
@@ -171,7 +171,7 @@ pub(super) async fn run_compact(
         &history,
         &meta.workspace,
     ));
-    let mut candidate = history.clone();
+    let mut candidate = history.as_ref().clone();
     candidate.push(
         Event::new("compact-candidate", &now(), &turn_id, EventKind::Compact).with_body(&body)?,
     );
@@ -186,7 +186,7 @@ pub(super) async fn run_compact(
         ));
     }
     append_with_body(session, &turn_id, EventKind::Compact, &body)?;
-    let events = session.events()?;
+    let events = session.shared_events()?;
     let projected =
         crate::compact::projected_messages_with_goal("", &events, &workspace, goal.as_ref());
     crate::compact::store_prompt_tokens(session, crate::compact::estimate_tokens(&projected))?;

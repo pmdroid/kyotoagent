@@ -38,7 +38,7 @@ pub(super) fn pending(events: &[Event]) -> Vec<&Event> {
 }
 
 pub(super) fn recover(session: &Session) -> Result<(), TurnError> {
-    for request in pending(&session.events()?) {
+    for request in pending(&session.shared_events()?) {
         append(
             session,
             EventKind::BtwResult,
@@ -127,7 +127,7 @@ impl Runner {
         if slot.is_some() {
             return Err(TurnError::Busy);
         }
-        let events = state.session.events()?;
+        let events = state.session.shared_events()?;
         let question = if text.trim() == "retry" {
             events
                 .iter()

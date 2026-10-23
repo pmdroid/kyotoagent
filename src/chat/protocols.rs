@@ -311,7 +311,7 @@ pub(super) async fn read(
         _ => {}
     }
     let status = response.status().as_u16();
-    let text = response.text().await.map_err(ChatError::Transport)?;
+    let text = read_response_text(response, MAX_RESPONSE_BYTES).await?;
     if !(200..300).contains(&status) {
         return Err(ChatError::Status { status, body: text });
     }

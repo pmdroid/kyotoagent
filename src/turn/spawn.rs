@@ -140,7 +140,7 @@ impl Runner {
         if delivering.contains(parent_id) {
             return;
         }
-        let events = parent.session.events().unwrap_or_default();
+        let events = parent.session.shared_events().unwrap_or_default();
         let delivered: HashSet<String> = events
             .iter()
             .filter(|event| {

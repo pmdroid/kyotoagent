@@ -168,9 +168,9 @@ impl Schedules {
     }
 
     pub fn pending(&self) -> Result<Vec<Pending>, SessionError> {
-        let events = self.session.events()?;
+        let events = self.session.shared_events()?;
         let mut open: HashMap<String, Pending> = HashMap::new();
-        for event in &events {
+        for event in events.iter() {
             match event.kind {
                 EventKind::Schedule => {
                     if let Ok(body) = event.body_as::<ScheduleBody>() {
@@ -338,9 +338,9 @@ impl Schedules {
     }
 
     fn new_id(&self) -> Result<String, SessionError> {
-        let events = self.session.events()?;
+        let events = self.session.shared_events()?;
         let mut taken = Vec::new();
-        for event in &events {
+        for event in events.iter() {
             if event.kind == EventKind::Schedule {
                 if let Ok(body) = event.body_as::<ScheduleBody>() {
                     taken.push(body.id);

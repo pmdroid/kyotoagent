@@ -51,6 +51,29 @@ pub const REQUEST_TIMEOUT_SECS: u64 = 120;
 
 pub const TITLE_TIMEOUT_SECS: u64 = 15;
 
+const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+
+fn response_size_error(limit: usize) -> ChatError {
+    ChatError::Decode(serde_json::Error::io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("Model response exceeds the {limit} byte limit."),
+    )))
+}
+
+async fn read_response_text(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<String, ChatError> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(ChatError::Transport)? {
+        if chunk.len() > limit.saturating_sub(bytes.len()) {
+            return Err(response_size_error(limit));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 pub const TITLE_SYSTEM: &str =
     "Write a 3 to 8 word title for this coding session. Reply with the title only.";
 
@@ -729,7 +752,7 @@ impl ChatClient {
         request = self.with_auth(request, token);
         let response = request.send().await.map_err(ChatError::Transport)?;
         let status = response.status().as_u16();
-        let text = response.text().await.map_err(ChatError::Transport)?;
+        let text = read_response_text(response, MAX_RESPONSE_BYTES).await?;
         Ok((status, text))
     }
 
@@ -824,7 +847,7 @@ impl ChatClient {
                 .send_with_retry(&url, &body, token.as_deref(), None, status, true)
                 .await?;
             let response = if response.status().as_u16() == 401 {
-                let text = response.text().await.map_err(ChatError::Transport)?;
+                let text = read_response_text(response, MAX_RESPONSE_BYTES).await?;
                 if let Some(refreshed) = self.refresh_on_401(token.as_deref()).await? {
                     self.send_with_retry(&url, &body, Some(refreshed.as_str()), None, status, true)
                         .await?
@@ -858,7 +881,7 @@ impl ChatClient {
             .send_with_retry(&url, &body, token.as_deref(), None, status, true)
             .await?;
         let response = if response.status().as_u16() == 401 {
-            let text = response.text().await.map_err(ChatError::Transport)?;
+            let text = read_response_text(response, MAX_RESPONSE_BYTES).await?;
             if let Some(refreshed) = self.refresh_on_401(token.as_deref()).await? {
                 self.send_with_retry(&url, &body, Some(refreshed.as_str()), None, status, true)
                     .await?
@@ -1045,7 +1068,9 @@ impl ChatClient {
         request = self.with_auth(request, token.as_deref());
         let response = request.send().await.ok()?;
         let status = response.status().as_u16();
-        let text = response.text().await.ok()?;
+        let text = read_response_text(response, MAX_RESPONSE_BYTES)
+            .await
+            .ok()?;
         if !(200..300).contains(&status) {
             return None;
         }
@@ -1087,7 +1112,7 @@ impl ChatClient {
             )
             .await?;
         let response = if response.status().as_u16() == 401 {
-            let text = response.text().await.map_err(ChatError::Transport)?;
+            let text = read_response_text(response, MAX_RESPONSE_BYTES).await?;
             if let Some(refreshed) = self.refresh_on_401(token.as_deref()).await? {
                 self.send_with_retry(
                     url,
@@ -1244,7 +1269,7 @@ impl ChatClient {
                 return Ok(response);
             }
             let headers = response.headers().clone();
-            let text = response.text().await.map_err(ChatError::Transport)?;
+            let text = read_response_text(response, MAX_RESPONSE_BYTES).await?;
             let delay = retry::delay(&headers, &text, attempts);
             if retry::permanent(&text) {
                 return Err(ChatError::Status {
@@ -1292,7 +1317,7 @@ impl ChatClient {
             )
             .await?;
         let status = response.status().as_u16();
-        let text = response.text().await.map_err(ChatError::Transport)?;
+        let text = read_response_text(response, MAX_RESPONSE_BYTES).await?;
         Ok((status, text))
     }
 }
@@ -1329,17 +1354,28 @@ fn decode_message(text: &str) -> Result<Reply, ChatError> {
 }
 
 async fn read_completion(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     thoughts: Option<&Arc<Mutex<String>>>,
     idle: Duration,
     responses: bool,
 ) -> Result<Reply, ChatError> {
+    read_completion_bounded(response, thoughts, idle, responses, MAX_RESPONSE_BYTES).await
+}
+
+async fn read_completion_bounded(
+    mut response: reqwest::Response,
+    thoughts: Option<&Arc<Mutex<String>>>,
+    idle: Duration,
+    responses: bool,
+    limit: usize,
+) -> Result<Reply, ChatError> {
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
-        let body = response.text().await.map_err(ChatError::Transport)?;
+        let body = read_response_text(response, 65536).await?;
         return Err(ChatError::Status { status, body });
     }
     let mut buf = Vec::new();
+    let mut received = 0usize;
     let mut mode = BodyMode::Unknown;
     let mut partial = Partial {
         responses,
@@ -1361,6 +1397,10 @@ async fn read_completion(
         let Some(chunk) = chunk else {
             break;
         };
+        if chunk.len() > limit.saturating_sub(received) {
+            return Err(response_size_error(limit));
+        }
+        received += chunk.len();
         buf.extend_from_slice(&chunk);
         if mode == BodyMode::Unknown {
             match first_byte(&buf) {

@@ -349,7 +349,7 @@ pub(super) async fn verify_goal(
     }
     let through_event_id = turn
         .session
-        .events()?
+        .shared_events()?
         .last()
         .map(|event| event.id.clone())
         .unwrap_or_default();
@@ -424,7 +424,7 @@ pub(super) fn pause_unfinished(turn: &Turn, reason: &str) -> Result<(), TurnErro
 }
 
 pub(super) fn recover(session: &Session, interrupted_tasks: Vec<String>) -> Result<(), TurnError> {
-    let events = session.events()?;
+    let events = session.shared_events()?;
     session.update(|meta| {
         let Some(goal) = &mut meta.goal else { return false };
         if goal.status != GoalStatus::Active && (goal.status != GoalStatus::Paused || interrupted_tasks.is_empty()) {

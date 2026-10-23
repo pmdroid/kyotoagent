@@ -11,12 +11,12 @@
 //! `~/.kyotoagent` root is the server's business, and a test wants a temporary
 //! directory, so nothing here reads a global.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde::{Deserialize, Serialize};
 
@@ -402,7 +402,87 @@ pub struct Session {
 struct EventCache {
     stamp: Option<LogStamp>,
     generation: u64,
+    count: usize,
+    bytes: usize,
+    events: Weak<Vec<Event>>,
+}
+
+const EVENT_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Default)]
+struct Snapshots {
+    entries: VecDeque<Snapshot>,
+    bytes: usize,
+}
+
+struct Snapshot {
+    owner: Weak<Mutex<EventCache>>,
     events: Arc<Vec<Event>>,
+    bytes: usize,
+}
+
+impl Snapshots {
+    fn take(&mut self, owner: &Arc<Mutex<EventCache>>) -> Option<Arc<Vec<Event>>> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.owner.as_ptr() == Arc::as_ptr(owner))?;
+        let entry = self.entries.remove(index)?;
+        self.bytes -= entry.bytes;
+        Some(entry.events)
+    }
+
+    fn retain(&mut self, owner: &Arc<Mutex<EventCache>>, events: &Arc<Vec<Event>>, bytes: usize) {
+        self.take(owner);
+        self.entries.retain(|entry| {
+            if entry.owner.strong_count() == 0 {
+                self.bytes -= entry.bytes;
+                false
+            } else {
+                true
+            }
+        });
+        if bytes > EVENT_CACHE_BYTES {
+            return;
+        }
+        while self.bytes + bytes > EVENT_CACHE_BYTES {
+            self.bytes -= self.entries.pop_front().unwrap().bytes;
+        }
+        self.entries.push_back(Snapshot {
+            owner: Arc::downgrade(owner),
+            events: Arc::clone(events),
+            bytes,
+        });
+        self.bytes += bytes;
+    }
+}
+
+fn snapshots() -> &'static Mutex<Snapshots> {
+    static SNAPSHOTS: OnceLock<Mutex<Snapshots>> = OnceLock::new();
+    SNAPSHOTS.get_or_init(|| Mutex::new(Snapshots::default()))
+}
+
+fn event_bytes(event: &Event) -> usize {
+    fn value_bytes(value: &serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::String(text) => text.capacity(),
+            serde_json::Value::Array(items) => {
+                items.capacity() * std::mem::size_of::<serde_json::Value>()
+                    + items.iter().map(value_bytes).sum::<usize>()
+            }
+            serde_json::Value::Object(items) => {
+                items.len()
+                    * (std::mem::size_of::<(String, serde_json::Value)>()
+                        + 4 * std::mem::size_of::<usize>())
+                    + items
+                        .iter()
+                        .map(|(key, value)| key.capacity() + value_bytes(value))
+                        .sum::<usize>()
+            }
+            _ => 0,
+        }
+    }
+    event.id.capacity() + event.at.capacity() + event.turn_id.capacity() + value_bytes(&event.body)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -679,7 +759,12 @@ impl Session {
             path: path.clone(),
             source,
         })?;
-        let next_id = format!("e{}", Self::event_lines(&path) + 1);
+        let count = if cache.stamp.as_ref() == Some(&before) {
+            cache.count
+        } else {
+            Self::event_lines(&path)?
+        };
+        let next_id = format!("e{}", count + 1);
         if event.id != next_id {
             event.id = next_id;
             line = serde_json::to_string(&event).map_err(|source| SessionError::Json {
@@ -705,22 +790,38 @@ impl Session {
             path: self.events_path(),
             source,
         })?;
+        let mut snapshots = snapshots().lock().unwrap();
+        let retained = snapshots.take(&self.event_cache);
+        cache.events = Weak::new();
         if cache.stamp.as_ref() == Some(&before) && after.len == before.len + line.len() as u64 {
-            Arc::make_mut(&mut cache.events).push(event.clone());
-            cache.stamp = Some(after);
-        } else {
-            cache.stamp = None;
+            if let Some(mut events) = retained.filter(|events| Arc::strong_count(events) == 1) {
+                cache.bytes += event_bytes(&event) + 2 * std::mem::size_of::<Event>();
+                Arc::make_mut(&mut events).push(event.clone());
+                cache.events = Arc::downgrade(&events);
+                snapshots.retain(&self.event_cache, &events, cache.bytes);
+            }
         }
+        cache.stamp = Some(after);
+        cache.count = count + 1;
         cache.generation = cache.generation.wrapping_add(1);
         Ok(event)
     }
 
-    pub(self) fn event_lines(path: &Path) -> usize {
-        std::fs::read_to_string(path)
-            .unwrap_or_default()
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .count()
+    pub(self) fn event_lines(path: &Path) -> Result<usize, SessionError> {
+        let count = || -> std::io::Result<usize> {
+            let file = File::open(path)?;
+            let mut count = 0;
+            for line in BufReader::new(file).lines() {
+                if !line?.trim().is_empty() {
+                    count += 1;
+                }
+            }
+            Ok(count)
+        };
+        count().map_err(|source| SessionError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
     }
 
     pub(crate) fn recover_event_log(&self) -> Result<(), SessionError> {
@@ -810,6 +911,16 @@ impl Session {
         Ok(self.event_snapshot()?.1.as_ref().clone())
     }
 
+    pub(crate) fn shared_events(&self) -> Result<Arc<Vec<Event>>, SessionError> {
+        Ok(self.event_snapshot()?.1)
+    }
+
+    pub(crate) fn release_events(&self) {
+        let mut cache = self.event_cache.lock().unwrap();
+        cache.events = Weak::new();
+        snapshots().lock().unwrap().take(&self.event_cache);
+    }
+
     pub(crate) fn event_snapshot(&self) -> Result<(u64, Arc<Vec<Event>>), SessionError> {
         let mut cache = self
             .event_cache
@@ -820,9 +931,11 @@ impl Session {
             Ok(file) => file,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
                 cache.stamp = None;
-                cache.events = Arc::new(Vec::new());
+                cache.events = Weak::new();
+                cache.count = 0;
+                snapshots().lock().unwrap().take(&self.event_cache);
                 cache.generation = cache.generation.wrapping_add(1);
-                return Ok((cache.generation, Arc::clone(&cache.events)));
+                return Ok((cache.generation, Arc::new(Vec::new())));
             }
             Err(source) => return Err(SessionError::Io { path, source }),
         };
@@ -835,7 +948,13 @@ impl Session {
             source,
         })?;
         if cache.stamp.as_ref() == Some(&stamp) {
-            return Ok((cache.generation, Arc::clone(&cache.events)));
+            if let Some(events) = cache.events.upgrade() {
+                snapshots()
+                    .lock()
+                    .unwrap()
+                    .retain(&self.event_cache, &events, cache.bytes);
+                return Ok((cache.generation, events));
+            }
         }
         let mut events = Vec::new();
         for line in BufReader::new(file).lines() {
@@ -852,16 +971,46 @@ impl Session {
             })?;
             events.push(event);
         }
-        cache.events = Arc::new(events);
+        cache.bytes = events.capacity() * std::mem::size_of::<Event>()
+            + events.iter().map(event_bytes).sum::<usize>();
+        let events = Arc::new(events);
+        cache.count = events.len();
+        cache.events = Arc::downgrade(&events);
         cache.stamp = Some(stamp);
         cache.generation = cache.generation.wrapping_add(1);
-        Ok((cache.generation, Arc::clone(&cache.events)))
+        snapshots()
+            .lock()
+            .unwrap()
+            .retain(&self.event_cache, &events, cache.bytes);
+        Ok((cache.generation, events))
     }
 
     /// The id the next event gets: one past the number of lines already in the
     /// log, so ids stay `e1`, `e2`, and so on.
     pub fn next_event_id(&self) -> Result<String, SessionError> {
-        Ok(format!("e{}", self.event_snapshot()?.1.len() + 1))
+        let mut cache = self.event_cache.lock().unwrap();
+        let path = self.events_path();
+        let file = match File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok("e1".into()),
+            Err(source) => return Err(SessionError::Io { path, source }),
+        };
+        file.lock_shared().map_err(|source| SessionError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let stamp = LogStamp::read(&file).map_err(|source| SessionError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if cache.stamp.as_ref() != Some(&stamp) {
+            cache.count = Self::event_lines(&path)?;
+            cache.stamp = Some(stamp);
+            cache.events = Weak::new();
+            snapshots().lock().unwrap().take(&self.event_cache);
+            cache.generation = cache.generation.wrapping_add(1);
+        }
+        Ok(format!("e{}", cache.count + 1))
     }
 }
 
@@ -869,6 +1018,61 @@ impl Session {
 mod tests {
     use super::*;
     use crate::events::{EventKind, PermissionBody};
+
+    #[test]
+    fn history_cache_evicts_old_snapshots_and_rejects_oversized_snapshots() {
+        let mut retained = Snapshots::default();
+        let first = Arc::new(Mutex::new(EventCache::default()));
+        let second = Arc::new(Mutex::new(EventCache::default()));
+        let events = Arc::new(Vec::new());
+        retained.retain(&first, &events, EVENT_CACHE_BYTES / 2);
+        retained.retain(&second, &events, EVENT_CACHE_BYTES / 2);
+        assert!(retained.take(&first).is_some());
+        retained.retain(&first, &events, EVENT_CACHE_BYTES / 2 + 1);
+        retained.retain(&second, &events, EVENT_CACHE_BYTES / 2 + 1);
+        assert!(retained.take(&first).is_none());
+        assert!(retained.bytes <= EVENT_CACHE_BYTES);
+        retained.retain(&first, &events, EVENT_CACHE_BYTES + 1);
+        assert!(retained.take(&first).is_none());
+        drop(second);
+        retained.retain(&first, &events, 1);
+        assert_eq!(retained.bytes, 1);
+    }
+
+    #[test]
+    fn releasing_history_preserves_readers_and_event_numbering() {
+        let dir = temp_dir("release-history");
+        let session = Session::at(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        session
+            .append(&Event::new("e1", "now", "t1", EventKind::Result))
+            .unwrap();
+        let snapshot = session.shared_events().unwrap();
+        let weak = Arc::downgrade(&snapshot);
+        session.release_events();
+        assert_eq!(session.next_event_id().unwrap(), "e2");
+        session
+            .append(&Event::new("e2", "now", "t1", EventKind::Result))
+            .unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(session.shared_events().unwrap().len(), 2);
+        drop(snapshot);
+        assert!(weak.upgrade().is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn output_byte_arrays_count_toward_the_history_memory_budget() {
+        let event = Event::new("e1", "now", "t1", EventKind::CloseoutOutput)
+            .with_body(&crate::events::CloseoutOutputBody {
+                id: "test".into(),
+                attempt: 1,
+                stderr: false,
+                bytes: vec![0; 8192],
+            })
+            .unwrap();
+        assert!(event_bytes(&event) >= 8192 * std::mem::size_of::<serde_json::Value>());
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

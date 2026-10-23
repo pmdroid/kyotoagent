@@ -6,8 +6,10 @@ use ring::{
     rand::SystemRandom,
     signature::{EcdsaKeyPair, ECDSA_P256_SHA256_FIXED_SIGNING},
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -65,6 +67,76 @@ struct Notice {
     event_id: String,
     kind: EventKind,
     alert: serde_json::Value,
+}
+
+#[derive(Default)]
+struct ScanState {
+    stamp: Option<(u64, u64, u64, SystemTime)>,
+    offset: u64,
+    pending: Option<(Event, bool)>,
+}
+
+#[derive(Deserialize)]
+struct NoticeEvent {
+    id: String,
+    #[serde(rename = "turnId")]
+    turn_id: String,
+    kind: EventKind,
+    body: NoticeBody,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct NoticeBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    action: Option<String>,
+}
+
+impl ScanState {
+    fn read(&mut self, session: &Session) -> std::io::Result<Vec<Event>> {
+        let file = fs::File::open(session.events_path())?;
+        file.lock_shared()?;
+        let meta = file.metadata()?;
+        let stamp = (meta.dev(), meta.ino(), meta.len(), meta.modified()?);
+        if self.stamp == Some(stamp) {
+            return Ok(Vec::new());
+        }
+        if self.stamp.is_some_and(|previous| {
+            previous.0 != stamp.0 || previous.1 != stamp.1 || meta.len() <= self.offset
+        }) {
+            self.offset = 0;
+            self.pending = None;
+        }
+        let mut reader = BufReader::new(file);
+        reader.seek(SeekFrom::Start(self.offset))?;
+        let mut events = Vec::new();
+        let mut offset = self.offset;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let bytes = reader.read_line(&mut line)?;
+            if bytes == 0 || !line.ends_with('\n') {
+                break;
+            }
+            if !line.trim().is_empty() {
+                let event: NoticeEvent = serde_json::from_str(&line)?;
+                events.push(Event {
+                    id: event.id,
+                    at: String::new(),
+                    turn_id: event.turn_id,
+                    kind: event.kind,
+                    body: serde_json::to_value(event.body)?,
+                });
+            }
+            offset += bytes as u64;
+        }
+        self.offset = offset;
+        if self.offset == meta.len() {
+            self.stamp = Some(stamp);
+        }
+        Ok(events)
+    }
 }
 
 fn alert(meta: &SessionMeta, event: &Event) -> serde_json::Value {
@@ -242,29 +314,31 @@ impl Push {
             .is_ok_and(|seen| seen.is_some_and(|at| at.elapsed() < Duration::from_secs(15)))
     }
 
-    fn scan(&self, seen: &mut HashMap<String, HashSet<String>>, baseline: bool) -> Vec<Notice> {
+    fn scan(&self, seen: &mut HashMap<String, ScanState>, baseline: bool) -> Vec<Notice> {
         let mut notices = Vec::new();
         let suppressed = self.tui_active();
         for dir in session_dirs(&self.root) {
             let session = Session::at(&dir);
-            let (Ok(meta), Ok(events)) = (session.meta(), session.events()) else {
+            let Ok(meta) = session.meta() else {
                 continue;
             };
-            let ids = seen.entry(meta.id.clone()).or_default();
+            let state = seen.entry(meta.id.clone()).or_default();
+            let Ok(mut events) = state.read(&session) else {
+                continue;
+            };
+            let handled = state.pending.take().and_then(|(event, handled)| {
+                let id = handled.then(|| event.id.clone());
+                events.insert(0, event);
+                id
+            });
             for event in &events {
-                if baseline
+                let handled = handled.as_deref() == Some(&event.id)
+                    || baseline
                     || suppressed
                     || meta.parent_id.is_some()
-                    || !matches!(
-                        event.kind,
-                        EventKind::Permission | EventKind::Question | EventKind::Result
-                    )
-                    || (event.kind == EventKind::Permission && meta.yolo)
-                {
-                    ids.insert(event.id.clone());
-                }
-                if !ids.contains(&event.id) && !baseline && eligible(event, &events, &meta) {
-                    ids.insert(event.id.clone());
+                    || (event.kind == EventKind::Permission && meta.yolo);
+                let notify = !handled && eligible(event, &events, &meta);
+                if notify {
                     notices.push(Notice {
                         session_id: meta.id.clone(),
                         event_id: event.id.clone(),
@@ -272,8 +346,18 @@ impl Push {
                         alert: alert(&meta, event),
                     });
                 }
+                if matches!(event.kind, EventKind::Permission | EventKind::Question)
+                    && unsettled(event, &events)
+                {
+                    state.pending = Some((event.clone(), handled || notify));
+                }
             }
         }
+        seen.retain(|id, _| {
+            session_dir(&self.root, id)
+                .join(crate::session::META_FILE)
+                .exists()
+        });
         notices
     }
 
@@ -282,7 +366,7 @@ impl Push {
             return false;
         }
         let session = Session::at(&session_dir(&self.root, &notice.session_id));
-        let (Ok(meta), Ok(events)) = (session.meta(), session.events()) else {
+        let (Ok(meta), Ok(events)) = (session.meta(), ScanState::default().read(&session)) else {
             return false;
         };
         events
@@ -353,23 +437,27 @@ fn eligible(event: &Event, events: &[Event], meta: &SessionMeta) -> bool {
             {
                 return false;
             }
-            let Some(index) = events.iter().position(|e| e.id == event.id) else {
-                return false;
-            };
-            !events[index + 1..].iter().any(|e| {
-                e.turn_id != event.turn_id
-                    || matches!(
-                        e.kind,
-                        EventKind::Permission
-                            | EventKind::Question
-                            | EventKind::PermissionAnswer
-                            | EventKind::QuestionAnswer
-                            | EventKind::Result
-                    )
-            })
+            unsettled(event, events)
         }
         _ => false,
     }
+}
+
+fn unsettled(event: &Event, events: &[Event]) -> bool {
+    let Some(index) = events.iter().position(|e| e.id == event.id) else {
+        return false;
+    };
+    !events[index + 1..].iter().any(|e| {
+        e.turn_id != event.turn_id
+            || matches!(
+                e.kind,
+                EventKind::Permission
+                    | EventKind::Question
+                    | EventKind::PermissionAnswer
+                    | EventKind::QuestionAnswer
+                    | EventKind::Result
+            )
+    })
 }
 
 impl Provider {
@@ -643,6 +731,81 @@ mod tests {
         push.update(|v| v.retain(|d| d != &old)).unwrap();
         let loaded = Push::new(&root, None).unwrap();
         assert!(loaded.devices.lock().unwrap().contains(&new));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn observer_reads_only_new_bytes_and_prunes_deleted_sessions() {
+        let root = root();
+        let session = Session::at(&root.join("sessions/s1"));
+        session
+            .create(&SessionMeta::new("s1", &root, "model", &now()))
+            .unwrap();
+        session.append(&Event::new("e1", &now(), "t1", EventKind::ToolResult)
+            .with_body(&serde_json::json!({"images":[{"data":"x".repeat(65536)}],"output":"large output"})).unwrap()).unwrap();
+        let mut cursor = ScanState::default();
+        let events = cursor.read(&session).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].body.as_object().unwrap().is_empty());
+        assert!(cursor.read(&session).unwrap().is_empty());
+        let push = Push::new(&root, None).unwrap();
+        let mut seen = HashMap::new();
+        assert!(push.scan(&mut seen, true).is_empty());
+        let old_len = fs::metadata(session.events_path()).unwrap().len() as usize;
+        let mut old_bytes = vec![b'x'; old_len];
+        old_bytes[old_len - 1] = b'\n';
+        fs::write(session.events_path(), old_bytes).unwrap();
+        session
+            .append(&Event::new("e2", &now(), "t2", EventKind::Result))
+            .unwrap();
+        assert_eq!(push.scan(&mut seen, false).len(), 1);
+        assert!(push.scan(&mut seen, false).is_empty());
+        fs::remove_dir_all(session.dir()).unwrap();
+        assert!(push.scan(&mut seen, false).is_empty());
+        assert!(seen.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn observer_waits_for_status_and_complete_lines_and_tracks_replaced_logs() {
+        let root = root();
+        let session = Session::at(&root.join("sessions/s1"));
+        session
+            .create(&SessionMeta::new("s1", &root, "model", &now()))
+            .unwrap();
+        let push = Push::new(&root, None).unwrap();
+        let mut seen = HashMap::new();
+        session
+            .append(&Event::new("e1", &now(), "t1", EventKind::Permission))
+            .unwrap();
+        assert!(push.scan(&mut seen, false).is_empty());
+        session
+            .update(|meta| {
+                meta.status = Status::Waiting;
+                true
+            })
+            .unwrap();
+        assert_eq!(push.scan(&mut seen, false).len(), 1);
+        assert!(push.scan(&mut seen, false).is_empty());
+        let question = Event::new("e1", &now(), "t2", EventKind::Question);
+        let bytes = serde_json::to_vec(&question).unwrap();
+        let replacement = root.join("replacement.jsonl");
+        fs::write(&replacement, &bytes[..bytes.len() / 2]).unwrap();
+        fs::rename(&replacement, session.events_path()).unwrap();
+        assert!(push.scan(&mut seen, false).is_empty());
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(session.events_path())
+            .unwrap();
+        file.write_all(&bytes[bytes.len() / 2..]).unwrap();
+        file.write_all(b"\n").unwrap();
+        assert_eq!(push.scan(&mut seen, false).len(), 1);
+        assert!(push.scan(&mut seen, false).is_empty());
+        session
+            .append(&Event::new("e2", &now(), "t2", EventKind::QuestionAnswer))
+            .unwrap();
+        assert!(push.scan(&mut seen, false).is_empty());
+        assert!(seen["s1"].pending.is_none());
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -51,6 +51,7 @@ use axum::{
     Extension, Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, UnixListener};
 use tokio_rustls::TlsAcceptor;
 
@@ -144,10 +145,10 @@ fn session_dirs(root: &Path) -> Vec<PathBuf> {
 /// has no answer after it. A turn holds one open card at a time, so at most one
 /// of the two is still open.
 fn open_card_kind(dir: &Path) -> Option<&'static str> {
-    let events = Session::at(dir).events().ok()?;
+    let events = Session::at(dir).shared_events().ok()?;
     let mut permission = false;
     let mut question = false;
-    for event in &events {
+    for event in events.iter() {
         match event.kind {
             EventKind::Permission => permission = true,
             EventKind::PermissionAnswer => permission = false,
@@ -1173,15 +1174,16 @@ async fn view_session(
 async fn events(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<Response, ApiError> {
     let dir = session_dir(&state.root, &id);
     if Session::at(&dir).meta().is_err() {
         return Err(ApiError::not_found());
     }
-    match fs::read_to_string(dir.join(EVENTS_FILE)) {
-        Ok(text) => Ok(text_response(text)),
-        Err(_) => Err(ApiError::not_found()),
-    }
+    let file = tokio::fs::File::open(dir.join(EVENTS_FILE))
+        .await
+        .map_err(|_| ApiError::not_found())?;
+    let size = file.metadata().await.map_err(ApiError::server)?.len();
+    text_response(file, size)
 }
 
 /// Start a turn on a session. A free session gets 202 and its turn id. A live
@@ -1290,7 +1292,7 @@ async fn answer(
 ) -> Result<impl IntoResponse, ApiError> {
     let dir = session_dir(&state.root, &id);
     let events = Session::at(&dir)
-        .events()
+        .shared_events()
         .map_err(|_| ApiError::not_found())?;
     let Some(card) = events.iter().find(|event| event.id == body.id) else {
         return Err(ApiError::not_found());
@@ -1882,13 +1884,21 @@ async fn read_session_file(
 }
 
 /// The raw log as plain text.
-fn text_response(text: String) -> Response {
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        text,
-    )
-        .into_response()
+fn text_response(file: tokio::fs::File, size: u64) -> Result<Response, ApiError> {
+    let stream = futures_util::stream::try_unfold(file.take(size), |mut input| async move {
+        let mut bytes = vec![0; 65536];
+        let read = input.read(&mut bytes).await?;
+        if read == 0 {
+            return Ok::<_, std::io::Error>(None);
+        }
+        bytes.truncate(read);
+        Ok(Some((bytes, input)))
+    });
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CONTENT_LENGTH, size)
+        .body(axum::body::Body::from_stream(stream))
+        .map_err(ApiError::server)
 }
 
 #[cfg(test)]
@@ -2276,5 +2286,39 @@ mod ios_fixtures {
                 tail: "test result: ok. 1 passed\n".into(),
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+    use futures_util::StreamExt;
+
+    #[tokio::test]
+    async fn raw_log_downloads_use_bounded_chunks_and_a_fixed_length() {
+        let path = std::env::temp_dir().join(format!("kyoto-log-stream-{}", std::process::id()));
+        let original = vec![b'x'; 3 * 65536 + 1];
+        fs::write(&path, &original).unwrap();
+        let file = tokio::fs::File::open(&path).await.unwrap();
+        let response = text_response(file, original.len() as u64).unwrap();
+        assert_eq!(
+            response.headers()[header::CONTENT_LENGTH],
+            original.len().to_string()
+        );
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"later event\n")
+            .unwrap();
+        let mut stream = response.into_body().into_data_stream();
+        let mut downloaded = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.unwrap();
+            assert!(chunk.len() <= 65536);
+            downloaded.extend_from_slice(&chunk);
+        }
+        assert_eq!(downloaded, original);
+        fs::remove_file(path).unwrap();
     }
 }
