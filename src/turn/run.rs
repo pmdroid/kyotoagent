@@ -657,6 +657,13 @@ pub(super) async fn run_turn(
         items: closeout.proof_items_with_carried_passes(),
     };
     append_proof(session, turn_id, &proof)?;
+    if !*cancel.borrow() {
+        let tokens = request_tokens(
+            crate::compact::estimate_request(&transcript, &tools_json),
+            usage,
+        );
+        maybe_background_compact(turn, tokens, session.meta()?.context_length)?;
+    }
 
     Ok(())
 }

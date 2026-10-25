@@ -84,6 +84,32 @@ written into `config.toml`.
 A file that still has top-level `base_url` and `model` loads as it did. That is
 the current provider when `provider` and `[providers]` are absent.
 
+## Background compaction
+
+Set the top-level `background_compaction` boolean to prepare context summaries
+while the agent continues working. It is off by default:
+
+```toml
+background_compaction = true
+```
+
+Preparation starts at 85% of the automatic compaction threshold once context
+usage reaches at least 64,000 tokens. With the default `compact_percent = 85`
+and a 200,000-token window, preparation can start around 144,500 tokens; the
+summary is applied when compaction is needed around 170,000 tokens. Preparation
+can also run between turns.
+
+Kyoto holds the prepared summary in memory without changing the active
+transcript. At compaction time it checks the model configuration, instructions,
+history, and remaining context space, then applies the summary with subsequent
+events preserved. If preparation is still running, compaction waits for it.
+Failed or stale preparation falls back to ordinary compaction. Manual
+`/compact`, provider context-overflow recovery, and cancellation discard held
+preparation.
+
+Prepared summaries are lost on server restart. Summary requests can cost tokens
+even when their results are never used.
+
 ## Command sandbox
 
 `sandbox` is a top-level boolean, off by default on every operating system:

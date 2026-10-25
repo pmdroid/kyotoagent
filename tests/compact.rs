@@ -28,10 +28,20 @@ struct FakeServer {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     bodies: Arc<Mutex<Vec<String>>>,
+    compact_ready: Arc<AtomicBool>,
 }
 
 impl FakeServer {
     fn start(catalog: Value, replies: Vec<Canned>, compact_delay: Duration) -> FakeServer {
+        Self::scripted(catalog, replies, None, compact_delay)
+    }
+
+    fn scripted(
+        catalog: Value,
+        replies: Vec<Canned>,
+        compacts: Option<Vec<Canned>>,
+        compact_delay: Duration,
+    ) -> FakeServer {
         let listener = TcpListener::bind("127.0.0.1:0").expect("the fake server binds");
         listener
             .set_nonblocking(true)
@@ -40,26 +50,49 @@ impl FakeServer {
             .local_addr()
             .expect("the fake server has an address");
         let replies = Arc::new(Mutex::new(replies));
+        let compacts = compacts.map(|replies| Arc::new(Mutex::new(replies)));
         let catalog = Arc::new(catalog);
         let bodies = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
+        let compact_ready = Arc::new(AtomicBool::new(true));
         let handle = {
             let replies = Arc::clone(&replies);
             let catalog = Arc::clone(&catalog);
             let bodies = Arc::clone(&bodies);
             let stop = Arc::clone(&stop);
+            let compact_ready = Arc::clone(&compact_ready);
             std::thread::spawn(move || {
+                let mut workers = Vec::new();
                 while !stop.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((stream, _)) => {
                             let _ = stream.set_nonblocking(false);
-                            serve_one(stream, &replies, &catalog, &bodies, compact_delay);
+                            let replies = Arc::clone(&replies);
+                            let compacts = compacts.clone();
+                            let catalog = Arc::clone(&catalog);
+                            let bodies = Arc::clone(&bodies);
+                            let compact_ready = Arc::clone(&compact_ready);
+                            let stop = Arc::clone(&stop);
+                            workers.push(std::thread::spawn(move || {
+                                serve_one(
+                                    stream,
+                                    &replies,
+                                    compacts.as_ref(),
+                                    &catalog,
+                                    &bodies,
+                                    compact_delay,
+                                    (&compact_ready, &stop),
+                                );
+                            }));
                         }
                         Err(ref source) if source.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(2));
                         }
                         Err(_) => break,
                     }
+                }
+                for worker in workers {
+                    let _ = worker.join();
                 }
             })
         };
@@ -68,6 +101,7 @@ impl FakeServer {
             stop,
             handle: Some(handle),
             bodies,
+            compact_ready,
         }
     }
 
@@ -101,10 +135,13 @@ impl Drop for FakeServer {
 fn serve_one(
     mut stream: TcpStream,
     replies: &Arc<Mutex<Vec<Canned>>>,
+    compacts: Option<&Arc<Mutex<Vec<Canned>>>>,
     catalog: &Value,
     bodies: &Arc<Mutex<Vec<String>>>,
     compact_delay: Duration,
+    control: (&AtomicBool, &AtomicBool),
 ) {
+    let (compact_ready, stop) = control;
     let Some((path, body)) = read_request(&mut stream) else {
         return;
     };
@@ -133,9 +170,11 @@ fn serve_one(
     let compact = serde_json::from_str::<Value>(&body)
         .ok()
         .is_some_and(|json| json.get("tools").is_none());
-    if compact && compact_delay > Duration::ZERO {
-        std::thread::sleep(compact_delay);
-    }
+    let replies = if compact {
+        compacts.unwrap_or(replies)
+    } else {
+        replies
+    };
     let reply = {
         let mut queue = replies.lock().expect("the queue is not poisoned");
         if queue.len() > 1 {
@@ -147,6 +186,12 @@ fn serve_one(
                 .unwrap_or(Canned::Status(500, "no reply left".into()))
         }
     };
+    if compact && compact_delay > Duration::ZERO {
+        std::thread::sleep(compact_delay);
+    }
+    while compact && !compact_ready.load(Ordering::SeqCst) && !stop.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(2));
+    }
     match reply {
         Canned::Json(reply) => kyotoagent::chat::answer_completion(&mut stream, 200, &reply, &body),
         Canned::Status(status, body) => respond(&mut stream, status, &body),
@@ -277,6 +322,38 @@ impl Fixture {
             runner,
             server,
             root,
+        }
+    }
+
+    fn background(
+        name: &str,
+        replies: Vec<Canned>,
+        compacts: Vec<Canned>,
+        delay: Duration,
+    ) -> Fixture {
+        let root =
+            std::env::temp_dir().join(format!("kyotoagent-compact-{}-{name}", std::process::id()));
+        let server = FakeServer::scripted(catalog(Some(200_000)), replies, Some(compacts), delay);
+        let config = Config::from_toml(&format!(
+            "base_url = \"{}\"\ntitle_model = \"\"\nmodel = \"grok-4.6\"\nbackground_compaction = true\n",
+            server.base_url()
+        )).unwrap();
+        Fixture {
+            runner: Runner::new(&config).unwrap(),
+            server,
+            root,
+        }
+    }
+
+    async fn wait_posts(&self, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.chat().len() < count {
+            assert!(
+                Instant::now() < deadline,
+                "missing requests: {:?}",
+                self.chat()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -946,6 +1023,252 @@ async fn a_window_cached_for_another_model_is_replaced_by_the_running_model() {
     assert_eq!(meta.context_length, Some(1_000_000));
     let window = fixture.view("91bc").context.and_then(|usage| usage.window);
     assert_eq!(window, Some(1_000_000));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn background_compaction_keeps_working_and_replays_the_tail_only_when_due() {
+    let fixture = Fixture::background(
+        "background-live",
+        vec![
+            Canned::Json(tool_reply(
+                "list_dir",
+                serde_json::json!({"path": "."}),
+                150_000,
+            )),
+            Canned::Json(tool_reply(
+                "write_file",
+                serde_json::json!({"path": "tail.txt", "contents": "tail survived"}),
+                180_000,
+            )),
+            Canned::Json(text_reply("done", 100)),
+        ],
+        vec![Canned::Json(summary_reply("prepared summary"))],
+        Duration::from_secs(1),
+    );
+    let workspace = fixture.add_session("91bc");
+    fixture.server.compact_ready.store(false, Ordering::SeqCst);
+    fixture.prior_history("91bc", &"older context ".repeat(2_000));
+    fixture
+        .runner
+        .ask("91bc", "keep the latest request")
+        .unwrap();
+    fixture.wait_for_status("91bc", Status::Waiting).await;
+    fixture.wait_posts(3).await;
+    assert_eq!(
+        fixture
+            .chat()
+            .iter()
+            .filter(|body| !is_compact_body(body))
+            .count(),
+        2
+    );
+    assert!(!fixture.runner.is_compacting("91bc"));
+    assert!(fixture
+        .events("91bc")
+        .iter()
+        .all(|event| event.kind != EventKind::Compact));
+    fixture
+        .runner
+        .answer("91bc", kyotoagent::permit::Answer::allow_once())
+        .unwrap();
+    fixture.wait_compacting("91bc", true).await;
+    assert!(fixture
+        .events("91bc")
+        .iter()
+        .all(|event| event.kind != EventKind::Compact));
+    fixture.server.compact_ready.store(true, Ordering::SeqCst);
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    let posts = fixture.chat();
+    assert_eq!(posts.iter().filter(|body| is_compact_body(body)).count(), 1);
+    let resumed = posts.iter().rfind(|body| !is_compact_body(body)).unwrap();
+    let rendered = serde_json::to_string(resumed).unwrap();
+    assert!(rendered.contains("prepared summary"));
+    assert!(rendered.contains("keep the latest request"));
+    assert!(rendered.contains("tail.txt"));
+    assert!(!rendered.contains("older context"));
+    assert_eq!(
+        fs::read_to_string(workspace.join("tail.txt")).unwrap(),
+        "tail survived"
+    );
+    assert_eq!(
+        fixture
+            .events("91bc")
+            .iter()
+            .filter(|event| event.kind == EventKind::Compact)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_background_preparation_does_not_delay_the_next_turn_or_activate_early() {
+    let fixture = Fixture::background(
+        "background-idle",
+        vec![
+            Canned::Json(text_reply("first done", 150_000)),
+            Canned::Json(text_reply("second done", 150_000)),
+        ],
+        vec![Canned::Json(summary_reply("held summary"))],
+        Duration::from_secs(1),
+    );
+    fixture.add_session("91bc");
+    fixture.server.compact_ready.store(false, Ordering::SeqCst);
+    fixture.prior_history("91bc", &"old context ".repeat(2_000));
+    fixture.runner.ask("91bc", "first ask").unwrap();
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    fixture.wait_posts(2).await;
+    fixture.runner.ask("91bc", "second ask").unwrap();
+    fixture.wait_posts(3).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    assert!(fixture
+        .events("91bc")
+        .iter()
+        .all(|event| event.kind != EventKind::Compact));
+    let posts = fixture.chat();
+    assert_eq!(posts.iter().filter(|body| is_compact_body(body)).count(), 1);
+    assert!(serde_json::to_string(posts.last().unwrap())
+        .unwrap()
+        .contains("old context"));
+    fixture.runner.cancel("91bc");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_turn_preparation_survives_context_window_discovery() {
+    let fixture = Fixture::background(
+        "background-first-turn",
+        vec![
+            Canned::Json(text_reply(&"earlier work ".repeat(3_000), 150_000)),
+            Canned::Json(text_reply("second done", 180_000)),
+            Canned::Json(text_reply("resumed", 100)),
+        ],
+        vec![Canned::Json(summary_reply("first-turn preparation"))],
+        Duration::ZERO,
+    );
+    fixture.add_session("91bc");
+    fixture.runner.ask("91bc", "first ask").unwrap();
+    fixture.wait_posts(2).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    fixture.runner.ask("91bc", "second ask").unwrap();
+    fixture.wait_posts(3).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    fixture.runner.ask("91bc", "third ask").unwrap();
+    fixture.wait_posts(4).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    let posts = fixture.chat();
+    assert_eq!(posts.iter().filter(|body| is_compact_body(body)).count(), 1);
+    let rendered = serde_json::to_string(posts.last().unwrap()).unwrap();
+    assert!(rendered.contains("first-turn preparation"));
+    assert!(rendered.contains("second ask"));
+    assert!(!rendered.contains("earlier work earlier work"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_background_preparation_is_silent_and_falls_back_when_due() {
+    let fixture = Fixture::background(
+        "background-fail",
+        vec![
+            Canned::Json(text_reply("first done", 150_000)),
+            Canned::Json(text_reply("second done", 180_000)),
+            Canned::Json(text_reply("resumed", 100)),
+        ],
+        vec![
+            Canned::Status(400, "background rejected".into()),
+            Canned::Json(summary_reply("fresh fallback")),
+        ],
+        Duration::ZERO,
+    );
+    fixture.add_session("91bc");
+    fixture.prior_history("91bc", &"old context ".repeat(2_000));
+    fixture.runner.ask("91bc", "first ask").unwrap();
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    fixture.wait_posts(2).await;
+    fixture.runner.ask("91bc", "second ask").unwrap();
+    fixture.wait_posts(3).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    fixture.runner.ask("91bc", "third ask").unwrap();
+    fixture.wait_posts(5).await;
+    fixture.wait_for_status("91bc", Status::Idle).await;
+    let posts = fixture.chat();
+    assert_eq!(posts.iter().filter(|body| is_compact_body(body)).count(), 2);
+    assert!(serde_json::to_string(posts.last().unwrap())
+        .unwrap()
+        .contains("fresh fallback"));
+    assert!(fixture
+        .events("91bc")
+        .iter()
+        .all(|event| !event.body.to_string().contains("background rejected")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_background_preparations_fall_back_without_losing_new_requests() {
+    for scenario in ["instructions", "tail", "cancel", "manual", "overflow"] {
+        let mut replies = vec![Canned::Json(text_reply("first done", 150_000))];
+        if scenario == "overflow" {
+            replies.push(Canned::Status(400, "context_length_exceeded".into()));
+        } else {
+            replies.push(Canned::Json(text_reply("second done", 180_000)));
+        }
+        replies.push(Canned::Json(text_reply("resumed", 100)));
+        let fixture = Fixture::background(
+            &format!("background-stale-{scenario}"),
+            replies,
+            vec![
+                Canned::Json(summary_reply("discard this preparation")),
+                Canned::Json(summary_reply("fresh summary")),
+            ],
+            Duration::from_millis(100),
+        );
+        let workspace = fixture.add_session("91bc");
+        fixture.prior_history("91bc", &"old context ".repeat(2_000));
+        fixture.runner.ask("91bc", "first ask").unwrap();
+        fixture.wait_posts(2).await;
+        fixture.wait_for_status("91bc", Status::Idle).await;
+        match scenario {
+            "instructions" => {
+                fs::write(workspace.join("AGENTS.md"), "Use the updated instructions.").unwrap()
+            }
+            "cancel" => fixture.runner.cancel("91bc"),
+            "manual" => {
+                fixture.runner.compact("91bc").unwrap();
+                fixture.wait_compacting("91bc", false).await;
+            }
+            _ => {}
+        }
+        let request = if scenario == "tail" {
+            "new exact requirement ".repeat(8_000)
+        } else {
+            "new exact requirement".into()
+        };
+        fixture.runner.ask("91bc", &request).unwrap();
+        let expected = if scenario == "manual" || scenario == "overflow" {
+            4
+        } else {
+            3
+        };
+        fixture.wait_posts(expected).await;
+        fixture.wait_for_status("91bc", Status::Idle).await;
+        if scenario != "manual" && scenario != "overflow" {
+            fixture.runner.ask("91bc", "continue").unwrap();
+            fixture.wait_posts(5).await;
+            fixture.wait_for_status("91bc", Status::Idle).await;
+        }
+        let posts = fixture.chat();
+        assert_eq!(
+            posts.iter().filter(|body| is_compact_body(body)).count(),
+            2,
+            "{scenario}"
+        );
+        let rendered =
+            serde_json::to_string(posts.iter().rfind(|body| !is_compact_body(body)).unwrap())
+                .unwrap();
+        assert!(rendered.contains("fresh summary"), "{scenario}");
+        assert!(!rendered.contains("discard this preparation"), "{scenario}");
+        assert!(fixture
+            .events("91bc")
+            .iter()
+            .any(|event| event.kind == EventKind::UserAsk
+                && event.body["text"].as_str() == Some(&request)));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
