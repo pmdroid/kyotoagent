@@ -623,6 +623,7 @@ struct RunningTurn {
 struct CompactSlot {
     job: Mutex<Option<Arc<CompactJob>>>,
     requested: AtomicBool,
+    background: Mutex<Option<BackgroundCompact>>,
 }
 
 struct CompactJob {
@@ -636,6 +637,7 @@ impl CompactSlot {
         Arc::new(CompactSlot {
             job: Mutex::new(None),
             requested: AtomicBool::new(false),
+            background: Mutex::new(None),
         })
     }
 
@@ -683,7 +685,15 @@ impl CompactSlot {
         }
     }
 
+    fn discard_background(&self) {
+        self.background
+            .lock()
+            .expect("background compaction")
+            .take();
+    }
+
     fn cancel(&self) {
+        self.discard_background();
         self.requested.store(false, Ordering::SeqCst);
         if let Some(job) = self.current() {
             let _ = job.cancel.send(true);
@@ -1588,6 +1598,7 @@ impl Runner {
         let runner = self.me.upgrade().expect("the runner is still held");
         let done = Arc::clone(&state);
         let turn = state.turn.lock().expect("the turn slot is not poisoned");
+        state.compact.discard_background();
         if turn.is_some() {
             state.compact.requested.store(true, Ordering::SeqCst);
             return Ok(());
@@ -1756,6 +1767,7 @@ impl Runner {
             .lock()
             .expect("the session map is not poisoned");
         for state in sessions.values() {
+            state.compact.discard_background();
             btw::cancel(state);
         }
         let open: Vec<(String, String, &'static str)> = sessions
@@ -2185,6 +2197,10 @@ struct Turn {
 
 impl Turn {
     fn system_prompt(&self) -> String {
+        self.system_prompt_with_window(self.context_length)
+    }
+
+    fn system_prompt_with_window(&self, context_length: Option<u64>) -> String {
         let workspace = self.tools.workspace();
         let agents = crate::agents_doc::load(workspace);
         let build = if self.child {
@@ -2197,7 +2213,7 @@ impl Turn {
             &self.prompt_skills,
             self.prompt_closeout.as_ref(),
             &agents,
-            self.context_length,
+            context_length,
         );
         if self.goal_run {
             if let Some(goal) = self.session.meta().ok().and_then(|meta| meta.goal) {

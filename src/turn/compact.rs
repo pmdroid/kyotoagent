@@ -6,6 +6,173 @@ pub(super) struct HistoryCursor {
     pub compact_id: Option<String>,
 }
 
+pub(super) struct BackgroundCompact {
+    history: Arc<Vec<Event>>,
+    config: Config,
+    system: String,
+    handle: tokio::task::JoinHandle<Result<Option<CompactBody>, TurnError>>,
+}
+
+impl Drop for BackgroundCompact {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+impl BackgroundCompact {
+    fn matches(&self, turn: &Turn, history: &[Event]) -> bool {
+        self.config == turn.config
+            && self.system == background_system(turn)
+            && history.starts_with(&self.history)
+            && crate::compact::latest_compact(history).map(|event| &event.id)
+                == crate::compact::latest_compact(&self.history).map(|event| &event.id)
+    }
+
+    fn tail_fits(&self, history: &[Event], window: u64) -> bool {
+        let tail = crate::compact::projected_messages("", &history[self.history.len()..], "");
+        crate::compact::estimate_tokens(&tail) <= 30_000.min(window / 4)
+    }
+}
+
+fn background_system(turn: &Turn) -> String {
+    turn.system_prompt_with_window(
+        turn.session
+            .meta()
+            .ok()
+            .and_then(|meta| meta.context_length),
+    )
+}
+
+fn background_threshold(window: u64, percent: u32) -> u64 {
+    window.saturating_mul(u64::from(percent)).saturating_mul(85) / 10_000
+}
+
+pub(super) fn maybe_background_compact(
+    turn: &Turn,
+    tokens: u64,
+    window: Option<u64>,
+) -> Result<(), TurnError> {
+    if !turn.config.background_compaction {
+        turn.compact.discard_background();
+        return Ok(());
+    }
+    let Some(window) = window.filter(|window| *window > 0) else {
+        return Ok(());
+    };
+    if tokens < 64_000
+        || tokens < background_threshold(window, turn.compact_percent)
+        || crate::compact::at_or_above(tokens, window, turn.compact_percent)
+    {
+        return Ok(());
+    }
+    let history = turn.session.shared_events()?;
+    if !history
+        .iter()
+        .any(|event| matches!(event.kind, EventKind::ToolResult | EventKind::Result))
+    {
+        return Ok(());
+    }
+    let mut held = turn
+        .compact
+        .background
+        .lock()
+        .expect("background compaction");
+    if held
+        .as_ref()
+        .is_some_and(|held| held.matches(turn, &history) && held.tail_fits(&history, window))
+    {
+        return Ok(());
+    }
+    held.take();
+    let session = turn.session.clone();
+    let client = turn.client.clone();
+    let config = turn.config.clone();
+    let snapshot = history.clone();
+    let handle = tokio::spawn(async move {
+        let (_cancel_tx, mut cancel) = tokio::sync::watch::channel(false);
+        prepare_compact(&session, &client, &config, &snapshot, &mut cancel).await
+    });
+    *held = Some(BackgroundCompact {
+        history,
+        config: turn.config.clone(),
+        system: background_system(turn),
+        handle,
+    });
+    Ok(())
+}
+
+async fn activate_background_compact(
+    turn: &Turn,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    window: u64,
+    tools_json: &str,
+) -> Result<bool, TurnError> {
+    let held = turn
+        .compact
+        .background
+        .lock()
+        .expect("background compaction")
+        .take();
+    let Some(held) = held else {
+        return Ok(false);
+    };
+    let (job, started) = turn.compact.begin();
+    if !started {
+        return Ok(false);
+    }
+    let result = use_background_compact(turn, cancel, window, tools_json, held).await;
+    turn.compact.finish(&job);
+    result
+}
+
+async fn use_background_compact(
+    turn: &Turn,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    window: u64,
+    tools_json: &str,
+    mut held: BackgroundCompact,
+) -> Result<bool, TurnError> {
+    let history = turn.session.shared_events()?;
+    if !held.matches(turn, &history) || !held.tail_fits(&history, window) || *cancel.borrow() {
+        return Ok(false);
+    }
+    let body = tokio::select! {
+        _ = cancel.changed() => return Ok(false),
+        result = &mut held.handle => match result {
+            Ok(Ok(Some(body))) => body,
+            _ => return Ok(false),
+        },
+    };
+    let history = turn.session.shared_events()?;
+    if !held.matches(turn, &history) || !held.tail_fits(&history, window) || *cancel.borrow() {
+        return Ok(false);
+    }
+    let meta = turn.session.meta()?;
+    let mut candidate = history.as_ref().clone();
+    candidate.push(
+        Event::new(
+            "compact-candidate",
+            &now(),
+            &turn.turn_id,
+            EventKind::Compact,
+        )
+        .with_body(&body)?,
+    );
+    let projected = crate::compact::projected_messages_with_goal(
+        &turn.system_prompt(),
+        &candidate,
+        &meta.workspace,
+        meta.goal.as_ref(),
+    );
+    if crate::compact::estimate_request(&projected, tools_json)
+        >= background_threshold(window, turn.compact_percent)
+    {
+        return Ok(false);
+    }
+    activate_compact(&turn.session, &body)?;
+    Ok(true)
+}
+
 pub(super) fn spawn_compact(
     session: Session,
     slot: Arc<CompactSlot>,
@@ -46,6 +213,7 @@ pub(super) async fn wait_and_run_compact(
     config: &Config,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), TurnError> {
+    slot.discard_background();
     let (job, started) = slot.begin();
     if !started {
         wait_compact(slot).await;
@@ -69,20 +237,33 @@ pub(super) async fn run_compact(
     config: &Config,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), TurnError> {
-    if *cancel.borrow() {
-        return Ok(());
-    }
     let history = session.shared_events()?;
+    if let Some(body) = prepare_compact(session, client, config, &history, cancel).await? {
+        activate_compact(session, &body)?;
+    }
+    Ok(())
+}
+
+async fn prepare_compact(
+    session: &Session,
+    client: &ChatClient,
+    config: &Config,
+    history: &[Event],
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<Option<CompactBody>, TurnError> {
+    if *cancel.borrow() {
+        return Ok(None);
+    }
     if !history.iter().any(|event| {
         matches!(
             event.kind,
             EventKind::ModelMessage | EventKind::ToolResult | EventKind::Result
         )
     }) {
-        return Ok(());
+        return Ok(None);
     }
-    let Some(through) = crate::compact::last_event_id(&history) else {
-        return Ok(());
+    let Some(through) = crate::compact::last_event_id(history) else {
+        return Ok(None);
     };
     let goal = session.meta().ok().and_then(|meta| meta.goal);
     let workspace = session
@@ -90,7 +271,7 @@ pub(super) async fn run_compact(
         .map(|meta| meta.workspace)
         .unwrap_or_default();
     let mut messages =
-        crate::compact::compact_request_messages_with_goal(&history, &workspace, goal.as_ref());
+        crate::compact::compact_request_messages_with_goal(history, &workspace, goal.as_ref());
     let meta = session.meta()?;
     let window = crate::compact::resolve_window(client, config, session).await?;
     if let Some(window) = window {
@@ -103,14 +284,14 @@ pub(super) async fn run_compact(
         if crate::compact::estimate_tokens(&messages[..messages.len().min(2)])
             > window.saturating_mul(85) / 100
         {
-            return Ok(());
+            return Ok(None);
         }
     }
     let mut summary = None;
     let mut failure = String::from("no usable summary was returned");
     for attempt in 0..3 {
         let reply = tokio::select! {
-            _ = cancel.changed() => return Ok(()),
+            _ = cancel.changed() => return Ok(None),
             result = tokio::time::timeout(Duration::from_secs(120), client.compact(&messages)) => result,
         };
         match reply {
@@ -149,13 +330,13 @@ pub(super) async fn run_compact(
         }
         if attempt < 2 {
             tokio::select! {
-                _ = cancel.changed() => return Ok(()),
+                _ = cancel.changed() => return Ok(None),
                 _ = tokio::time::sleep(Duration::from_secs(3)) => {},
             }
         }
     }
     if *cancel.borrow() {
-        return Ok(());
+        return Ok(None);
     }
     let summary = summary.ok_or(TurnError::Compaction(failure))?;
     let turn_id = history
@@ -168,10 +349,10 @@ pub(super) async fn run_compact(
     };
     let before = crate::compact::estimate_tokens(&crate::compact::projected_messages(
         "",
-        &history,
+        history,
         &meta.workspace,
     ));
-    let mut candidate = history.as_ref().clone();
+    let mut candidate = history.to_vec();
     candidate.push(
         Event::new("compact-candidate", &now(), &turn_id, EventKind::Compact).with_body(&body)?,
     );
@@ -185,10 +366,24 @@ pub(super) async fn run_compact(
             "the summary did not reduce context usage".to_string(),
         ));
     }
-    append_with_body(session, &turn_id, EventKind::Compact, &body)?;
+    Ok(Some(body))
+}
+
+fn activate_compact(session: &Session, body: &CompactBody) -> Result<(), TurnError> {
     let events = session.shared_events()?;
-    let projected =
-        crate::compact::projected_messages_with_goal("", &events, &workspace, goal.as_ref());
+    let turn_id = events
+        .last()
+        .map(|event| event.turn_id.as_str())
+        .unwrap_or("t1");
+    append_with_body(session, turn_id, EventKind::Compact, body)?;
+    let meta = session.meta()?;
+    let events = session.shared_events()?;
+    let projected = crate::compact::projected_messages_with_goal(
+        "",
+        &events,
+        &meta.workspace,
+        meta.goal.as_ref(),
+    );
     crate::compact::store_prompt_tokens(session, crate::compact::estimate_tokens(&projected))?;
     Ok(())
 }
@@ -218,18 +413,29 @@ pub(super) async fn maybe_live_compact(
         .is_some_and(|window| crate::compact::at_or_above(tokens, window, turn.compact_percent));
     if requested || (!*attempted && threshold_reached) {
         *attempted = true;
-        wait_and_run_compact(
-            &turn.compact,
-            &turn.session,
-            &turn.client,
-            &turn.config,
-            cancel,
-        )
-        .await?;
+        let activated = if requested {
+            false
+        } else if let Some(window) = window {
+            activate_background_compact(turn, cancel, window, tools_json).await?
+        } else {
+            false
+        };
+        if !activated && !*cancel.borrow() {
+            wait_and_run_compact(
+                &turn.compact,
+                &turn.session,
+                &turn.client,
+                &turn.config,
+                cancel,
+            )
+            .await?;
+        }
         if refresh_compacted_history(turn, transcript, cursor)? {
             *usage = None;
             *attempted = false;
         }
+    } else if !*cancel.borrow() {
+        maybe_background_compact(turn, tokens, window)?;
     }
     let estimated = request_tokens(
         crate::compact::estimate_request(transcript, tools_json),
@@ -349,7 +555,7 @@ fn shrink_transcript(message: Option<&mut Message>) {
     }
 }
 
-fn request_tokens(estimated: u64, usage: Option<(u64, u64)>) -> u64 {
+pub(super) fn request_tokens(estimated: u64, usage: Option<(u64, u64)>) -> u64 {
     usage
         .map(|(baseline, reported)| reported.saturating_add(estimated.saturating_sub(baseline)))
         .unwrap_or(estimated)

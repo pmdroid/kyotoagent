@@ -148,6 +148,8 @@ struct File {
     #[serde(default = "default_compact_percent")]
     compact_percent: u32,
     #[serde(default)]
+    background_compaction: bool,
+    #[serde(default)]
     listen: Option<String>,
     #[serde(default)]
     listen_cert: Option<String>,
@@ -228,6 +230,7 @@ pub struct Config {
     pub effort: Option<String>,
     pub service_tier: Option<String>,
     pub compact_percent: u32,
+    pub background_compaction: bool,
     pub listen: Option<String>,
     pub listen_cert: Option<String>,
     pub listen_key: Option<String>,
@@ -324,6 +327,7 @@ impl Default for Config {
             effort: None,
             service_tier: None,
             compact_percent: crate::compact::DEFAULT_COMPACT_PERCENT,
+            background_compaction: false,
             listen: None,
             listen_cert: None,
             listen_key: None,
@@ -451,6 +455,7 @@ impl Config {
             effort: file.effort,
             service_tier: None,
             compact_percent: file.compact_percent,
+            background_compaction: file.background_compaction,
             listen: file.listen,
             listen_cert: file.listen_cert,
             listen_key: file.listen_key,
@@ -1785,6 +1790,18 @@ model = "grok-4.6"
         assert_eq!(config.grok_client_id.as_deref(), Some("rotated-client"));
         assert_eq!(config.provider.as_deref(), Some("grok"));
         assert_eq!(config.api_key_env, None);
+    }
+
+    #[test]
+    fn background_compaction_requires_explicit_opt_in() {
+        assert!(!Config::default().background_compaction);
+        let base = "base_url = \"http://127.0.0.1:1/v1\"\nmodel = \"test\"\n";
+        assert!(!Config::from_toml(base).unwrap().background_compaction);
+        assert!(
+            Config::from_toml(&format!("{base}background_compaction = true"))
+                .unwrap()
+                .background_compaction
+        );
     }
 
     #[test]
